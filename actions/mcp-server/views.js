@@ -3,6 +3,7 @@
 
 const BASE_STYLE = `
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   html, body { margin: 0; padding: 0; background: transparent; }
   sp-theme {
     display: block;
@@ -29,6 +30,9 @@ const BRIDGE_SCRIPT = `
   var _pending = {};
   var _toolResultHandler = null;
   var _toolInputHandler = null;
+  // Resolved once the handshake with the host is done: host methods must not be called before
+  var _readyResolve;
+  var ready = new Promise(function (resolve) { _readyResolve = resolve; });
 
   function send(msg) { window.parent.postMessage(msg, '*'); }
 
@@ -114,7 +118,7 @@ const BRIDGE_SCRIPT = `
       applyTheme(result.hostContext);
       notification('ui/notifications/initialized');
       reportSize();
-    }).catch(function () {});
+    }).catch(function () {}).then(_readyResolve);
   }
 `
 
@@ -146,6 +150,67 @@ const UPLOAD_SCRIPT = `
         var urls = result.structuredContent || JSON.parse(result.content[0].text);
         return putFile(urls.uploadUrl, file, onProgress).then(function () { return { name: file.name, url: urls.readUrl }; });
       });
+  }
+`
+
+// AEM Asset Selector (Content Advisor), opened in a browser tab: Claude does not let views frame experience.adobe.com.
+// loadAemConfig() resolves to the config, or null when AEM is not configured; pickAemAssets() opens the selector page
+// (aem-picker.html) and resolves to the assets selected there ([] if cancelled); importAemAsset() copies one to
+// storage: { name, url }.
+const AEM_SCRIPT = `
+  var AEM_POLL_INTERVAL_MS = 3000;
+  var AEM_PICK_TIMEOUT_MS = 15 * 60 * 1000;
+  var aemConfig = null;
+  var aemPickId = 0;
+
+  function toolResult(result) {
+    if (result.isError) throw new Error(result.content[0].text);
+    return result.structuredContent || JSON.parse(result.content[0].text);
+  }
+
+  function loadAemConfig() {
+    return ready
+      .then(function () { return request('tools/call', { name: 'get-aem-selector-config', arguments: {} }); })
+      .then(toolResult)
+      .then(function (config) { aemConfig = config.enabled ? config : null; return aemConfig; })
+      .catch(function () { return null; });
+  }
+
+  // Polls the session until the selection is made in the tab; a new pick supersedes the previous one.
+  function waitForAemSelection(sessionId, pickId, deadline) {
+    return new Promise(function (resolve) { setTimeout(resolve, AEM_POLL_INTERVAL_MS); })
+      .then(function () {
+        if (pickId !== aemPickId) return { status: 'cancelled', assets: [] };
+        return request('tools/call', { name: 'get-aem-picker-result', arguments: { sessionId: sessionId } }).then(toolResult);
+      })
+      .then(function (result) {
+        if (result.status === 'pending' && Date.now() < deadline) return waitForAemSelection(sessionId, pickId, deadline);
+        if (result.status === 'pending' || result.status === 'expired') throw new Error('The AEM selection has expired, choose again.');
+        return result.assets;
+      });
+  }
+
+  function pickAemAssets(multiple) {
+    var pickId = ++aemPickId;
+    return request('tools/call', { name: 'create-aem-picker-session', arguments: { multiple: multiple } })
+      .then(toolResult)
+      .then(function (session) {
+        return request('ui/open-link', { url: session.pickerUrl }).then(function (result) {
+          if (result && result.isError) throw new Error('The AEM selector tab could not be opened.');
+          setStatus('Choose ' + (multiple ? 'the images' : 'the PSD template') + ' in the AEM tab that opened, then come back here.');
+          return waitForAemSelection(session.sessionId, pickId, Date.now() + AEM_PICK_TIMEOUT_MS);
+        });
+      })
+      .then(function (assets) {
+        if (pickId === aemPickId) setStatus('');
+        return assets;
+      });
+  }
+
+  function importAemAsset(asset) {
+    return request('tools/call', { name: 'import-aem-asset', arguments: { repositoryId: asset['repo:repositoryId'], assetId: asset['repo:assetId'] || undefined, path: asset['repo:path'] || undefined, fileName: asset['repo:name'] } })
+      .then(toolResult)
+      .then(function (imported) { return { name: imported.fileName, url: imported.url }; });
   }
 `
 
@@ -278,7 +343,7 @@ function getStartViewHtml (scriptUrl) {
   .field input:focus { outline: none; border-color: var(--spectrum-gray-800); }
   sp-dropzone { width: 100%; }
   sp-illustrated-message { padding: var(--spectrum-spacing-300) 0; margin-inline: auto; }
-  .browse { display: flex; justify-content: center; padding-bottom: var(--spectrum-spacing-300); }
+  .browse { display: flex; justify-content: center; gap: var(--spectrum-spacing-200); padding-bottom: var(--spectrum-spacing-300); }
   #file { display: none; }
   sp-progress-bar { width: 100%; margin-top: var(--spectrum-spacing-200); display: none; }
   .actions { margin-top: var(--spectrum-spacing-300); display: flex; align-items: center; gap: var(--spectrum-spacing-300); }
@@ -294,6 +359,7 @@ function getStartViewHtml (scriptUrl) {
   <sp-illustrated-message id="message" heading="Drop your PSD template" description="Layered .psd file"></sp-illustrated-message>
   <div class="browse">
     <sp-button variant="accent" treatment="outline" id="browse">Browse</sp-button>
+    <sp-button variant="secondary" treatment="outline" id="aem" hidden>Choose from AEM</sp-button>
     <input type="file" id="file" accept=".psd,image/vnd.adobe.photoshop">
   </div>
 </sp-dropzone>
@@ -304,12 +370,14 @@ function getStartViewHtml (scriptUrl) {
 </div>
 `, `
 ${UPLOAD_SCRIPT}
+${AEM_SCRIPT}
   var countInput = document.getElementById('count');
   var input = document.getElementById('file');
   var drop = document.getElementById('drop');
   var progress = document.getElementById('progress');
   var message = document.getElementById('message');
   var continueBtn = document.getElementById('continue');
+  var aemBtn = document.getElementById('aem');
   var template = null;
 
   function count() {
@@ -324,26 +392,52 @@ ${UPLOAD_SCRIPT}
     updateButton();
   });
 
-  function upload(file) {
-    if (!file) return;
+  function startTransfer(name, status, indeterminate) {
     template = null;
     updateButton();
     progress.style.display = 'block';
+    progress.indeterminate = indeterminate;
     progress.progress = 0;
-    progress.label = file.name;
-    setStatus('Uploading...');
-    uploadOne(file, function (bytes) { progress.progress = Math.round(bytes / (file.size || 1) * 100); })
-      .then(function (uploaded) {
-        template = uploaded;
-        message.setAttribute('heading', file.name);
-        message.setAttribute('description', 'Uploaded — drop another file to replace it');
-        setStatus('');
-        updateButton();
-      })
-      .catch(function (error) {
-        setStatus((error && error.message) || String(error), true);
-      });
+    progress.label = name;
+    setStatus(status);
   }
+
+  function setTemplate(file) {
+    template = file;
+    progress.indeterminate = false;
+    progress.progress = 100;
+    message.setAttribute('heading', file.name);
+    message.setAttribute('description', 'Uploaded — drop another file to replace it');
+    setStatus('');
+    updateButton();
+  }
+
+  function fail(error) {
+    progress.indeterminate = false;
+    setStatus((error && error.message) || String(error), true);
+  }
+
+  function upload(file) {
+    if (!file) return;
+    startTransfer(file.name, 'Uploading...', false);
+    uploadOne(file, function (bytes) { progress.progress = Math.round(bytes / (file.size || 1) * 100); })
+      .then(setTemplate)
+      .catch(fail);
+  }
+
+  // The PSD picked in AEM is copied to storage by the server, like an upload.
+  aemBtn.addEventListener('click', function () {
+    pickAemAssets(false)
+      .then(function (assets) {
+        var asset = assets[0];
+        if (!asset) return;
+        if (!/\.psd$/i.test(asset['repo:name'])) throw new Error(asset['repo:name'] + ' is not a PSD file.');
+        startTransfer(asset['repo:name'], 'Importing from AEM...', true);
+        return importAemAsset(asset).then(setTemplate);
+      })
+      .catch(fail);
+  });
+  loadAemConfig().then(function (config) { aemBtn.hidden = !config; reportSize(); });
 
   countInput.addEventListener('input', updateButton);
   document.getElementById('browse').addEventListener('click', function () { input.value = ''; input.click(); });
@@ -429,6 +523,7 @@ function getVariantImagesViewHtml (scriptUrl) {
 </div>
 `, `
 ${UPLOAD_SCRIPT}
+${AEM_SCRIPT}
   var CROP_MAX_HEIGHT = 240;
   var MAX_ZOOM = 4;
   var grid = document.getElementById('grid');
@@ -438,6 +533,7 @@ ${UPLOAD_SCRIPT}
   var layers = [];
   var slots = [];
   var pickTarget = 0;
+  var BUSY_LABELS = { uploading: 'Uploading', importing: 'Importing from AEM', framing: 'Framing the subject' };
 
   // Slots are stored row by row: index = variant * layers.length + layer.
   function layerOf(index) { return layers[index % layers.length]; }
@@ -474,13 +570,14 @@ ${UPLOAD_SCRIPT}
       }
       html += '<div class="subtle file-name">' + escapeHtml(slot.name) + '</div>'
         + '<sp-button size="s" variant="secondary" treatment="outline" data-action="remove" data-index="' + index + '">Remove</sp-button>';
-    } else if (slot.status === 'uploading' || slot.status === 'framing') {
+    } else if (BUSY_LABELS[slot.status]) {
       html += '<div class="subtle file-name">' + escapeHtml(slot.name) + '</div>'
-        + '<sp-progress-bar size="s" label="' + (slot.status === 'uploading' ? 'Uploading' : 'Framing the subject') + '"'
+        + '<sp-progress-bar size="s" label="' + BUSY_LABELS[slot.status] + '"'
         + (slot.status === 'uploading' ? ' progress="' + slot.progress + '"' : ' indeterminate') + '></sp-progress-bar>';
     } else {
       html += '<div class="subtle">Drop image</div>'
         + '<sp-button size="s" variant="secondary" treatment="outline" data-action="browse" data-index="' + index + '">Browse</sp-button>'
+        + (aemConfig ? '<sp-button size="s" variant="secondary" treatment="outline" data-action="aem" data-index="' + index + '">From AEM</sp-button>' : '')
         + (slot.error ? '<div class="cell-error">' + escapeHtml(slot.error) + '</div>' : '');
     }
     return html + '</sp-dropzone>';
@@ -520,21 +617,18 @@ ${UPLOAD_SCRIPT}
 
   function updateStatus() {
     var done = slots.filter(function (s) { return s.status === 'done'; }).length;
-    var busy = slots.some(function (s) { return s.status === 'uploading' || s.status === 'framing'; });
+    var busy = slots.some(function (s) { return BUSY_LABELS[s.status]; });
     confirmBtn.disabled = done !== slots.length || !slots.length;
     confirmBtn.textContent = 'Confirm images (' + done + '/' + slots.length + ')';
     setStatus(busy ? 'Uploading and framing...' : '');
   }
 
-  // Uploads the file, then asks the server for a crop at the frame ratio framed on the subject.
-  function uploadToSlot(index, file) {
-    var slot = slots[index] = { status: 'uploading', name: file.name, progress: 0 };
+  // Puts an image in the slot with transfer(slot), which resolves to { url } once it is in storage, then asks the
+  // server for a crop at the frame ratio framed on the subject.
+  function fillSlot(index, name, status, transfer) {
+    var slot = slots[index] = { status: status, name: name, progress: 0 };
     render();
-    uploadOne(file, function (bytes) {
-      slot.progress = Math.round(bytes / (file.size || 1) * 100);
-      var bar = grid.querySelector('sp-dropzone[data-index="' + index + '"] sp-progress-bar');
-      if (bar) bar.progress = slot.progress;
-    })
+    transfer(slot)
       .then(function (uploaded) {
         slot.url = uploaded.url;
         var ratio = ratioOf(index);
@@ -561,16 +655,34 @@ ${UPLOAD_SCRIPT}
       });
   }
 
-  // The first file goes to the target slot, the others fill the next empty slots in order.
+  function uploadToSlot(index, file) {
+    fillSlot(index, file.name, 'uploading', function (slot) {
+      return uploadOne(file, function (bytes) {
+        slot.progress = Math.round(bytes / (file.size || 1) * 100);
+        var bar = grid.querySelector('sp-dropzone[data-index="' + index + '"] sp-progress-bar');
+        if (bar) bar.progress = slot.progress;
+      });
+    });
+  }
+
+  function importToSlot(index, asset) {
+    fillSlot(index, asset['repo:name'], 'importing', function () { return importAemAsset(asset); });
+  }
+
+  // The first item goes to the target slot, the others fill the next empty slots in order.
+  function placeItems(startIndex, items, place) {
+    if (!items.length) return;
+    place(startIndex, items.shift());
+    for (var i = 0; i < slots.length && items.length; i++) {
+      var index = (startIndex + 1 + i) % slots.length;
+      if (slots[index].status === 'empty') place(index, items.shift());
+    }
+    if (items.length) setStatus(items.length + ' extra image(s) ignored: all slots are filled.', true);
+  }
+
   function placeFiles(startIndex, fileList) {
     var files = Array.prototype.slice.call(fileList || []).filter(function (f) { return !f.type || f.type.indexOf('image/') === 0; });
-    if (!files.length) return;
-    uploadToSlot(startIndex, files.shift());
-    for (var i = 0; i < slots.length && files.length; i++) {
-      var index = (startIndex + 1 + i) % slots.length;
-      if (slots[index].status === 'empty') uploadToSlot(index, files.shift());
-    }
-    if (files.length) setStatus(files.length + ' extra file(s) ignored: all slots are filled.', true);
+    placeItems(startIndex, files, uploadToSlot);
   }
 
   // Fills a slot with an image uploaded before (e.g. to re-crop after a generation): only fetches its size and a
@@ -610,6 +722,8 @@ ${UPLOAD_SCRIPT}
     });
     render();
   });
+  // Shows the "From AEM" buttons once the AEM configuration is known
+  loadAemConfig().then(function (config) { if (config && slots.length) render(); });
 
   grid.addEventListener('click', function (e) {
     var button = e.target.closest('sp-button');
@@ -619,6 +733,12 @@ ${UPLOAD_SCRIPT}
       pickTarget = index;
       input.value = '';
       input.click();
+    } else if (button.getAttribute('data-action') === 'aem') {
+      pickAemAssets(true)
+        .then(function (assets) {
+          placeItems(index, assets.filter(function (a) { return String(a['dc:format'] || '').indexOf('image/') === 0; }), importToSlot);
+        })
+        .catch(function (error) { setStatus((error && error.message) || String(error), true); });
     } else if (button.getAttribute('data-action') === 'remove') {
       slots[index] = { status: 'empty' };
       render();

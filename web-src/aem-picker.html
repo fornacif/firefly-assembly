@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Choose from AEM</title>
+<!-- AEM Asset Selector opened in a tab by the MCP App views (see actions/mcp-server/aem-picker.js): the URL fragment
+     carries the session id and the path of the picker endpoint, which gives the selector config and takes the selection. -->
+<script src="https://experience.adobe.com/solutions/CQ-assets-selectors/static-assets/resources/assets-selectors.js"></script>
+<style>
+  html, body { margin: 0; height: 100%; font-family: adobe-clean, "Source Sans Pro", -apple-system, system-ui, sans-serif; background: #f8f8f8; color: #222; }
+  @media (prefers-color-scheme: dark) { html, body { background: #1d1d1d; color: #ebebeb; } }
+  #selector { height: 100%; }
+  #message { display: none; max-width: 520px; margin: 20vh auto 0; padding: 0 16px; text-align: center; font-size: 18px; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div id="selector"></div>
+<div id="message"></div>
+<script>
+(function () {
+  var params = new URLSearchParams(location.hash.slice(1));
+  var sessionId = params.get('session');
+  var api = params.get('api') || '';
+  var done = false;
+  // The fragment holds the session id: remove it from the address bar and the history
+  history.replaceState(null, '', location.pathname);
+
+  function showMessage(text) {
+    document.getElementById('selector').style.display = 'none';
+    var message = document.getElementById('message');
+    message.textContent = text;
+    message.style.display = 'block';
+  }
+
+  function call(body) {
+    body.sessionId = sessionId;
+    return fetch(api, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      .then(function (response) {
+        return response.json().then(function (result) {
+          if (!response.ok) throw new Error(result.error || 'HTTP ' + response.status);
+          return result;
+        });
+      });
+  }
+
+  function finish(action, assets) {
+    if (done) return;
+    done = true;
+    call({ action: action, assets: assets })
+      .then(function () {
+        showMessage(action === 'select'
+          ? 'Selection sent. You can close this tab and go back to Claude.'
+          : 'Selection cancelled. You can close this tab.');
+        window.close();
+      })
+      .catch(function (error) { showMessage(error.message); });
+  }
+
+  // Only the endpoint of this App Builder app, on this origin, may receive the session id
+  if (!sessionId || api.indexOf('/api/v1/web/') !== 0) {
+    showMessage('Invalid link: start the AEM selection again from Claude.');
+    return;
+  }
+
+  call({ action: 'config' })
+    .then(function (config) {
+      var selectionType = config.multiple ? 'multiple' : 'single';
+      PureJSSelectors.renderAssetSelector(document.getElementById('selector'), {
+        repositoryId: config.repositoryId || undefined,
+        imsOrg: config.imsOrg,
+        imsToken: config.imsToken,
+        apiKey: config.apiKey,
+        aemTierType: [config.aemTierType || 'delivery'],
+        selectionType: selectionType,
+        acvConfig: { selectionType: selectionType },
+        dialogSize: 'fullscreen',
+        colorScheme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
+        handleSelection: function (assets) { finish('select', assets || []); },
+        onClose: function () { finish('cancel'); }
+      });
+    })
+    .catch(function (error) { showMessage(error.message); });
+
+  window.addEventListener('pagehide', function () {
+    // Closing the tab without choosing cancels the selection, so the widget does not wait for it
+    if (!done && navigator.sendBeacon) {
+      navigator.sendBeacon(api, new Blob([JSON.stringify({ sessionId: sessionId, action: 'cancel' })], { type: 'application/json' }));
+    }
+  });
+})();
+</script>
+</body>
+</html>

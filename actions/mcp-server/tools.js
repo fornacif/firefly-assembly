@@ -1,7 +1,10 @@
 const crypto = require('crypto')
+const { Readable } = require('stream')
 const { z } = require('zod')
 const filesLib = require('@adobe/aio-lib-files')
 const { getStartViewHtml, getUploadViewHtml, getVariantImagesViewHtml, getLayersViewHtml, getVariantViewHtml } = require('./views.js')
+const { getTokenFromRequest, getUnverifiedClientId } = require('./validator.js')
+const { createPickerSession, getPickerResult } = require('./aem-picker.js')
 const spectrumAsset = require('./spectrum-asset.js')
 
 const IMS_TOKEN_URL = 'https://ims-na1.adobelogin.com/ims/token/v3'
@@ -12,6 +15,7 @@ const URL_EXPIRY_SECONDS = 24 * 3600
 const STORAGE_ORIGIN = 'https://firefly.azureedge.net'
 const EDITABLE_LAYER_TYPES = ['text_layer', 'smart_object_layer']
 const MAX_VARIANTS = 10
+const AEM_PICKER_PAGE = 'aem-picker.html'
 
 const RESOURCE_MIME_TYPE = 'text/html;profile=mcp-app'
 const VIEWS = {
@@ -23,10 +27,10 @@ const VIEWS = {
 }
 
 const WORKFLOW = `Variant creation workflow. When the user asks to create variants (or versions, adaptations, localizations...) of a banner, ad, visual, social post or any PSD template, ALWAYS follow these steps in order, one at a time, without skipping any:
-1. Start: call start-variant-creation (pass variantCount if the user already gave it). The user sets the number of variants and uploads the PSD template in the widget, then says to continue. Do not ask for the file in chat and do not look for it elsewhere.
+1. Start: call start-variant-creation (pass variantCount if the user already gave it). The user sets the number of variants and uploads the PSD template (from their computer or AEM Assets) in the widget, then says to continue. Do not ask for the file in chat and do not look for it elsewhere.
 2. Layer selection: immediately call get-psd-manifest with the template URL. The user picks the layers to vary in the widget. Then wait.
 3. Texts: right after the layer selection, if text layers were selected, list them with their current text and ask the user which texts to use for each variant: either they provide the texts, or you write them (then ask for the brief: subject, tone, language, length constraints). If you write them, show your proposal per variant and let the user adjust it before going on. Give each variant a short label (e.g. its title). Then wait.
-4. Images: if smart object layers were selected, call upload-variant-images ONCE with the variant labels and the selected smart object layers (id, name and frame width and height from get-psd-manifest), so the user drops one image per variant and layer in a grid and adjusts how each one is cropped to its frame. Never ask for an image URL. Then wait.
+4. Images: if smart object layers were selected, call upload-variant-images ONCE with the variant labels and the selected smart object layers (id, name and frame width and height from get-psd-manifest), so the user drops (or picks from AEM Assets) one image per variant and layer in a grid and adjusts how each one is cropped to its frame. Never ask for an image URL. Then wait.
 5. Generation: briefly recap each variant (texts and image file names), then call create-variant ONCE with all variants, passing for each image the crop chosen in the grid. The widget shows the generated files with download buttons.
 Changes after generation: to re-crop or swap images, call upload-variant-images again with images pre-filled from the previous confirmation (never ask to upload again the images you already have, unless their URLs expired); to change texts, call create-variant again with the new texts.
 Never show presigned URLs to the user; they are internal. Reply in the user's language.`
@@ -61,9 +65,25 @@ async function getFireflyServicesToken (params) {
   return cachedToken.value
 }
 
+const RATE_LIMIT_RETRIES = 6
+const RATE_LIMIT_BASE_DELAY_MS = 1000
+const RATE_LIMIT_MAX_DELAY_MS = 30000
+
+// fetch that waits and retries when Firefly Services answers 429 (rate limit): for the Retry-After delay when given,
+// otherwise with an exponential backoff, randomized so that parallel jobs do not retry all at once.
+async function fetchWithRateLimit (url, options) {
+  for (let attempt = 0; ; attempt++) {
+    const response = await fetch(url, options)
+    if (response.status !== 429 || attempt >= RATE_LIMIT_RETRIES) return response
+    const retryAfterMs = Number(response.headers.get('retry-after')) * 1000
+    const backoffMs = RATE_LIMIT_BASE_DELAY_MS * 2 ** attempt * (0.5 + Math.random())
+    await new Promise(resolve => setTimeout(resolve, Math.min(retryAfterMs > 0 ? retryAfterMs : backoffMs, RATE_LIMIT_MAX_DELAY_MS)))
+  }
+}
+
 async function callPhotoshop (params, path, options = {}) {
   const token = await getFireflyServicesToken(params)
-  const response = await fetch(`${PHOTOSHOP_API}${path}`, {
+  const response = await fetchWithRateLimit(`${PHOTOSHOP_API}${path}`, {
     ...options,
     headers: {
       Authorization: `Bearer ${token}`,
@@ -114,16 +134,90 @@ function getEditableLayers (layers = []) {
   })
 }
 
-async function createStorageUrls (folder, fileName) {
-  const files = await filesLib.init()
+function newStoragePath (folder, fileName) {
   const safeName = fileName.replace(/[^\w.-]/g, '_')
   // Unique path: files with the same name can be created in the same millisecond (e.g. parallel crops)
-  const path = `${folder}/${Date.now()}-${crypto.randomUUID().slice(0, 8)}-${safeName}`
+  return `${folder}/${Date.now()}-${crypto.randomUUID().slice(0, 8)}-${safeName}`
+}
+
+async function createStorageUrls (folder, fileName) {
+  const files = await filesLib.init()
+  const path = newStoragePath(folder, fileName)
   const options = { expiryInSeconds: URL_EXPIRY_SECONDS }
   return {
     uploadUrl: await files.generatePresignURL(path, { ...options, permissions: 'w' }),
     readUrl: await files.generatePresignURL(path, { ...options, permissions: 'r' })
   }
+}
+
+const AEM_HOST = /^(author|delivery)-(p\d+-e\d+)\.adobeaemcloud\.com$/
+const AEM_ASSET_ID = /^urn:aaid:aem:[0-9a-f-]{36}$/i
+
+function toAemHost (repositoryId) {
+  return String(repositoryId || '').trim().replace(/^https?:\/\//, '').replace(/\/$/, '')
+}
+
+// Program and environment of a repository (e.g. p12345-e67890), shared by its author and delivery tiers.
+function aemEnvironment (host) {
+  return AEM_HOST.exec(host)?.[2] || null
+}
+
+// AEM Assets repositories browsed with the Asset Selector; null when AEM_REPOSITORY_ID is not set.
+// AEM_REPOSITORY_ID: one repository (shown directly in the selector), several comma-separated, or '*' for any AEM as a
+// Cloud Service repository of the user (both chosen in the selector). AEM_IMS_ORG: empty to let the user pick the
+// organization. AEM_TIER: 'delivery' (default, approved assets of Dynamic Media with OpenAPI) or 'author' (all assets).
+function getAemConfig (params) {
+  const repositories = String(params.AEM_REPOSITORY_ID || '').split(',').map(toAemHost).filter(Boolean)
+  if (!repositories.length) return null
+  const tier = params.AEM_TIER === 'author' ? 'author' : 'delivery'
+  const pinned = repositories.length === 1 && aemEnvironment(repositories[0])
+  return {
+    tier,
+    environments: repositories.includes('*') ? '*' : repositories.map(aemEnvironment).filter(Boolean),
+    pinnedRepository: pinned ? `${tier}-${pinned}.adobeaemcloud.com` : null,
+    imsOrg: String(params.AEM_IMS_ORG || '').trim() || null
+  }
+}
+
+function getAemEnvironment (aem, repositoryId) {
+  const environment = aemEnvironment(toAemHost(repositoryId || aem.pinnedRepository))
+  if (!environment || !(aem.environments === '*' || aem.environments.includes(environment))) {
+    throw new Error(`AEM repository not allowed on this server: ${repositoryId || '(none)'}`)
+  }
+  return environment
+}
+
+// URL of the original binary of an asset: by asset id on the delivery tier, by path on the author tier. Only hosts
+// of allowed AEM repositories are built, so the user's token is never sent to another host.
+function getAemDownloadUrl (aem, { repositoryId, assetId, path, fileName }) {
+  const environment = getAemEnvironment(aem, repositoryId)
+  if (assetId) {
+    if (!AEM_ASSET_ID.test(assetId)) throw new Error(`Invalid AEM asset id: ${assetId}`)
+    return new URL(`https://delivery-${environment}.adobeaemcloud.com/adobe/assets/${assetId}/original/as/${encodeURIComponent(fileName)}`)
+  }
+  const origin = `https://author-${environment}.adobeaemcloud.com`
+  const url = new URL(path || '', origin)
+  if (url.origin !== origin || !url.pathname.startsWith('/content/dam/')) throw new Error(`Not an asset of the AEM repository: ${path}`)
+  return url
+}
+
+// Copies the original binary of an AEM asset to App Builder storage, so that the Photoshop API can read it; returns
+// its temporary read URL. Approved assets are public on the delivery tier: the IMS token of the user is only sent
+// when the binary requires authentication.
+async function importAemAsset (params, aem, asset) {
+  const url = getAemDownloadUrl(aem, asset)
+  let response = await fetch(url)
+  if (response.status === 401 || response.status === 403) {
+    const token = getTokenFromRequest(params)
+    response = await fetch(url, { headers: { Authorization: `Bearer ${token}`, 'X-Api-Key': params.AEM_API_KEY || getUnverifiedClientId(token) } })
+  }
+  const fileName = asset.fileName
+  if (!response.ok) throw new Error(`AEM download of ${fileName} failed (HTTP ${response.status})`)
+
+  const files = await filesLib.init()
+  const path = newStoragePath('aem', fileName)
+  await files.write(path, Readable.fromWeb(response.body))
+  return { fileName, url: await files.generatePresignURL(path, { expiryInSeconds: URL_EXPIRY_SECONDS, permissions: 'r' }) }
 }
 
 function toLayerEdit (layer) {
@@ -177,7 +271,7 @@ function closestAutoCropRatio (ratio) {
 async function detectSubjectBox (params, imageUrl, ratio) {
   const token = await getFireflyServicesToken(params)
   const headers = { Authorization: `Bearer ${token}`, 'x-api-key': params.FIREFLY_SERVICES_API_CLIENT_ID, 'Content-Type': 'application/json' }
-  const submit = await fetch(AUTO_CROP_API, {
+  const submit = await fetchWithRateLimit(AUTO_CROP_API, {
     method: 'POST',
     headers,
     body: JSON.stringify({ image: { source: { url: imageUrl } }, mode: 'smartCrop', aspectRatio: closestAutoCropRatio(ratio) })
@@ -188,7 +282,7 @@ async function detectSubjectBox (params, imageUrl, ratio) {
   const deadline = Date.now() + POLL_TIMEOUT_MS
   while (Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS))
-    const status = await (await fetch(statusUrl, { headers })).json()
+    const status = await (await fetchWithRateLimit(statusUrl, { headers })).json()
     if (status.status === 'failed') throw new Error(`auto-crop failed: ${JSON.stringify(status)}`)
     if (status.status !== 'succeeded') continue
     return status.output?.crops?.[0]?.boundingBoxes?.[0] || null
@@ -521,6 +615,100 @@ function registerTools (server, params) {
       }
     }
   )
+
+  server.registerTool(
+    'get-aem-selector-config',
+    {
+      title: 'Get AEM Selector Config',
+      description: 'Used by the start and upload-variant-images widgets: tells whether AEM Assets is configured on this server.',
+      inputSchema: {},
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    async () => {
+      const config = { enabled: Boolean(getAemConfig(params)) }
+      return { content: [{ type: 'text', text: JSON.stringify(config) }], structuredContent: config }
+    }
+  )
+
+  server.registerTool(
+    'create-aem-picker-session',
+    {
+      title: 'Create AEM Picker Session',
+      description: 'Used by the start and upload-variant-images widgets: creates a session of the AEM Asset Selector page, ' +
+        'to open in a browser tab, and returns its URL and id (see get-aem-picker-result).',
+      inputSchema: { multiple: z.boolean().default(false).describe('Allow selecting several assets') },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    async ({ multiple }) => {
+      const aem = getAemConfig(params)
+      if (!aem) return errorResult(new Error('AEM is not configured on this server (AEM_REPOSITORY_ID).'))
+      try {
+        const token = getTokenFromRequest(params)
+        // The selector needs AEM entitlements in the token: log its client and scopes (never the token) for diagnosis
+        try {
+          const claims = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'))
+          console.log(`AEM picker session: token client ${claims.client_id}, scopes ${claims.scope}`)
+        } catch (_) {}
+        const sessionId = await createPickerSession({
+          repositoryId: aem.pinnedRepository,
+          aemTierType: aem.tier,
+          imsOrg: aem.imsOrg,
+          apiKey: params.AEM_API_KEY || getUnverifiedClientId(token),
+          imsToken: token
+        }, { multiple })
+        const pickerUrl = `${getStaticOrigin(params)}/${AEM_PICKER_PAGE}#session=${sessionId}&api=${encodeURIComponent(getPickerApiPath())}`
+        const session = { sessionId, pickerUrl }
+        return { content: [{ type: 'text', text: 'AEM picker session created.' }], structuredContent: session }
+      } catch (error) {
+        return errorResult(error)
+      }
+    }
+  )
+
+  server.registerTool(
+    'get-aem-picker-result',
+    {
+      title: 'Get AEM Picker Result',
+      description: 'Used by the start and upload-variant-images widgets: returns the status of an AEM picker session ' +
+        '(pending, selected, cancelled or expired) and the selected assets.',
+      inputSchema: { sessionId: z.string().describe('Session id from create-aem-picker-session') },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    async ({ sessionId }) => {
+      try {
+        const result = await getPickerResult(sessionId)
+        return { content: [{ type: 'text', text: JSON.stringify({ status: result.status }) }], structuredContent: result }
+      } catch (error) {
+        return errorResult(error)
+      }
+    }
+  )
+
+  server.registerTool(
+    'import-aem-asset',
+    {
+      title: 'Import AEM Asset',
+      description: 'Used by the start and upload-variant-images widgets: copies an AEM asset picked in the Asset Selector to ' +
+        'temporary storage and returns its HTTPS URL (valid 24 hours).',
+      inputSchema: {
+        repositoryId: z.string().optional().describe('repo:repositoryId of the asset, e.g. delivery-p12345-e67890.adobeaemcloud.com'),
+        assetId: z.string().optional().describe('repo:assetId of the asset (delivery tier), e.g. urn:aaid:aem:...'),
+        path: z.string().optional().describe('repo:path of the asset (author tier), e.g. /content/dam/campaign/banner.psd'),
+        fileName: z.string().min(1).describe('repo:name of the asset')
+      },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    async (asset) => {
+      const aem = getAemConfig(params)
+      if (!aem) return errorResult(new Error('AEM is not configured on this server (AEM_REPOSITORY_ID).'))
+      try {
+        const imported = await importAemAsset(params, aem, asset)
+        return { content: [{ type: 'text', text: JSON.stringify(imported) }], structuredContent: imported }
+      } catch (error) {
+        return errorResult(error)
+      }
+    }
+  )
 }
 
 function registerPrompts (server) {
@@ -541,6 +729,12 @@ function registerPrompts (server) {
       }]
     })
   )
+}
+
+// Path of the picker endpoint of this action (handled in index.js), on the static hosting origin like the picker page.
+function getPickerApiPath () {
+  const [, ...actionPath] = (process.env.__OW_ACTION_NAME || '').split('/').filter(Boolean)
+  return `/api/v1/web/${actionPath.join('/')}/aem-picker`
 }
 
 // App Builder static hosting origin of this namespace, where web-src (the Spectrum bundle) is deployed.

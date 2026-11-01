@@ -44,6 +44,15 @@ application:
               FIREFLY_SERVICES_API_CLIENT_ID: $FIREFLY_SERVICES_API_CLIENT_ID
               FIREFLY_SERVICES_API_CLIENT_SECRET: $FIREFLY_SERVICES_API_CLIENT_SECRET
               FIREFLY_SERVICES_API_SCOPES: $FIREFLY_SERVICES_API_SCOPES
+              # Optional AEM Assets repositories browsed with the Asset Selector: one (e.g. author-p12345-e67890.adobeaemcloud.com),
+              # several comma-separated, or '*' for any AEM as a Cloud Service repository the user can access.
+              # Leave empty to only allow local uploads. AEM_IMS_ORG: empty to let the user pick the organization.
+              AEM_REPOSITORY_ID: $AEM_REPOSITORY_ID
+              AEM_IMS_ORG: $AEM_IMS_ORG
+              # Tier browsed by the selector: delivery (default, approved assets) or author
+              AEM_TIER: $AEM_TIER
+              # API key of the Asset Selector, defaults to the IMS client id of the user's token
+              AEM_API_KEY: $AEM_API_KEY
             annotations:
               # No Adobe authentication required for MCP servers
               require-adobe-auth: false

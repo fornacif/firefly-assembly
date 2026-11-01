@@ -89,5 +89,6 @@ async function validateRequestAuth (params, logger = console) {
 module.exports = {
   getHeadersNormalized,
   getTokenFromRequest,
+  getUnverifiedClientId,
   validateRequestAuth
 }

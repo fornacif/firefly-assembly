@@ -3,6 +3,7 @@ const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js')
 const { WebStandardStreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js')
 const { WORKFLOW, registerTools, registerResources, registerPrompts } = require('./tools.js')
 const { validateRequestAuth } = require('./validator.js')
+const { handlePickerRequest } = require('./aem-picker.js')
 
 let logger = null
 
@@ -183,6 +184,11 @@ async function main (params) {
             return { statusCode: 204, headers: {}, body: '' }
 
         case 'post': {
+            // AEM picker page (aem-picker.html): authenticated by its session id, not by an IMS token
+            if (requestPath.replace(/\/$/, '').endsWith('/aem-picker')) {
+                return await handlePickerRequest(parseRequestBody(params))
+            }
+
             const authResult = await validateRequestAuth(params, logger)
             if (authResult.error) {
                 return {
