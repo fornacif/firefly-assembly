@@ -1023,59 +1023,71 @@ function getLayersViewHtml (scriptUrl) {
     border-top: 1px solid var(--spectrum-gray-200);
   }
   .row.head { border-top: none; background: var(--spectrum-background-layer-2-color); }
-  /* Shared columns across rows (checkbox, name, type, text) so that types and texts are aligned */
-  #layers { display: grid; grid-template-columns: auto fit-content(40%) auto minmax(0, 1fr); }
-  #layers .row { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; }
+  /* Shared columns across rows (checkbox, number, name, type) so that types are aligned */
+  #layers { display: grid; grid-template-columns: auto auto minmax(0, max-content) auto; }
+  #layers .row { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; cursor: default; }
+  #layers .row.hover { background: var(--spectrum-gray-100); }
   .layer-name { font-weight: var(--spectrum-bold-font-weight); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .row sp-badge { justify-self: start; }
-  .layer-text { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .actions { margin-top: var(--spectrum-spacing-300); }
-  /* Preview of the template with one clickable zone per editable layer, positioned in % of the document */
-  .preview { position: relative; display: inline-block; max-width: 100%; margin-bottom: var(--spectrum-spacing-300); line-height: 0; }
-  .preview img { display: block; max-width: 100%; max-height: 460px; border-radius: var(--spectrum-corner-radius-100); }
+  /* Preview on the left (half of the width at most) and list on the right; the list goes below on very narrow views */
+  .picker { display: flex; align-items: flex-start; gap: var(--spectrum-spacing-300); }
+  .picker .list { flex: 1 1 0; min-width: 0; }
+  @media (max-width: 420px) { .picker { flex-direction: column; align-items: stretch; } .picker .list { flex: none; } }
+  /* The padding leaves room for the numbers, centered on the top left corner of the zones */
+  .preview { flex: 0 1 auto; max-width: 50%; padding: 10px; line-height: 0; }
+  @media (max-width: 420px) { .preview { max-width: 100%; } }
+  .stage { position: relative; display: inline-block; max-width: 100%; }
+  .stage img { display: block; max-width: 100%; max-height: 460px; border-radius: var(--spectrum-corner-radius-100); }
+  /* Zones are outlined only, so that what they cover stays visible */
   .zone {
     position: absolute;
     padding: 0;
     background: transparent;
-    border: 2px dashed rgba(255, 255, 255, 0.9);
-    outline: 1px solid rgba(0, 0, 0, 0.45);
+    border: 2px dashed rgba(255, 255, 255, 0.95);
+    outline: 1px solid rgba(0, 0, 0, 0.5);
     border-radius: 2px;
     cursor: pointer;
   }
-  .zone:hover, .zone:focus-visible { background: rgba(255, 255, 255, 0.18); }
-  .zone.selected { border: 2px solid var(--spectrum-accent-background-color-default); background: rgba(20, 115, 230, 0.22); }
-  .zone-name {
-    position: absolute;
-    left: -2px;
-    bottom: 100%;
-    max-width: 200px;
-    padding: 1px 6px;
-    font-size: var(--spectrum-font-size-50);
-    line-height: 1.4;
+  .zone:hover, .zone.hover, .zone:focus-visible { border-style: solid; background: rgba(255, 255, 255, 0.12); outline-color: rgba(0, 0, 0, 0.7); }
+  /* Numbers and selected zones take the color of the layer type, as its badge in the list (Text, Smart object) */
+  .zone.selected { border-style: solid; outline: 1px solid #ffffff; }
+  .zone.text.selected { border-color: var(--spectrum-informative-background-color-default); }
+  .zone.image.selected { border-color: var(--spectrum-seafoam-background-color-default); }
+  .num {
+    display: inline-block;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 5px;
+    border-radius: 10px;
+    font-size: 12px;
+    font-weight: var(--spectrum-bold-font-weight);
+    line-height: 20px;
+    text-align: center;
     color: #ffffff;
-    background: rgba(0, 0, 0, 0.7);
-    border-radius: 2px 2px 0 0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    pointer-events: none;
-    display: none;
+    background: rgba(0, 0, 0, 0.75);
   }
-  .zone:hover .zone-name, .zone:focus-visible .zone-name, .zone.selected .zone-name { display: block; }
-  .zone.selected .zone-name { background: var(--spectrum-accent-background-color-default); }
+  .zone .num { position: absolute; top: -1px; left: -1px; transform: translate(-50%, -50%); box-shadow: 0 0 0 1.5px #ffffff; pointer-events: none; }
+  .num.text { background: var(--spectrum-informative-background-color-default); }
+  .num.image { background: var(--spectrum-seafoam-background-color-default); }
+  .row .num { justify-self: center; }
+  .row .num:empty { visibility: hidden; }
 `, `
 <h2 class="heading" id="title">Editable layers</h2>
 <div class="subtle intro" id="intro">Pick the layers to use for the variants.</div>
-<div class="preview" id="preview" hidden><img id="preview-img" alt="Template preview"><div id="zones"></div></div>
-<div class="list" id="list">
-  <div class="row head"><sp-checkbox id="select-all">Select all</sp-checkbox></div>
-  <div id="layers"></div>
+<div class="picker">
+  <div class="preview" id="preview" hidden><div class="stage"><img id="preview-img" alt="Template preview"><div id="zones"></div></div></div>
+  <div class="list" id="list">
+    <div class="row head"><sp-checkbox id="select-all">Select all</sp-checkbox></div>
+    <div id="layers"></div>
+  </div>
 </div>
 <div class="actions"><sp-button variant="accent" id="confirm" disabled>Use these layers</sp-button></div>
 <sp-help-text class="status" id="status">Loading the manifest...</sp-help-text>
 `, `
   var layers = [];
-  var docSize = null;
+  // Number of each layer shown on the preview (1, 2...), in the order of the list; none for layers without a zone
+  var numbers = [];
   var listEl = document.getElementById('layers');
   var zonesEl = document.getElementById('zones');
   var confirmBtn = document.getElementById('confirm');
@@ -1088,10 +1100,14 @@ function getLayersViewHtml (scriptUrl) {
   // Keeps the "Select all" box, the preview zones and the button in sync with the layer boxes.
   function updateSelection() {
     var count = selected().length;
-    zonesEl.querySelectorAll('.zone').forEach(function (zone) {
-      var checked = document.getElementById('layer-' + zone.getAttribute('data-index')).checked;
-      zone.classList.toggle('selected', checked);
-      zone.setAttribute('aria-pressed', String(checked));
+    layers.forEach(function (l, i) {
+      var checked = document.getElementById('layer-' + i).checked;
+      listEl.querySelector('.row[data-index="' + i + '"]').classList.toggle('selected', checked);
+      var zone = zonesEl.querySelector('.zone[data-index="' + i + '"]');
+      if (zone) {
+        zone.classList.toggle('selected', checked);
+        zone.setAttribute('aria-pressed', String(checked));
+      }
     });
     selectAll.checked = count === layers.length;
     selectAll.indeterminate = count > 0 && count < layers.length;
@@ -1105,43 +1121,60 @@ function getLayersViewHtml (scriptUrl) {
       setStatus('No unlocked text or smart object layer in this file.');
       return;
     }
+    var doc = data.document || {};
+    var hasPreview = Boolean(data.previewUrl && doc.width && doc.height && layers.some(function (l) { return l.area; }));
+    var next = 0;
+    numbers = layers.map(function (l) { return hasPreview && l.area ? ++next : null; });
     listEl.innerHTML = layers.map(function (l, i) {
       var isText = l.type === 'text_layer';
-      return '<div class="row"><sp-checkbox id="layer-' + i + '" aria-label="' + escapeHtml(l.name) + '"></sp-checkbox>'
+      return '<div class="row" data-index="' + i + '"><sp-checkbox id="layer-' + i + '" aria-label="' + escapeHtml(l.name) + '"></sp-checkbox>'
+        + '<span class="num ' + (isText ? 'text' : 'image') + '">' + (numbers[i] || '') + '</span>'
         + '<span class="layer-name" title="' + escapeHtml(l.name) + '">' + escapeHtml(l.name) + '</span>'
         + '<sp-badge size="s" variant="' + (isText ? 'informative' : 'seafoam') + '">' + (isText ? 'Text' : 'Smart object') + '</sp-badge>'
-        + '<span class="subtle layer-text" title="' + escapeHtml(isText ? l.text : '') + '">' + (isText ? escapeHtml(l.text) : '') + '</span>'
         + '</div>';
     }).join('');
     document.getElementById('list').style.display = 'block';
-    renderPreview(data);
+    if (hasPreview) renderPreview(data.previewUrl, doc);
     setStatus(layers.length + ' editable layer(s).');
   }
 
-  // Zones of the layers with a known area over the preview, the largest first so that smaller ones stay clickable on top.
-  function renderPreview(data) {
-    var doc = data.document || {};
-    var withArea = layers.map(function (l, i) { return i; }).filter(function (i) { return layers[i].area; });
-    if (!data.previewUrl || !doc.width || !doc.height || !withArea.length) return;
-    docSize = { width: doc.width, height: doc.height };
+  // Numbered zones of the layers over the preview, the largest first so that smaller ones stay clickable on top.
+  function renderPreview(previewUrl, doc) {
+    var withArea = layers.map(function (l, i) { return i; }).filter(function (i) { return numbers[i]; });
     withArea.sort(function (a, b) { return layers[b].area.width * layers[b].area.height - layers[a].area.width * layers[a].area.height; });
     zonesEl.innerHTML = withArea.map(function (i) {
-      var l = layers[i];
-      var a = l.area;
-      var label = l.name + ' (' + (l.type === 'text_layer' ? 'text' : 'image') + ')';
-      return '<button type="button" class="zone" data-index="' + i + '" aria-pressed="false" title="' + escapeHtml(label) + '" style="'
-        + 'left:' + (a.left / docSize.width * 100) + '%;top:' + (a.top / docSize.height * 100) + '%;'
-        + 'width:' + (a.width / docSize.width * 100) + '%;height:' + (a.height / docSize.height * 100) + '%">'
-        + '<span class="zone-name">' + escapeHtml(label) + '</span></button>';
+      var a = layers[i].area;
+      var kind = layers[i].type === 'text_layer' ? 'text' : 'image';
+      return '<button type="button" class="zone ' + kind + '" data-index="' + i + '" aria-pressed="false" aria-label="' + numbers[i] + '. ' + escapeHtml(layers[i].name) + '"'
+        + ' title="' + escapeHtml(layers[i].name) + '" style="left:' + (a.left / doc.width * 100) + '%;top:' + (a.top / doc.height * 100) + '%;'
+        + 'width:' + (a.width / doc.width * 100) + '%;height:' + (a.height / doc.height * 100) + '%">'
+        + '<span class="num ' + kind + '">' + numbers[i] + '</span></button>';
     }).join('');
     var img = document.getElementById('preview-img');
     img.onload = function () { reportSize(); };
-    img.src = data.previewUrl;
+    img.src = previewUrl;
     document.getElementById('preview').hidden = false;
-    document.getElementById('intro').textContent = 'Click the zones of the template to pick the layers to use for the variants (or use the list).';
+    document.getElementById('intro').textContent = 'Click the numbered zones of the template, or the list, to pick the layers to use for the variants.';
+  }
+
+  // Hovering a row highlights its zone, and the other way around.
+  function setHover(index) {
+    [listEl, zonesEl].forEach(function (el) {
+      el.querySelectorAll('.hover').forEach(function (node) { node.classList.remove('hover'); });
+      if (index === null) return;
+      var node = el.querySelector('[data-index="' + index + '"]');
+      if (node) node.classList.add('hover');
+    });
   }
 
   listEl.addEventListener('change', updateSelection);
+  [listEl, zonesEl].forEach(function (el) {
+    el.addEventListener('mouseover', function (e) {
+      var node = e.target.closest('[data-index]');
+      setHover(node ? node.getAttribute('data-index') : null);
+    });
+    el.addEventListener('mouseleave', function () { setHover(null); });
+  });
   zonesEl.addEventListener('click', function (e) {
     var zone = e.target.closest('.zone');
     if (!zone) return;
