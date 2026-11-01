@@ -1,0 +1,12 @@
+// Spectrum 2 web components used by the MCP App views, bundled by ui/build.js into web-src/spectrum.<hash>.js
+import '@spectrum-web-components/theme/sp-theme.js'
+import '@spectrum-web-components/theme/spectrum-two/theme-light.js'
+import '@spectrum-web-components/theme/spectrum-two/theme-dark.js'
+import '@spectrum-web-components/theme/spectrum-two/scale-medium.js'
+import '@spectrum-web-components/help-text/sp-help-text.js'
+import '@spectrum-web-components/button/sp-button.js'
+import '@spectrum-web-components/checkbox/sp-checkbox.js'
+import '@spectrum-web-components/badge/sp-badge.js'
+import '@spectrum-web-components/dropzone/sp-dropzone.js'
+import '@spectrum-web-components/illustrated-message/sp-illustrated-message.js'
+import '@spectrum-web-components/progress-bar/sp-progress-bar.js'

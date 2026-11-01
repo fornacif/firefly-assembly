@@ -1,0 +1,33 @@
+{
+  "name": "assemble-mcp-server",
+  "version": "1.1.0",
+  "description": "MCP server on Adobe I/O Runtime",
+  "main": "actions/mcp-server/index.js",
+  "scripts": {
+    "build:ui": "node ui/build.js",
+    "deploy": "aio app deploy",
+    "undeploy": "aio app undeploy",
+    "dev": "aio app run"
+  },
+  "dependencies": {
+    "@adobe/aio-sdk": "^5.0.0",
+    "@modelcontextprotocol/sdk": "^1.24.0",
+    "zod": "^3.23.8"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "MIT",
+  "private": true,
+  "devDependencies": {
+    "@spectrum-web-components/badge": "^1.12.5",
+    "@spectrum-web-components/button": "^1.12.5",
+    "@spectrum-web-components/checkbox": "^1.12.5",
+    "@spectrum-web-components/dropzone": "^1.12.5",
+    "@spectrum-web-components/help-text": "^1.12.5",
+    "@spectrum-web-components/illustrated-message": "^1.12.5",
+    "@spectrum-web-components/progress-bar": "^1.12.5",
+    "@spectrum-web-components/theme": "^1.12.5",
+    "esbuild": "^0.25.12"
+  }
+}

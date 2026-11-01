@@ -1,0 +1,55 @@
+# MCP Server Template - Adobe I/O Runtime Application Configuration
+# 
+# This configuration file defines how your MCP server will be deployed to Adobe I/O Runtime.
+# You can customize the settings below to match your specific requirements.
+
+application:
+  actions: actions
+  # Static assets (Spectrum bundle used by the MCP App views), served by App Builder static hosting
+  web:
+    src: web-src
+    response-headers:
+      /*.js:
+        # The views load the bundle as a module script from sandboxed iframes, which requires CORS
+        Access-Control-Allow-Origin: '*'
+        # File names carry a content hash, so they can be cached for long
+        cache-control: public, max-age=31536000, immutable
+  hooks:
+    # Builds the bundle into web-src and publishes web-src as is, instead of the default Parcel build
+    build-static: ui/build-static.js
+  runtimeManifest:
+    packages:
+      # Package name - change this to match your project name
+      assemble-mcp-server:
+        license: MIT
+        actions:
+          # Main MCP server action
+          mcp-server:
+            function: actions/mcp-server/index.js
+            web: 'yes'
+            runtime: 'nodejs:20'
+            limits:
+              # Timeout in milliseconds (5 minutes for complex operations)
+              timeout: 300000
+              # Memory limit in MB (adjust based on your needs)
+              memory: 512
+            inputs:
+              # Set log level (debug, info, warn, error)
+              LOG_LEVEL: debug
+              # Authentication: Adobe IMS access token (Bearer), validated against IMS.
+              # Comma-separated IMS client IDs whose tokens are accepted.
+              # Leave empty to accept any valid IMS user token.
+              IMS_ALLOWED_CLIENT_IDS: $IMS_ALLOWED_CLIENT_IDS
+              # Firefly Services server-to-server credentials used to call the Photoshop API
+              FIREFLY_SERVICES_API_CLIENT_ID: $FIREFLY_SERVICES_API_CLIENT_ID
+              FIREFLY_SERVICES_API_CLIENT_SECRET: $FIREFLY_SERVICES_API_CLIENT_SECRET
+              FIREFLY_SERVICES_API_SCOPES: $FIREFLY_SERVICES_API_SCOPES
+            annotations:
+              # No Adobe authentication required for MCP servers
+              require-adobe-auth: false
+              # Final action (no further processing)
+              final: true
+              # Expose as web action
+              web-export: true
+              # Enable raw HTTP mode for MCP protocol
+              raw-http: true
