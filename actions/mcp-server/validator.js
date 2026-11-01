@@ -1,8 +1,7 @@
 /**
  * Request authentication for the MCP server action.
  * Requires an Adobe IMS access token in the Authorization Bearer header,
- * validated against IMS. If IMS_ALLOWED_CLIENT_IDS is set, the token must
- * also have been issued to one of those client IDs.
+ * validated against IMS.
  */
 
 const DEFAULT_IMS_HOST = 'https://ims-na1.adobelogin.com'
@@ -54,7 +53,7 @@ function getUnverifiedClientId (token) {
 
 /**
  * Validate request auth against Adobe IMS.
- * @param {Record<string, any>} params - action params (__ow_headers, IMS_HOST, IMS_ALLOWED_CLIENT_IDS)
+ * @param {Record<string, any>} params - action params (__ow_headers, IMS_HOST)
  * @param {{ info?: (...args: any[]) => void, warn?: (...args: any[]) => void }} logger
  * @returns {Promise<{ error?: string, token?: object }>} error set if invalid, token holds the validated IMS claims
  */
@@ -83,12 +82,6 @@ async function validateRequestAuth (params, logger = console) {
 
   if (!result.valid || result.token?.type !== 'access_token') {
     return { error: `Invalid token: ${result.reason || 'rejected by Adobe IMS'}.` }
-  }
-
-  // IMS does not check the client_id query parameter, so enforce the allowlist on the validated claims.
-  const allowed = String(params.IMS_ALLOWED_CLIENT_IDS || '').split(',').map(s => s.trim()).filter(Boolean)
-  if (allowed.length && !allowed.includes(result.token.client_id)) {
-    return { error: `Invalid token: client '${result.token.client_id}' is not allowed.` }
   }
 
   logger.info?.(`Authenticated IMS user ${result.token.user_id} via client ${result.token.client_id}`)

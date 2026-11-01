@@ -9,7 +9,7 @@ let logger = null
 
 function createMcpServer (params) {
     const server = new McpServer({
-        name: 'assemble-mcp-server',
+        name: 'firefly-assembly',
         version: '1.1.0'
     }, {
         capabilities: {
@@ -128,7 +128,7 @@ function getProtectedResourceMetadata (params) {
 async function main (params) {
     try {
         try {
-            logger = Core.Logger('assemble-mcp-server', { level: params.LOG_LEVEL || 'info' })
+            logger = Core.Logger('firefly-assembly', { level: params.LOG_LEVEL || 'info' })
         } catch (loggerError) {
             return {
                 statusCode: 500,
@@ -174,7 +174,7 @@ async function main (params) {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     status: 'healthy',
-                    server: 'assemble-mcp-server',
+                    server: 'firefly-assembly',
                     version: '1.1.0',
                     timestamp: new Date().toISOString()
                 })

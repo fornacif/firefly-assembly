@@ -620,7 +620,7 @@ ${AEM_SCRIPT}
   // Images added from the computer or AEM, in the order of addition:
   // { status: 'uploading' | 'importing' | 'done' | 'error', name, progress, url, error }.
   // A done image is assigned to slots by dragging it onto them, or by clicking it ("armed") then the slots.
-  var LIBRARY_DRAG_TYPE = 'application/x-assemble-library-index';
+  var LIBRARY_DRAG_TYPE = 'application/x-firefly-assembly-library-index';
   var aemBtn = document.getElementById('aem');
   var libraryItems = document.getElementById('library-items');
   var libraryHint = document.getElementById('library-hint');

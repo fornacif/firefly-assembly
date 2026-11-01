@@ -1,5 +1,5 @@
 {
-  "name": "assemble-mcp-server",
+  "name": "firefly-assembly",
   "version": "1.1.0",
   "description": "MCP server on Adobe I/O Runtime",
   "main": "actions/mcp-server/index.js",

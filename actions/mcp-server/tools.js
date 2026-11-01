@@ -893,7 +893,7 @@ function registerPrompts (server) {
         role: 'user',
         content: {
           type: 'text',
-          text: 'I want to create variants from a PSD template. Call the start-variant-creation tool of the Assemble connector now, ' +
+          text: 'I want to create variants from a PSD template. Call the start-variant-creation tool of the firefly-assembly connector now, ' +
             'then follow the workflow it returns, step by step.'
         }
       }]

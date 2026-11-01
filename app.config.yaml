@@ -1,7 +1,4 @@
-# MCP Server Template - Adobe I/O Runtime Application Configuration
-# 
-# This configuration file defines how your MCP server will be deployed to Adobe I/O Runtime.
-# You can customize the settings below to match your specific requirements.
+# Firefly Assembly MCP server - Adobe I/O Runtime application configuration
 
 application:
   actions: actions
@@ -19,46 +16,34 @@ application:
     build-static: ui/build-static.js
   runtimeManifest:
     packages:
-      # Package name - change this to match your project name
-      assemble-mcp-server:
+      firefly-assembly:
         license: MIT
         actions:
-          # Main MCP server action
+          # MCP server, served at /api/v1/web/firefly-assembly/mcp-server
           mcp-server:
             function: actions/mcp-server/index.js
             web: 'yes'
             runtime: 'nodejs:20'
             limits:
-              # Timeout in milliseconds (5 minutes for complex operations)
+              # 5 minutes, for long Photoshop API jobs
               timeout: 300000
-              # Memory limit in MB (adjust based on your needs)
               memory: 512
             inputs:
-              # Set log level (debug, info, warn, error)
+              # debug, info, warn or error
               LOG_LEVEL: debug
-              # Authentication: Adobe IMS access token (Bearer), validated against IMS.
-              # Comma-separated IMS client IDs whose tokens are accepted.
-              # Leave empty to accept any valid IMS user token.
-              IMS_ALLOWED_CLIENT_IDS: $IMS_ALLOWED_CLIENT_IDS
               # Firefly Services server-to-server credentials used to call the Photoshop API
               FIREFLY_SERVICES_API_CLIENT_ID: $FIREFLY_SERVICES_API_CLIENT_ID
               FIREFLY_SERVICES_API_CLIENT_SECRET: $FIREFLY_SERVICES_API_CLIENT_SECRET
               FIREFLY_SERVICES_API_SCOPES: $FIREFLY_SERVICES_API_SCOPES
               # Optional AEM Assets repositories browsed with the Asset Selector: one (e.g. author-p12345-e67890.adobeaemcloud.com),
               # several comma-separated, or '*' for any AEM as a Cloud Service repository the user can access.
-              # Leave empty to only allow local uploads. AEM_IMS_ORG: empty to let the user pick the organization.
+              # Leave empty to only allow local uploads.
               AEM_REPOSITORY_ID: $AEM_REPOSITORY_ID
-              AEM_IMS_ORG: $AEM_IMS_ORG
               # Tier browsed by the selector: delivery (default, approved assets) or author
               AEM_TIER: $AEM_TIER
-              # API key of the Asset Selector, defaults to the IMS client id of the user's token
-              AEM_API_KEY: $AEM_API_KEY
             annotations:
-              # No Adobe authentication required for MCP servers
+              # The action validates the Adobe IMS token itself (validator.js) and serves the OAuth metadata
               require-adobe-auth: false
-              # Final action (no further processing)
               final: true
-              # Expose as web action
-              web-export: true
-              # Enable raw HTTP mode for MCP protocol
+              # Raw request body, as the MCP transport expects
               raw-http: true
