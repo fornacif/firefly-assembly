@@ -2,7 +2,7 @@ const crypto = require('crypto')
 const { Readable } = require('stream')
 const { z } = require('zod')
 const filesLib = require('@adobe/aio-lib-files')
-const { getStartViewHtml, getUploadViewHtml, getVariantImagesViewHtml, getLayersViewHtml, getVariantViewHtml } = require('./views.js')
+const { getStartViewHtml, getUploadViewHtml, getVariantImagesViewHtml, getLayersViewHtml, getTextsViewHtml, getVariantViewHtml } = require('./views.js')
 const { getTokenFromRequest, getUnverifiedClientId } = require('./validator.js')
 const { createPickerSession, getPickerResult } = require('./aem-picker.js')
 const spectrumAsset = require('./spectrum-asset.js')
@@ -23,22 +23,23 @@ const VIEWS = {
   upload: { uri: 'ui://upload-file/app.html', name: 'Upload File App', description: 'File upload widget', html: getUploadViewHtml },
   variantImages: { uri: 'ui://variant-images/app.html', name: 'Variant Images App', description: 'Image grid per variant and smart object layer', html: getVariantImagesViewHtml },
   layers: { uri: 'ui://psd-layers/app.html', name: 'PSD Layers App', description: 'Editable layers picker', html: getLayersViewHtml },
+  texts: { uri: 'ui://variant-texts/app.html', name: 'Variant Texts App', description: 'Editable table of the texts per variant', html: getTextsViewHtml },
   variant: { uri: 'ui://psd-variant/app.html', name: 'PSD Variant App', description: 'Variant preview and download', html: getVariantViewHtml }
 }
 
 const WORKFLOW = `Variant creation workflow. When the user asks to create variants (or versions, adaptations, localizations...) of a banner, ad, visual, social post or any PSD template, ALWAYS follow these steps in order, one at a time, without skipping any:
 1. Start: call start-variant-creation (pass variantCount if the user already gave it). The user sets the number of variants and uploads the PSD template (from their computer or AEM Assets) in the widget, then says to continue. Do not ask for the file in chat and do not look for it elsewhere.
 2. Layer selection: immediately call get-psd-manifest with the template URL. The user picks the layers to vary in the widget. Then wait.
-3. Texts: right after the layer selection, if text layers were selected, show their current text in a Markdown table (one column per text layer, named after the layer) and ask the user which texts to use for each variant: either they provide the texts, or you write them (then ask for the brief: subject, tone, language, length constraints). Show the texts of the variants in the same table, a first "Current" row with the texts of the template then one row per variant, its label in the first column, and let the user adjust them before going on. Give each variant a short label (e.g. its title). Then wait.
+3. Texts: right after the layer selection, if text layers were selected, ask the user which texts to use for each variant: either they provide the texts, or you write them (then ask for the brief: subject, tone, language, length constraints). Give each variant a short label (e.g. its title). Then call review-variant-texts ONCE with the selected text layers (id, name) and the texts of every variant: the user reviews and edits them in a table widget, then confirms. Do not write the texts as a table in chat. Then wait, and use the confirmed texts exactly.
 4. Images: if smart object layers were selected, call upload-variant-images ONCE with the variant labels and the selected smart object layers (id, name and frame width and height from get-psd-manifest), so the user drops (or picks from AEM Assets) one image per variant and layer in a grid and adjusts how each one is cropped to its frame. Never ask for an image URL. Then wait.
 5. Generation: recap the variants in a Markdown table (one row per variant: label, the text of each text layer, the image file name of each smart object layer), then call create-variant ONCE with all variants, passing for each image the crop chosen in the grid. The widget shows the generated files with download buttons.
 Changes after generation: to re-crop or swap images, call upload-variant-images again with images pre-filled from the previous confirmation (never ask to upload again the images you already have, unless their URLs expired); to change texts, call create-variant again with the new texts.
 Never show presigned URLs to the user; they are internal. Reply in the user's language.`
 
-const NEXT_STEPS_AFTER_SELECTION = 'Wait for the user to pick layers in the widget. Then: (1) if text layers were selected, show their ' +
-  'current text in a Markdown table (one column per text layer) and ask which texts to use for each variant: the user provides them, or you ' +
-  'write them (ask for the brief: subject, tone, language, length); show them in the same table (a "Current" row, then one row per variant ' +
-  'with its label first) and let the user adjust them; give each variant a short label; (2) if smart object layers were selected, call upload-variant-images ONCE with all variant labels and ' +
+const NEXT_STEPS_AFTER_SELECTION = 'Wait for the user to pick layers in the widget. Then: (1) if text layers were selected, ask which ' +
+  'texts to use for each variant: the user provides them, or you write them (ask for the brief: subject, tone, language, length); give each ' +
+  'variant a short label; then call review-variant-texts ONCE with the text layers (id, name) and the texts of every variant, ' +
+  'so the user reviews and edits them in a table widget (do not write them as a table in chat), and use the confirmed texts exactly; (2) if smart object layers were selected, call upload-variant-images ONCE with all variant labels and ' +
   'the selected smart object layers (id, name, and frame width and height): it shows a single grid, one image per variant and layer, ' +
   'where the user adjusts each crop. Never call upload-file per image and never ask for image URLs; (3) recap the variants in a Markdown ' +
   'table (label, texts, image file names), then call create-variant ONCE ' +
@@ -546,6 +547,36 @@ function registerTools (server, params) {
         return errorResult(error)
       }
     }
+  )
+
+  server.registerTool(
+    'review-variant-texts',
+    {
+      title: 'Review Variant Texts',
+      description: 'Step 3 of the variant workflow. Shows the texts of the selected text layers for each variant in an editable table, ' +
+        'so the user reviews and edits them. Call it ONCE with all variants, once their texts ' +
+        'are known (given by the user or written by you); do not write the texts as a table in chat. When the user confirms, the final ' +
+        'texts are added to your context and the user says to continue: use them exactly in create-variant. To let the user edit texts ' +
+        'again, call it again with the latest texts.',
+      inputSchema: {
+        layers: z.array(z.object({
+          id: z.number().int().describe('Layer id from get-psd-manifest'),
+          name: z.string().describe('Layer name')
+        })).min(1).describe('Selected text layers, in the order of get-psd-manifest'),
+        variants: z.array(z.object({
+          label: z.string().min(1).describe('Short label of the variant'),
+          texts: z.array(z.object({
+            layerId: z.number().int().describe('Layer id'),
+            text: z.string().describe('Text of the layer for this variant')
+          })).describe('One text per text layer')
+        })).min(1).max(MAX_VARIANTS).describe('Variants, in order'),
+        title: z.string().optional().describe('Heading shown in the widget')
+      },
+      _meta: uiMeta(VIEWS.texts)
+    },
+    async ({ layers, variants }) => ({
+      content: [{ type: 'text', text: `Texts table displayed (${variants.length} variant(s) x ${layers.length} text layer(s)). Wait for the user to confirm.` }]
+    })
   )
 
   server.registerTool(

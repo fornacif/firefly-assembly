@@ -1203,10 +1203,10 @@ function getLayersViewHtml (scriptUrl) {
     var images = chosen.filter(function (l) { return l.type === 'smart_object_layer'; });
     var context = 'Layers selected by the user for the variants: ' + JSON.stringify(chosen.map(function (l) {
       return { id: l.id, name: l.name, type: l.type };
-    })) + '. Next: if text layers were selected, show their current text in a Markdown table (one column per text layer) and ask which texts '
-      + 'to use for each variant: the user provides them, or you write them (ask for the brief: subject, tone, language, length); show them '
-      + 'in the same table (a "Current" row, then one row per variant with its label first) and let the user adjust them; '
-      + 'give each variant a short label'
+    })) + '. Next: if text layers were selected, ask which texts to use for each variant: the user provides them, or you write them '
+      + '(ask for the brief: subject, tone, language, length); give each variant a short label; then call review-variant-texts ONCE with '
+      + 'the text layers (id, name) and the texts of every variant, so the user reviews and edits them in a table widget '
+      + '(do not write them as a table in chat)'
       + (images.length
         ? '; then call upload-variant-images ONCE with all variant labels and layers ' + JSON.stringify(images.map(function (l) { return { id: l.id, name: l.name, width: l.frame && l.frame.width, height: l.frame && l.frame.height }; }))
           + ' (one grid for all variants; never call upload-file per image)'
@@ -1222,6 +1222,130 @@ function getLayersViewHtml (scriptUrl) {
             text: 'I picked these layers: ' + chosen.map(function (l) { return l.name; }).join(', ') + '. '
               + (chosen.length > images.length ? "Let's fill in the texts of each variant." : 'Continue.')
           }]
+        });
+      })
+      .catch(function (error) {
+        confirmBtn.disabled = false;
+        setStatus((error && error.message) || String(error), true);
+      });
+  });
+`)
+}
+
+function getTextsViewHtml (scriptUrl) {
+  return page(scriptUrl, 'Variant Texts', `
+  .subtle.intro { margin: var(--spectrum-spacing-75) 0 var(--spectrum-spacing-200); }
+  .table-wrap { overflow-x: auto; }
+  sp-table { min-width: min-content; }
+  /* Variant names in a narrow first column, one column of at least 180px per text layer */
+  sp-table-head-cell, sp-table-cell { min-width: 180px; }
+  sp-table-head-cell:first-child, sp-table-cell:first-child { flex: 0 0 130px; min-width: 130px; font-weight: var(--spectrum-bold-font-weight); }
+  sp-table-cell { overflow-wrap: anywhere; }
+  /* Editable texts: a light filled box, outlined on hover and in the accent color on focus, growing with its text */
+  .text-input {
+    display: block;
+    width: 100%;
+    min-height: 32px;
+    padding: var(--spectrum-spacing-75) var(--spectrum-spacing-100);
+    font: inherit;
+    line-height: 1.4;
+    color: var(--spectrum-neutral-content-color-default);
+    background: var(--spectrum-gray-100);
+    border: 1px solid transparent;
+    border-radius: var(--spectrum-corner-radius-100);
+    resize: none;
+    overflow: hidden;
+    cursor: text;
+  }
+  .text-input:hover { border-color: var(--spectrum-gray-400); }
+  .text-input:focus { outline: none; border-color: var(--spectrum-accent-background-color-default); background: var(--spectrum-background-base-color); }
+  .actions { margin-top: var(--spectrum-spacing-300); display: flex; align-items: center; gap: var(--spectrum-spacing-300); }
+  .actions .status { margin-top: 0; }
+`, `
+<h2 class="heading" id="title">Texts per variant</h2>
+<div class="subtle intro">Click a text to edit it, then confirm.</div>
+<div class="table-wrap"><sp-table size="s" density="compact" id="table"></sp-table></div>
+<div class="actions">
+  <sp-button variant="accent" id="confirm" disabled>Use these texts</sp-button>
+  <sp-help-text class="status" id="status"></sp-help-text>
+</div>
+`, `
+  var table = document.getElementById('table');
+  var confirmBtn = document.getElementById('confirm');
+  var layers = [];
+  var variants = [];
+
+  function textOf(variant, layer) {
+    var entry = (variant.texts || []).find(function (t) { return t.layerId === layer.id; });
+    return entry ? entry.text : '';
+  }
+
+  // Fits the height of an editable text to its content.
+  function fit(input) {
+    input.style.height = 'auto';
+    input.style.height = input.scrollHeight + 2 + 'px';
+  }
+
+  // One column per text layer, one row per variant with an editable text per layer.
+  function render() {
+    table.innerHTML = '<sp-table-head><sp-table-head-cell>Variant</sp-table-head-cell>'
+      + layers.map(function (l) { return '<sp-table-head-cell>' + escapeHtml(l.name) + '</sp-table-head-cell>'; }).join('')
+      + '</sp-table-head><sp-table-body>'
+      + variants.map(function (v, r) {
+        return '<sp-table-row><sp-table-cell>' + escapeHtml(v.label) + '</sp-table-cell>'
+          + layers.map(function (l, c) {
+            return '<sp-table-cell><textarea class="text-input" rows="1" data-row="' + r + '" data-col="' + c + '"'
+              + ' aria-label="' + escapeHtml(v.label + ', ' + l.name) + '">' + escapeHtml(textOf(v, l)) + '</textarea></sp-table-cell>';
+          }).join('') + '</sp-table-row>';
+      }).join('')
+      + '</sp-table-body>';
+    fitAll();
+    confirmBtn.disabled = !variants.length;
+  }
+
+  // Heights depend on the column widths, known once the table is laid out: fit again then, and whenever the width changes.
+  function fitAll() {
+    requestAnimationFrame(function () {
+      table.querySelectorAll('.text-input').forEach(fit);
+      reportSize();
+    });
+  }
+  if (window.ResizeObserver) new ResizeObserver(fitAll).observe(table);
+
+  table.addEventListener('input', function (e) {
+    if (!e.target.classList.contains('text-input')) return;
+    fit(e.target);
+    reportSize();
+  });
+
+  onToolInput(function (args) {
+    layers = args.layers || [];
+    variants = (args.variants || []).map(function (v) { return { label: String(v.label), texts: v.texts || [] }; });
+    if (args.title) document.getElementById('title').textContent = args.title;
+    render();
+  });
+
+  confirmBtn.addEventListener('click', function () {
+    confirmBtn.disabled = true;
+    var confirmed = variants.map(function (v, r) {
+      return {
+        label: v.label,
+        texts: layers.map(function (l, c) {
+          var field = table.querySelector('.text-input[data-row="' + r + '"][data-col="' + c + '"]');
+          return { layerId: l.id, layerName: l.name, text: field ? field.value : textOf(v, l) };
+        })
+      };
+    });
+    var context = 'Texts confirmed by the user for each variant. Use them exactly, as text_layer edits '
+      + '{ id: layerId, type: "text_layer", text } in create-variant:\\n' + JSON.stringify({ variants: confirmed })
+      + '\\nNext: if smart object layers were selected, call upload-variant-images ONCE with the variant labels; '
+      + 'otherwise recap the variants and call create-variant ONCE with all variants.';
+    request('ui/update-model-context', { content: [{ type: 'text', text: context }] })
+      .then(function () {
+        setStatus('Texts sent.');
+        return request('ui/message', {
+          role: 'user',
+          content: [{ type: 'text', text: 'I confirmed the texts of the ' + confirmed.length + ' variant(s), continue.' }]
         });
       })
       .catch(function (error) {
@@ -1373,4 +1497,4 @@ function getVariantViewHtml (scriptUrl) {
 `)
 }
 
-module.exports = { getStartViewHtml, getUploadViewHtml, getVariantImagesViewHtml, getLayersViewHtml, getVariantViewHtml }
+module.exports = { getStartViewHtml, getUploadViewHtml, getVariantImagesViewHtml, getLayersViewHtml, getTextsViewHtml, getVariantViewHtml }
