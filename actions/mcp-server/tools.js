@@ -124,6 +124,16 @@ function isUnlocked (layer) {
   return (layer.protection || []).every(flag => flag === 'none')
 }
 
+// Area of a layer in the document, as { left, top, width, height }: from its bounds ({ left, top, right, bottom } or
+// { left, top, width, height }), or the frame of a smart object; null when unknown or empty.
+function layerArea (layer) {
+  const b = layer.bounds || layer.referenceFrame
+  if (!b || b.left == null || b.top == null) return null
+  const width = b.width ?? b.right - b.left
+  const height = b.height ?? b.bottom - b.top
+  return width > 0 && height > 0 ? { left: b.left, top: b.top, width, height } : null
+}
+
 // Text and smart object layers that are not locked, including those nested in groups and artboards.
 function getEditableLayers (layers = []) {
   return layers.flatMap(layer => {
@@ -132,8 +142,20 @@ function getEditableLayers (layers = []) {
     const editable = { id: layer.id, name: layer.name, type: layer.type }
     if (layer.type === 'text_layer') editable.text = layer.text?.content ?? ''
     if (layer.type === 'smart_object_layer' && layer.referenceFrame) editable.frame = boundsSize(layer.referenceFrame)
+    const area = layerArea(layer)
+    if (area) editable.area = area
     return [editable, ...nested]
   })
+}
+
+// Flattened JPEG of a PSD, on which the layer picker of the views shows the editable layers.
+async function renderPreview (params, url) {
+  const { uploadUrl, readUrl } = await createStorageUrls('previews', 'preview.jpg')
+  await runPhotoshopJob(params, '/create-composite', {
+    image: { source: { url } },
+    outputs: [{ destination: { url: uploadUrl }, mediaType: 'image/jpeg', quality: 'high' }]
+  })
+  return readUrl
 }
 
 function newStoragePath (folder, fileName) {
@@ -451,7 +473,11 @@ function registerTools (server, params) {
     },
     async ({ url }) => {
       try {
-        const manifest = await generateManifest(params, url)
+        const [manifest, previewUrl] = await Promise.all([
+          generateManifest(params, url),
+          // The preview is best effort: without it, the view shows the list of layers only
+          renderPreview(params, url).catch(() => null)
+        ])
         const data = {
           document: {
             // Strip the upload timestamp prefix and the job id suffix added by the storage and the Photoshop API
@@ -461,13 +487,15 @@ function registerTools (server, params) {
           },
           layers: getEditableLayers(manifest.layers)
         }
+        // The preview URL and the layer areas are for the view only
+        const forModel = { document: data.document, layers: data.layers.map(({ area, ...layer }) => layer) }
         return {
           content: [{
             type: 'text',
-            text: `Editable layers (unlocked text and smart object layers), shown to the user for selection:\n${JSON.stringify(data, null, 2)}\n\n` +
+            text: `Editable layers (unlocked text and smart object layers), shown to the user for selection:\n${JSON.stringify(forModel, null, 2)}\n\n` +
               NEXT_STEPS_AFTER_SELECTION
           }],
-          structuredContent: data
+          structuredContent: { ...data, previewUrl }
         }
       } catch (error) {
         return errorResult(error)

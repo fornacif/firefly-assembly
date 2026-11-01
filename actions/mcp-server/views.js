@@ -346,11 +346,24 @@ function getStartViewHtml (scriptUrl) {
     border-radius: var(--spectrum-corner-radius-100);
   }
   .field input:focus { outline: none; border-color: var(--spectrum-gray-800); }
-  sp-dropzone { width: 100%; }
-  sp-illustrated-message { padding: var(--spectrum-spacing-300) 0; margin-inline: auto; }
-  .browse { display: flex; justify-content: center; gap: var(--spectrum-spacing-200); padding-bottom: var(--spectrum-spacing-300); }
+  /* Compact drop zone: one row with the message on the left and the buttons on the right, wrapping when narrow */
+  sp-dropzone {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--spectrum-spacing-200);
+    width: 100%;
+    padding: var(--spectrum-spacing-200) var(--spectrum-spacing-300);
+    --mod-drop-zone-padding: var(--spectrum-spacing-200);
+    border-radius: var(--spectrum-corner-radius-200);
+  }
+  .message { flex: 1 1 220px; min-width: 0; text-align: left; }
+  #message-heading { font-weight: var(--spectrum-bold-font-weight); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .browse { display: flex; flex-wrap: wrap; gap: var(--spectrum-spacing-200); }
+  /* sp-dropzone gives its content a larger font and a 1.5 line height, which sp-button inherits and which pushes its label down */
+  sp-dropzone sp-button { font-size: var(--spectrum-font-size-100); line-height: var(--spectrum-line-height-100); }
   #file { display: none; }
-  sp-progress-bar { width: 100%; margin-top: var(--spectrum-spacing-200); display: none; }
+  sp-progress-bar { width: 100%; margin-top: var(--spectrum-spacing-200); }
   .actions { margin-top: var(--spectrum-spacing-300); display: flex; align-items: center; gap: var(--spectrum-spacing-300); }
   .actions .status { margin-top: 0; }
 `, `
@@ -361,14 +374,14 @@ function getStartViewHtml (scriptUrl) {
   <input type="number" id="count" min="1" max="${MAX_VARIANTS_UI}" value="2">
 </div>
 <sp-dropzone id="drop">
-  <sp-illustrated-message id="message" heading="Drop your PSD template" description="Layered .psd file"></sp-illustrated-message>
+  <div class="message"><div id="message-heading">Drop your PSD template</div><div class="subtle" id="message-description">Layered .psd file</div></div>
   <div class="browse">
     <sp-button variant="accent" treatment="outline" id="browse">Browse</sp-button>
     <sp-button variant="secondary" treatment="outline" id="aem" hidden>${ADOBE_ICON}Choose from AEM</sp-button>
     <input type="file" id="file" accept=".psd,image/vnd.adobe.photoshop">
   </div>
 </sp-dropzone>
-<sp-progress-bar id="progress" label="Upload" progress="0"></sp-progress-bar>
+<sp-progress-bar id="progress" label="Upload" progress="0" side-label hidden></sp-progress-bar>
 <div class="actions">
   <sp-button variant="accent" id="continue" disabled>Continue</sp-button>
   <sp-help-text class="status" id="status"></sp-help-text>
@@ -380,7 +393,8 @@ ${AEM_SCRIPT}
   var input = document.getElementById('file');
   var drop = document.getElementById('drop');
   var progress = document.getElementById('progress');
-  var message = document.getElementById('message');
+  var messageHeading = document.getElementById('message-heading');
+  var messageDescription = document.getElementById('message-description');
   var continueBtn = document.getElementById('continue');
   var aemBtn = document.getElementById('aem');
   var template = null;
@@ -397,34 +411,44 @@ ${AEM_SCRIPT}
     updateButton();
   });
 
-  function startTransfer(name, status, indeterminate) {
+  // The drop zone shows the file being transferred, the progress bar a short label and the percentage on one line.
+  function startTransfer(name, label, indeterminate) {
     template = null;
     updateButton();
-    progress.style.display = 'block';
+    messageHeading.textContent = name;
+    messageHeading.title = name;
+    messageDescription.textContent = label + '...';
+    progress.hidden = false;
     progress.indeterminate = indeterminate;
     progress.progress = 0;
-    progress.label = name;
-    setStatus(status);
+    progress.label = label;
+    setStatus('');
   }
 
   function setTemplate(file) {
     template = file;
+    // The bar stays at 100% with a short label: the drop zone already shows the file name
     progress.indeterminate = false;
     progress.progress = 100;
-    message.setAttribute('heading', file.name);
-    message.setAttribute('description', 'Uploaded — drop another file to replace it');
+    progress.label = progress.label === 'Uploading' ? 'Uploaded' : 'Imported';
+    messageHeading.textContent = file.name;
+    messageHeading.title = file.name;
+    messageDescription.textContent = 'Uploaded — drop or choose another file to replace it';
     setStatus('');
     updateButton();
   }
 
   function fail(error) {
-    progress.indeterminate = false;
+    progress.hidden = true;
+    messageHeading.textContent = 'Drop your PSD template';
+    messageHeading.title = '';
+    messageDescription.textContent = 'Layered .psd file';
     setStatus((error && error.message) || String(error), true);
   }
 
   function upload(file) {
     if (!file) return;
-    startTransfer(file.name, 'Uploading...', false);
+    startTransfer(file.name, 'Uploading', false);
     uploadOne(file, function (bytes) { progress.progress = Math.round(bytes / (file.size || 1) * 100); })
       .then(setTemplate)
       .catch(fail);
@@ -437,7 +461,7 @@ ${AEM_SCRIPT}
         var asset = assets[0];
         if (!asset) return;
         if (!/\.psd$/i.test(asset['repo:name'])) throw new Error(asset['repo:name'] + ' is not a PSD file.');
-        startTransfer(asset['repo:name'], 'Importing from AEM...', true);
+        startTransfer(asset['repo:name'], 'Importing from AEM', true);
         return importAemAsset(asset).then(setTemplate);
       })
       .catch(fail);
@@ -1006,9 +1030,43 @@ function getLayersViewHtml (scriptUrl) {
   .row sp-badge { justify-self: start; }
   .layer-text { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .actions { margin-top: var(--spectrum-spacing-300); }
+  /* Preview of the template with one clickable zone per editable layer, positioned in % of the document */
+  .preview { position: relative; display: inline-block; max-width: 100%; margin-bottom: var(--spectrum-spacing-300); line-height: 0; }
+  .preview img { display: block; max-width: 100%; max-height: 460px; border-radius: var(--spectrum-corner-radius-100); }
+  .zone {
+    position: absolute;
+    padding: 0;
+    background: transparent;
+    border: 2px dashed rgba(255, 255, 255, 0.9);
+    outline: 1px solid rgba(0, 0, 0, 0.45);
+    border-radius: 2px;
+    cursor: pointer;
+  }
+  .zone:hover, .zone:focus-visible { background: rgba(255, 255, 255, 0.18); }
+  .zone.selected { border: 2px solid var(--spectrum-accent-background-color-default); background: rgba(20, 115, 230, 0.22); }
+  .zone-name {
+    position: absolute;
+    left: -2px;
+    bottom: 100%;
+    max-width: 200px;
+    padding: 1px 6px;
+    font-size: var(--spectrum-font-size-50);
+    line-height: 1.4;
+    color: #ffffff;
+    background: rgba(0, 0, 0, 0.7);
+    border-radius: 2px 2px 0 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    pointer-events: none;
+    display: none;
+  }
+  .zone:hover .zone-name, .zone:focus-visible .zone-name, .zone.selected .zone-name { display: block; }
+  .zone.selected .zone-name { background: var(--spectrum-accent-background-color-default); }
 `, `
 <h2 class="heading" id="title">Editable layers</h2>
-<div class="subtle intro">Pick the layers to use for the variants.</div>
+<div class="subtle intro" id="intro">Pick the layers to use for the variants.</div>
+<div class="preview" id="preview" hidden><img id="preview-img" alt="Template preview"><div id="zones"></div></div>
 <div class="list" id="list">
   <div class="row head"><sp-checkbox id="select-all">Select all</sp-checkbox></div>
   <div id="layers"></div>
@@ -1017,7 +1075,9 @@ function getLayersViewHtml (scriptUrl) {
 <sp-help-text class="status" id="status">Loading the manifest...</sp-help-text>
 `, `
   var layers = [];
+  var docSize = null;
   var listEl = document.getElementById('layers');
+  var zonesEl = document.getElementById('zones');
   var confirmBtn = document.getElementById('confirm');
   var selectAll = document.getElementById('select-all');
 
@@ -1025,9 +1085,14 @@ function getLayersViewHtml (scriptUrl) {
     return layers.filter(function (l, i) { return document.getElementById('layer-' + i).checked; });
   }
 
-  // Keeps the "Select all" box and the button in sync with the layer boxes.
+  // Keeps the "Select all" box, the preview zones and the button in sync with the layer boxes.
   function updateSelection() {
     var count = selected().length;
+    zonesEl.querySelectorAll('.zone').forEach(function (zone) {
+      var checked = document.getElementById('layer-' + zone.getAttribute('data-index')).checked;
+      zone.classList.toggle('selected', checked);
+      zone.setAttribute('aria-pressed', String(checked));
+    });
     selectAll.checked = count === layers.length;
     selectAll.indeterminate = count > 0 && count < layers.length;
     confirmBtn.disabled = !count;
@@ -1049,10 +1114,41 @@ function getLayersViewHtml (scriptUrl) {
         + '</div>';
     }).join('');
     document.getElementById('list').style.display = 'block';
+    renderPreview(data);
     setStatus(layers.length + ' editable layer(s).');
   }
 
+  // Zones of the layers with a known area over the preview, the largest first so that smaller ones stay clickable on top.
+  function renderPreview(data) {
+    var doc = data.document || {};
+    var withArea = layers.map(function (l, i) { return i; }).filter(function (i) { return layers[i].area; });
+    if (!data.previewUrl || !doc.width || !doc.height || !withArea.length) return;
+    docSize = { width: doc.width, height: doc.height };
+    withArea.sort(function (a, b) { return layers[b].area.width * layers[b].area.height - layers[a].area.width * layers[a].area.height; });
+    zonesEl.innerHTML = withArea.map(function (i) {
+      var l = layers[i];
+      var a = l.area;
+      var label = l.name + ' (' + (l.type === 'text_layer' ? 'text' : 'image') + ')';
+      return '<button type="button" class="zone" data-index="' + i + '" aria-pressed="false" title="' + escapeHtml(label) + '" style="'
+        + 'left:' + (a.left / docSize.width * 100) + '%;top:' + (a.top / docSize.height * 100) + '%;'
+        + 'width:' + (a.width / docSize.width * 100) + '%;height:' + (a.height / docSize.height * 100) + '%">'
+        + '<span class="zone-name">' + escapeHtml(label) + '</span></button>';
+    }).join('');
+    var img = document.getElementById('preview-img');
+    img.onload = function () { reportSize(); };
+    img.src = data.previewUrl;
+    document.getElementById('preview').hidden = false;
+    document.getElementById('intro').textContent = 'Click the zones of the template to pick the layers to use for the variants (or use the list).';
+  }
+
   listEl.addEventListener('change', updateSelection);
+  zonesEl.addEventListener('click', function (e) {
+    var zone = e.target.closest('.zone');
+    if (!zone) return;
+    var box = document.getElementById('layer-' + zone.getAttribute('data-index'));
+    box.checked = !box.checked;
+    updateSelection();
+  });
   selectAll.addEventListener('change', function () {
     var checked = selectAll.checked;
     layers.forEach(function (l, i) { document.getElementById('layer-' + i).checked = checked; });
