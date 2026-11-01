@@ -17,7 +17,9 @@ const STORAGE_ORIGIN = 'https://firefly.azureedge.net'
 const EDITABLE_LAYER_TYPES = ['text_layer', 'smart_object_layer']
 const MAX_VARIANTS = 10
 const WIDGET_RESULT_TTL_SECONDS = 24 * 3600
-const WIDGET_RESULT_REF = /^r[0-9a-f]{16}$/
+// Short reference shown at the end of the user's message: "r" and 6 base-36 characters (2 billion values per user)
+const WIDGET_RESULT_REF = /^r[0-9a-z]{6}$/
+const REF_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyz'
 const AEM_PICKER_PAGE = 'aem-picker.html'
 
 const RESOURCE_MIME_TYPE = 'text/html;profile=mcp-app'
@@ -37,7 +39,7 @@ const WORKFLOW = `Variant creation workflow. When the user asks to create varian
 4. Images: if smart object layers were selected, call upload-variant-images ONCE with the variant labels and the selected smart object layers (id, name and frame width and height from get-psd-manifest), so the user drops (or picks from AEM Assets) one image per variant and layer in a grid and adjusts how each one is cropped to its frame. Never ask for an image URL. Then wait.
 5. Generation: recap the variants in a Markdown table (one row per variant: label, the text of each text layer, the image file name of each smart object layer), then call create-variant ONCE with all variants, passing for each image the crop chosen in the grid. The widget shows the generated files with download buttons.
 Changes after generation: to re-crop or swap images, call upload-variant-images again with images pre-filled from the previous confirmation (never ask to upload again the images you already have, unless their URLs expired); to change texts, call create-variant again with the new texts.
-Widgets send their result (template URL, layers, texts, images) in your context and end the user's message with "(ref r...)": if you do not have that result in your context, call get-widget-result with this ref before going on; never ask the user to redo a step because a result seems missing.
+Widgets send their result (template URL, layers, texts, images) in your context and end the user's message with a reference like "· r7k2p9": if you do not have that result in your context, call get-widget-result with this ref before going on; never ask the user to redo a step because a result seems missing.
 Never show presigned URLs to the user; they are internal. Reply in the user's language.`
 
 const NEXT_STEPS_AFTER_SELECTION = 'Wait for the user to pick layers in the widget. Then: (1) if text layers were selected, get the ' +
@@ -453,21 +455,30 @@ function findSharedImages (variants) {
     .map(([key, names]) => ({ layerId: Number(key.split('|')[0]), variants: names }))
 }
 
-// Results of the widgets, stored for 24 hours under a random reference and readable only by the user who created them.
-const widgetResultKey = ref => `widget-result-${ref}`
+// Results of the widgets, stored for 24 hours under a short random reference and readable only by the user who created
+// them. The key includes a hash of the user id: short references of different users never overwrite each other.
+function widgetResultKey (userId, ref) {
+  return `widget-result-${crypto.createHash('sha256').update(String(userId)).digest('hex').slice(0, 16)}-${ref}`
+}
+
+function currentUserId (params) {
+  return getUnverifiedClaims(getTokenFromRequest(params)).user_id
+}
 
 async function saveWidgetResult (params, text) {
-  const ref = `r${crypto.randomBytes(8).toString('hex')}`
+  const ref = 'r' + Array.from({ length: 6 }, () => REF_ALPHABET[crypto.randomInt(REF_ALPHABET.length)]).join('')
+  const userId = currentUserId(params)
   const state = await stateLib.init()
-  await state.put(widgetResultKey(ref), { userId: getUnverifiedClaims(getTokenFromRequest(params)).user_id, text }, { ttl: WIDGET_RESULT_TTL_SECONDS })
+  await state.put(widgetResultKey(userId, ref), { userId, text }, { ttl: WIDGET_RESULT_TTL_SECONDS })
   return ref
 }
 
 async function readWidgetResult (params, ref) {
   if (!WIDGET_RESULT_REF.test(ref)) return null
+  const userId = currentUserId(params)
   const state = await stateLib.init()
-  const stored = (await state.get(widgetResultKey(ref)))?.value
-  return stored && stored.userId === getUnverifiedClaims(getTokenFromRequest(params)).user_id ? stored.text : null
+  const stored = (await state.get(widgetResultKey(userId, ref)))?.value
+  return stored && stored.userId === userId ? stored.text : null
 }
 
 // Tool result with structured content, also given as JSON text for clients without structured content.
@@ -619,12 +630,12 @@ function registerTools (server, params) {
     {
       title: 'Get Widget Result',
       description: 'Returns what the user confirmed in a widget of the variant workflow (template URL, selected layers, texts, images), ' +
-        'from the reference "(ref r...)" at the end of their message. Call it when that result is not in your context.',
-      inputSchema: { ref: z.string().describe('Reference from the user message, e.g. r0123456789abcdef') }
+        'from the reference at the end of their message (e.g. "· r7k2p9"). Call it when that result is not in your context.',
+      inputSchema: { ref: z.string().describe('Reference from the user message, e.g. r7k2p9') }
     },
     async ({ ref }) => {
       try {
-        const text = await readWidgetResult(params, ref.trim())
+        const text = await readWidgetResult(params, ref.trim().replace(/^·\s*/, '').toLowerCase())
         if (!text) return errorResult(new Error(`No widget result for ${ref}: it expired (24 hours) or belongs to another user.`))
         return { content: [{ type: 'text', text }] }
       } catch (error) {

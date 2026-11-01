@@ -132,7 +132,7 @@ const BRIDGE_SCRIPT = `
         return request('ui/update-model-context', { content: [{ type: 'text', text: context }] })
           .then(function () {
             if (sentStatus) setStatus(sentStatus);
-            return request('ui/message', { role: 'user', content: [{ type: 'text', text: message + (ref ? ' (ref ' + ref + ')' : '') }] });
+            return request('ui/message', { role: 'user', content: [{ type: 'text', text: message + (ref ? ' · ' + ref : '') }] });
           });
       });
   }
