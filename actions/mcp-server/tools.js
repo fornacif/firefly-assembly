@@ -30,16 +30,15 @@ const VIEWS = {
 const WORKFLOW = `Variant creation workflow. When the user asks to create variants (or versions, adaptations, localizations...) of a banner, ad, visual, social post or any PSD template, ALWAYS follow these steps in order, one at a time, without skipping any:
 1. Start: call start-variant-creation (pass variantCount if the user already gave it). The user sets the number of variants and uploads the PSD template (from their computer or AEM Assets) in the widget, then says to continue. Do not ask for the file in chat and do not look for it elsewhere.
 2. Layer selection: immediately call get-psd-manifest with the template URL. The user picks the layers to vary in the widget. Then wait.
-3. Texts: right after the layer selection, if text layers were selected, ask the user which texts to use for each variant: either they provide the texts, or you write them (then ask for the brief: subject, tone, language, length constraints). Give each variant a short label (e.g. its title). Then call review-variant-texts ONCE with the selected text layers (id, name) and the texts of every variant: the user reviews and edits them in a table widget, then confirms. Do not write the texts as a table in chat. Then wait, and use the confirmed texts exactly.
+3. Texts: right after the layer selection, if text layers were selected, get the texts of each variant: the user provides them, or you write them from a brief (subject, tone, language, length constraints). Give each variant a short label (e.g. its title), then call review-variant-texts. Then wait.
 4. Images: if smart object layers were selected, call upload-variant-images ONCE with the variant labels and the selected smart object layers (id, name and frame width and height from get-psd-manifest), so the user drops (or picks from AEM Assets) one image per variant and layer in a grid and adjusts how each one is cropped to its frame. Never ask for an image URL. Then wait.
 5. Generation: recap the variants in a Markdown table (one row per variant: label, the text of each text layer, the image file name of each smart object layer), then call create-variant ONCE with all variants, passing for each image the crop chosen in the grid. The widget shows the generated files with download buttons.
 Changes after generation: to re-crop or swap images, call upload-variant-images again with images pre-filled from the previous confirmation (never ask to upload again the images you already have, unless their URLs expired); to change texts, call create-variant again with the new texts.
 Never show presigned URLs to the user; they are internal. Reply in the user's language.`
 
-const NEXT_STEPS_AFTER_SELECTION = 'Wait for the user to pick layers in the widget. Then: (1) if text layers were selected, ask which ' +
-  'texts to use for each variant: the user provides them, or you write them (ask for the brief: subject, tone, language, length); give each ' +
-  'variant a short label; then call review-variant-texts ONCE with the text layers (id, name) and the texts of every variant, ' +
-  'so the user reviews and edits them in a table widget (do not write them as a table in chat), and use the confirmed texts exactly; (2) if smart object layers were selected, call upload-variant-images ONCE with all variant labels and ' +
+const NEXT_STEPS_AFTER_SELECTION = 'Wait for the user to pick layers in the widget. Then: (1) if text layers were selected, get the ' +
+  'texts of each variant (from the user, or written from a brief: subject, tone, language, length), give each variant a short label, then ' +
+  'call review-variant-texts; (2) if smart object layers were selected, call upload-variant-images ONCE with all variant labels and ' +
   'the selected smart object layers (id, name, and frame width and height): it shows a single grid, one image per variant and layer, ' +
   'where the user adjusts each crop. Never call upload-file per image and never ask for image URLs; (3) recap the variants in a Markdown ' +
   'table (label, texts, image file names), then call create-variant ONCE ' +
