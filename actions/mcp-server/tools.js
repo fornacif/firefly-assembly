@@ -251,20 +251,32 @@ function toLayerEdit (layer) {
   return edit
 }
 
+// Output files of create-variant by format. A PSD cannot be shown in the view, so the same job also renders a JPEG preview.
+const VARIANT_OUTPUTS = {
+  png: { extension: 'png', output: { mediaType: 'image/png', compression: 'medium' } },
+  jpeg: { extension: 'jpg', output: { mediaType: 'image/jpeg', quality: 'photoshop_max' } },
+  psd: { extension: 'psd', output: { mediaType: 'image/vnd.adobe.photoshop' }, preview: { mediaType: 'image/jpeg', quality: 'high' } }
+}
+
 async function createVariant (params, { templateUrl, format, layers, fileName }) {
-  const extension = format === 'jpeg' ? 'jpg' : 'png'
-  const outputName = `${(fileName || 'variant').replace(/\.(png|jpe?g)$/i, '')}.${extension}`
-  const { uploadUrl, readUrl } = await createStorageUrls('variants', outputName)
-  const output = format === 'jpeg'
-    ? { mediaType: 'image/jpeg', quality: 'photoshop_max' }
-    : { mediaType: 'image/png', compression: 'medium' }
+  const { extension, output, preview } = VARIANT_OUTPUTS[format]
+  const baseName = (fileName || 'variant').replace(/\.(png|jpe?g|psd)$/i, '')
+  const outputName = `${baseName}.${extension}`
+  const [file, previewFile] = await Promise.all([
+    createStorageUrls('variants', outputName),
+    preview && createStorageUrls('variants', `${baseName}-preview.jpg`)
+  ])
 
   await runPhotoshopJob(params, '/create-composite', {
     image: { source: { url: templateUrl } },
     edits: { layers: layers.map(toLayerEdit) },
-    outputs: [{ destination: { url: uploadUrl }, ...output }]
+    outputs: [
+      { destination: { url: file.uploadUrl }, ...output },
+      ...(previewFile ? [{ destination: { url: previewFile.uploadUrl }, ...preview }] : [])
+    ]
   })
-  return { imageUrl: readUrl, fileName: outputName, format }
+  // imageUrl is shown in the view, downloadUrl is the file to download
+  return { imageUrl: (previewFile || file).readUrl, downloadUrl: file.readUrl, fileName: outputName, format }
 }
 
 function findLayer (layers = [], id) {
@@ -509,13 +521,14 @@ function registerTools (server, params) {
       title: 'Generate Variants',
       description: 'Step 5 (last) of the variant workflow. Generates variants of a PSD template with the Photoshop API, in parallel: ' +
         'for each variant, replaces the text of text layers and the content of smart object layers (with image URLs from upload-variant-images), ' +
-        'then renders it as PNG or JPEG. Only call it once the layers are selected (get-psd-manifest) and all values are known. ' +
+        'then renders it as PNG or JPEG, or saves it as a layered PSD (format psd, when the user wants the Photoshop files). Only call it once the layers are selected (get-psd-manifest) and all values are known. ' +
         'Pass all variants in a single call. The user sees a recap of the generated files with download buttons; do not print the image URLs. ' +
         'Use layer ids and types from get-psd-manifest. For each smart object image, pass the crop chosen in upload-variant-images; ' +
         'without crop, the image is cropped centered to its frame (fit "fill", default). Do not crop or resize images with other tools.',
       inputSchema: {
         templateUrl: z.string().url().describe('HTTPS URL of the PSD template (same URL as given to get-psd-manifest)'),
-        format: z.enum(['png', 'jpeg']).default('png').describe('Output image format'),
+        format: z.enum(['png', 'jpeg', 'psd']).default('png')
+          .describe('Output format: png or jpeg images, or psd to get the edited layered Photoshop files (shown with a JPEG preview)'),
         variants: z.array(z.object({
           fileName: z.string().optional().describe('Output file name without extension, e.g. "variant-summer"'),
           layers: z.array(layerEditSchema).min(1).describe('Edits to apply, one per layer')

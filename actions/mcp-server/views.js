@@ -1468,7 +1468,7 @@ function getVariantViewHtml (scriptUrl) {
   }
 
   function download(index) {
-    request('ui/open-link', { url: variants[index].imageUrl }).catch(function () {
+    request('ui/open-link', { url: variants[index].downloadUrl || variants[index].imageUrl }).catch(function () {
       setStatus('Could not open the download link.', true);
     });
   }
