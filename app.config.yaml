@@ -17,7 +17,6 @@ application:
   runtimeManifest:
     packages:
       firefly-assembly:
-        license: MIT
         actions:
           # MCP server, served at /api/v1/web/firefly-assembly/mcp-server
           mcp-server:

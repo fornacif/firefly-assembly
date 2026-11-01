@@ -17,7 +17,7 @@
   "engines": {
     "node": ">=20.0.0"
   },
-  "license": "MIT",
+  "license": "UNLICENSED",
   "private": true,
   "devDependencies": {
     "@spectrum-web-components/badge": "^1.12.5",
