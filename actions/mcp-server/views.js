@@ -122,9 +122,10 @@ const BRIDGE_SCRIPT = `
   }
 `
 
-// Adobe logo, in the icon slot of the AEM buttons
-const ADOBE_ICON = '<svg slot="icon" viewBox="0 10.22 16.86 14.94" width="18" height="16" aria-hidden="true">' +
-  '<path fill="#eb1000" d="M6.27,10.22h4.39l6.2,14.94h-4.64l-3.92-9.92-2.59,6.51h3.08l1.23,3.41H0l6.27-14.94"/></svg>'
+// Adobe logo, in the icon slot of the AEM buttons. Inline styles, because sp-button colors (fill and stroke) the icons
+// of its slot with the text color, which SVG presentation attributes do not override.
+const ADOBE_ICON = '<svg slot="icon" viewBox="0 10.22 16.86 14.94" width="18" height="16" aria-hidden="true" style="fill:#eb1000;stroke:none">' +
+  '<path style="fill:#eb1000;stroke:none" d="M6.27,10.22h4.39l6.2,14.94h-4.64l-3.92-9.92-2.59,6.51h3.08l1.23,3.41H0l6.27-14.94"/></svg>'
 
 // Keep in sync with MAX_VARIANTS in tools.js
 const MAX_VARIANTS_UI = 10
@@ -473,20 +474,22 @@ ${AEM_SCRIPT}
 function getVariantImagesViewHtml (scriptUrl) {
   return page(scriptUrl, 'Variant Images', `
   .subtle.intro { margin: var(--spectrum-spacing-75) 0 var(--spectrum-spacing-300); }
-  .grid { display: grid; gap: var(--spectrum-spacing-200); align-items: stretch; }
+  /* One card per slot (variant and smart object layer), as many per row as fit */
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: var(--spectrum-spacing-200); align-items: stretch; }
   .grid > * { min-width: 0; }
-  .col-header { font-weight: var(--spectrum-bold-font-weight); font-size: var(--spectrum-font-size-75); align-self: end; }
-  .row-header { font-weight: var(--spectrum-bold-font-weight); align-self: center; word-break: break-word; }
+  .slot-label { width: 100%; font-weight: var(--spectrum-bold-font-weight); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .slot-empty { margin: auto 0; }
+  .slot-label .layer { font-weight: normal; color: var(--spectrum-neutral-subdued-content-color-default); }
   sp-dropzone {
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: center;
+    justify-content: flex-start;
     gap: var(--spectrum-spacing-100);
     width: 100%;
     min-width: 0;
     min-inline-size: 0;
-    min-height: 140px;
+    min-height: 110px;
     padding: var(--spectrum-spacing-200);
     --mod-drop-zone-padding: var(--spectrum-spacing-200);
     border-radius: var(--spectrum-corner-radius-200);
@@ -518,9 +521,12 @@ function getVariantImagesViewHtml (scriptUrl) {
   #file { display: none; }
   .library { margin-bottom: var(--spectrum-spacing-300); }
   .library-header { display: flex; align-items: center; flex-wrap: wrap; gap: var(--spectrum-spacing-200); }
-  .library-items { display: flex; gap: var(--spectrum-spacing-200); overflow-x: auto; padding: var(--spectrum-spacing-200) 0 var(--spectrum-spacing-75); }
+  .library-items { display: flex; flex-wrap: wrap; gap: var(--spectrum-spacing-200); padding-top: var(--spectrum-spacing-200); }
   .library-item {
-    flex: 0 0 104px;
+    position: relative;
+    flex: 0 0 96px;
+    width: 96px;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     gap: var(--spectrum-spacing-75);
@@ -533,17 +539,37 @@ function getVariantImagesViewHtml (scriptUrl) {
     border-radius: var(--spectrum-corner-radius-200);
     cursor: grab;
   }
-  .library-item:hover { border-color: var(--spectrum-gray-400); }
+  .library-item:hover, .library-item:focus-visible { border-color: var(--spectrum-gray-400); outline: none; }
   .library-item.armed { border-color: var(--spectrum-accent-background-color-default); }
-  .library-item img { width: 100%; height: 72px; object-fit: contain; border-radius: var(--spectrum-corner-radius-100); background: var(--spectrum-gray-200); }
+  .library-item.busy { cursor: default; }
+  .library-item .file-name { display: block; width: 100%; }
+  .library-remove {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    font: inherit;
+    font-size: 13px;
+    line-height: 18px;
+    color: var(--spectrum-neutral-content-color-default);
+    background: var(--spectrum-background-layer-2-color);
+    border: 1px solid var(--spectrum-gray-400);
+    border-radius: 50%;
+    cursor: pointer;
+  }
+  .library-remove:hover { background: var(--spectrum-gray-200); }
+  .library-item img { width: 100%; height: 64px; object-fit: contain; border-radius: var(--spectrum-corner-radius-100); background: var(--spectrum-gray-200); }
   .library-item sp-progress-bar { width: 100%; }
   .grid.armed sp-dropzone { cursor: copy; }
 `, `
-<h2 class="heading" id="title">Images per variant</h2>
-<div class="subtle intro">Drop an image in each slot, or several at once to fill the empty slots in order. The bright area is what the banner shows: drag it to reposition the crop, use Zoom to resize it.</div>
-<div class="library" id="library" hidden>
+<h2 class="heading" id="title">Drop one image per variant</h2>
+<div class="subtle intro">Add images, then drag each one onto the slots that use it (or drop a file on a slot). The bright area is what the banner shows: drag it to reposition the crop, use Zoom to resize it.</div>
+<div class="library">
   <div class="library-header">
-    <sp-button size="s" variant="secondary" treatment="outline" id="aem">${ADOBE_ICON}Add images from AEM</sp-button>
+    <sp-button size="s" variant="secondary" treatment="outline" id="browse">Add images from your computer</sp-button>
+    <sp-button size="s" variant="secondary" treatment="outline" id="aem" hidden>${ADOBE_ICON}Add images from AEM</sp-button>
     <span class="subtle" id="library-hint"></span>
   </div>
   <div class="library-items" id="library-items" hidden></div>
@@ -557,7 +583,7 @@ function getVariantImagesViewHtml (scriptUrl) {
 `, `
 ${UPLOAD_SCRIPT}
 ${AEM_SCRIPT}
-  var CROP_MAX_HEIGHT = 240;
+  var CROP_MAX_HEIGHT = 160;
   var MAX_ZOOM = 4;
   var grid = document.getElementById('grid');
   var input = document.getElementById('file');
@@ -565,12 +591,12 @@ ${AEM_SCRIPT}
   var variants = [];
   var layers = [];
   var slots = [];
-  var pickTarget = 0;
   var BUSY_LABELS = { uploading: 'Uploading', framing: 'Framing the subject' };
-  // Images picked in AEM, in the order of selection: { status: 'importing' | 'done' | 'error', name, url, error }.
+  // Images added from the computer or AEM, in the order of addition:
+  // { status: 'uploading' | 'importing' | 'done' | 'error', name, progress, url, error }.
   // A done image is assigned to slots by dragging it onto them, or by clicking it ("armed") then the slots.
   var LIBRARY_DRAG_TYPE = 'application/x-assemble-library-index';
-  var libraryEl = document.getElementById('library');
+  var aemBtn = document.getElementById('aem');
   var libraryItems = document.getElementById('library-items');
   var libraryHint = document.getElementById('library-hint');
   var library = [];
@@ -597,7 +623,10 @@ ${AEM_SCRIPT}
 
   function cellHtml(slot, index) {
     var ratio = ratioOf(index);
-    var html = '<sp-dropzone data-index="' + index + '">';
+    var layer = layerOf(index);
+    var html = '<sp-dropzone data-index="' + index + '">'
+      + '<div class="slot-label">' + escapeHtml(variants[Math.floor(index / layers.length)])
+      + (layers.length > 1 ? ' <span class="layer">· ' + escapeHtml(layer.name) + '</span>' : '') + '</div>';
     if (slot.status === 'done') {
       if (ratio && slot.crop) {
         // The whole image is shown, with the crop frame on top
@@ -616,8 +645,7 @@ ${AEM_SCRIPT}
         + '<sp-progress-bar size="s" label="' + BUSY_LABELS[slot.status] + '"'
         + (slot.status === 'uploading' ? ' progress="' + slot.progress + '"' : ' indeterminate') + '></sp-progress-bar>';
     } else {
-      html += '<div class="subtle">Drop image</div>'
-        + '<sp-button size="s" variant="secondary" treatment="outline" data-action="browse" data-index="' + index + '">Browse</sp-button>'
+      html += '<div class="subtle slot-empty">Drop an image</div>'
         + (slot.error ? '<div class="cell-error">' + escapeHtml(slot.error) + '</div>' : '');
     }
     return html + '</sp-dropzone>';
@@ -642,15 +670,9 @@ ${AEM_SCRIPT}
     });
   }
 
-  // One row per variant, one column per smart object layer.
+  // One card per slot, in the order of the variants, each with the variant name (and the layer name with several layers).
   function render() {
-    grid.style.gridTemplateColumns = 'minmax(90px, max-content) repeat(' + layers.length + ', minmax(160px, 1fr))';
-    var html = '<div></div>' + layers.map(function (l) { return '<div class="col-header">' + escapeHtml(l.name) + '</div>'; }).join('');
-    variants.forEach(function (v, r) {
-      html += '<div class="row-header">' + escapeHtml(v) + '</div>';
-      layers.forEach(function (l, c) { html += cellHtml(slots[r * layers.length + c], r * layers.length + c); });
-    });
-    grid.innerHTML = html;
+    grid.innerHTML = slots.map(cellHtml).join('');
     slots.forEach(function (slot, i) { positionFrame(i); });
     updateStatus();
   }
@@ -713,12 +735,14 @@ ${AEM_SCRIPT}
     libraryItems.hidden = !library.length;
     libraryItems.innerHTML = library.map(function (item, i) {
       var done = item.status === 'done';
-      return '<button type="button" class="library-item' + (i === armed ? ' armed' : '') + '" data-index="' + i + '"'
-        + (done ? ' draggable="true"' : ' disabled') + ' title="' + escapeHtml(item.name) + '">'
+      return '<div class="library-item' + (i === armed ? ' armed' : '') + (done ? '' : ' busy') + '" data-index="' + i + '"'
+        + (done ? ' draggable="true" tabindex="0" role="button" aria-pressed="' + (i === armed) + '"' : '') + ' title="' + escapeHtml(item.name) + '">'
         + (done ? '<img src="' + escapeHtml(item.url) + '" alt="">'
-          : item.status === 'importing' ? '<sp-progress-bar size="s" label="Importing" indeterminate></sp-progress-bar>'
-            : '<span class="cell-error">' + escapeHtml(item.error) + '</span>')
-        + '<span class="file-name">' + escapeHtml(item.name) + '</span></button>';
+          : item.status === 'uploading' ? '<sp-progress-bar size="s" label="Uploading" progress="' + item.progress + '"></sp-progress-bar>'
+            : item.status === 'importing' ? '<sp-progress-bar size="s" label="Importing" indeterminate></sp-progress-bar>'
+              : '<span class="cell-error">' + escapeHtml(item.error) + '</span>')
+        + '<span class="file-name">' + escapeHtml(item.name) + '</span>'
+        + '<button type="button" class="library-remove" aria-label="Remove ' + escapeHtml(item.name) + '" title="Remove">&times;</button></div>';
     }).join('');
     grid.classList.toggle('armed', armed >= 0);
     libraryHint.textContent = armed >= 0
@@ -727,17 +751,35 @@ ${AEM_SCRIPT}
     reportSize();
   }
 
+  // Adds an image to the library; transfer(item) puts it in storage and resolves to { url }.
+  function addToLibrary(name, status, transfer) {
+    var item = { status: status, name: name, progress: 0 };
+    library.push(item);
+    transfer(item)
+      .then(function (stored) { item.status = 'done'; item.url = stored.url; })
+      .catch(function (error) { item.status = 'error'; item.error = (error && error.message) || String(error); })
+      .then(renderLibrary);
+  }
+
+  function addFiles(fileList) {
+    Array.prototype.slice.call(fileList || []).filter(function (f) { return !f.type || f.type.indexOf('image/') === 0; }).forEach(function (file) {
+      addToLibrary(file.name, 'uploading', function (item) {
+        return uploadOne(file, function (bytes) {
+          item.progress = Math.round(bytes / (file.size || 1) * 100);
+          var bar = libraryItems.querySelector('.library-item[data-index="' + library.indexOf(item) + '"] sp-progress-bar');
+          if (bar) bar.progress = item.progress;
+        });
+      });
+    });
+    renderLibrary();
+  }
+
   // Picks images in AEM (several at once) and imports them into the library.
   function addFromAem() {
     pickAemAssets(true)
       .then(function (assets) {
         assets.filter(function (a) { return String(a['dc:format'] || '').indexOf('image/') === 0; }).forEach(function (asset) {
-          var item = { status: 'importing', name: asset['repo:name'] };
-          library.push(item);
-          importAemAsset(asset)
-            .then(function (imported) { item.status = 'done'; item.url = imported.url; })
-            .catch(function (error) { item.status = 'error'; item.error = (error && error.message) || String(error); })
-            .then(renderLibrary);
+          addToLibrary(asset['repo:name'], 'importing', function () { return importAemAsset(asset); });
         });
         renderLibrary();
       })
@@ -793,16 +835,38 @@ ${AEM_SCRIPT}
     });
     render();
   });
-  // Shows the AEM library once the AEM configuration is known
-  loadAemConfig().then(function (config) { libraryEl.hidden = !config; reportSize(); });
+  // Shows the AEM button once the AEM configuration is known
+  loadAemConfig().then(function (config) { aemBtn.hidden = !config; reportSize(); });
 
-  document.getElementById('aem').addEventListener('click', addFromAem);
-  libraryItems.addEventListener('click', function (e) {
-    var tile = e.target.closest('.library-item');
-    if (!tile || tile.disabled) return;
+  document.getElementById('browse').addEventListener('click', function () { input.value = ''; input.click(); });
+  input.addEventListener('change', function () { addFiles(input.files); });
+  aemBtn.addEventListener('click', addFromAem);
+  // Removing an image from the library does not change the slots that already use it.
+  function removeFromLibrary(i) {
+    library.splice(i, 1);
+    if (armed === i) armed = -1;
+    else if (armed > i) armed--;
+    renderLibrary();
+  }
+
+  function toggleArmed(tile) {
+    if (tile.classList.contains('busy')) return;
     var i = Number(tile.getAttribute('data-index'));
     armed = armed === i ? -1 : i;
     renderLibrary();
+  }
+
+  libraryItems.addEventListener('click', function (e) {
+    var tile = e.target.closest('.library-item');
+    if (!tile) return;
+    if (e.target.closest('.library-remove')) removeFromLibrary(Number(tile.getAttribute('data-index')));
+    else toggleArmed(tile);
+  });
+  libraryItems.addEventListener('keydown', function (e) {
+    var tile = e.target.closest('.library-item');
+    if (!tile || e.target !== tile || (e.key !== 'Enter' && e.key !== ' ')) return;
+    e.preventDefault();
+    toggleArmed(tile);
   });
   libraryItems.addEventListener('dragstart', function (e) {
     var tile = e.target.closest('.library-item');
@@ -823,17 +887,11 @@ ${AEM_SCRIPT}
   grid.addEventListener('click', function (e) {
     var button = e.target.closest('sp-button');
     if (!button) return;
-    var index = Number(button.getAttribute('data-index'));
-    if (button.getAttribute('data-action') === 'browse') {
-      pickTarget = index;
-      input.value = '';
-      input.click();
-    } else if (button.getAttribute('data-action') === 'remove') {
-      slots[index] = { status: 'empty' };
+    if (button.getAttribute('data-action') === 'remove') {
+      slots[Number(button.getAttribute('data-index'))] = { status: 'empty' };
       render();
     }
   });
-  input.addEventListener('change', function () { placeFiles(pickTarget, input.files); });
   grid.addEventListener('sp-dropzone-should-accept', function (e) { e.detail.dataTransfer.dropEffect = 'copy'; });
   grid.addEventListener('sp-dropzone-drop', function (e) {
     var index = Number(e.target.getAttribute('data-index'));
