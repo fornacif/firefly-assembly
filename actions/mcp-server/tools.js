@@ -16,6 +16,9 @@ const URL_EXPIRY_SECONDS = 24 * 3600
 const STORAGE_ORIGIN = 'https://firefly.azureedge.net'
 const EDITABLE_LAYER_TYPES = ['text_layer', 'smart_object_layer']
 const MAX_VARIANTS = 10
+// Text previews given to the model: width, and total base64 size, under the response limit of the action
+const PREVIEW_MAX_WIDTH = 640
+const PREVIEWS_MAX_BASE64 = 600000
 const WIDGET_RESULT_TTL_SECONDS = 24 * 3600
 // Short reference shown at the end of the user's message: "r" and 6 base-36 characters (2 billion values per user)
 const WIDGET_RESULT_REF = /^r[0-9a-z]{6}$/
@@ -35,20 +38,23 @@ const VIEWS = {
 const WORKFLOW = `Variant creation workflow. When the user asks to create variants (or versions, adaptations, localizations...) of a banner, ad, visual, social post or any PSD template, ALWAYS follow these steps in order, one at a time, without skipping any:
 1. Start: call start-variant-creation (pass variantCount if the user already gave it). The user sets the number of variants and uploads the PSD template (from their computer or AEM Assets) in the widget, then says to continue. The widget gives you the template name and URL in your context (or through get-widget-result, see below): use that URL. Never ask for the file or its URL in chat.
 2. Layer selection: immediately call get-psd-manifest with the template URL. The user picks the layers to vary in the widget. Then wait.
-3. Texts: right after the layer selection, if text layers were selected, get the texts of each variant: the user provides them, or you write them from a brief (subject, tone, language, length constraints). Give each variant a short label (e.g. its title), then call review-variant-texts. Then wait.
+3. Texts: right after the layer selection, if text layers were selected, get the texts of each variant: the user provides them, or you write them from a brief (subject, tone, language). Each text must have the same length as the original text of its layer (given by get-psd-manifest): the same number of lines and about the same number of characters (within 10%), so that it fits the layout. Give each variant a short label (e.g. its title).
+   Check the texts right away: call preview-variant-texts, which renders the template with the texts of each variant, and look at each preview: text overflowing its area, cut off, wrapped onto more lines than the original, overlapping other elements or hard to read. Fix the texts you wrote (shorter wording) and check again; for texts given by the user, put a corrected version in the table and say briefly in chat what you changed and why, so the user can keep or edit it. Then call review-variant-texts with the checked texts, the original text of each layer and the template URL: the user sees a preview of each variant under the texts, updates it after editing and confirms. Then wait.
+   When the user confirms texts whose preview was not updated after their last edits, call preview-variant-texts for those variants and propose corrections before going on.
 4. Images: if smart object layers were selected, call upload-variant-images ONCE with the variant labels and the selected smart object layers (id, name and frame width and height from get-psd-manifest), so the user drops (or picks from AEM Assets) one image per variant and layer in a grid and adjusts how each one is cropped to its frame. When the user confirms, the widget gives you the URL, size and crop of each image the same way. Never ask for image URLs in chat. Then wait.
-5. Generation: recap the variants in a Markdown table (one row per variant: label, the text of each text layer, the image file name of each smart object layer), then call create-variant ONCE with all variants, passing for each image the crop chosen in the grid. The widget shows the generated files with download buttons.
+5. Generation: as soon as the images are confirmed (or the texts, without smart object layers), call create-variant ONCE with all variants, passing for each image the crop chosen in the grid; the texts were already checked at step 3, so do not recap the variants or ask for another approval. The widget shows the generated files with download buttons.
 Changes after generation: to re-crop or swap images, call upload-variant-images again with images pre-filled from the previous confirmation (never ask to upload again the images you already have, unless their URLs expired); to change texts, call create-variant again with the new texts.
 Widgets send their result (template URL, layers, texts, images) in your context and end the user's message with a reference in parentheses like "(r7k2p9)": if you do not have that result in your context, call get-widget-result with this ref before going on; never ask the user to redo a step because a result seems missing.
 The URLs from the widgets are temporary presigned URLs: use them in tool calls, but never show them to the user. Reply in the user's language.`
 
 const NEXT_STEPS_AFTER_SELECTION = 'Wait for the user to pick layers in the widget. Then: (1) if text layers were selected, get the ' +
-  'texts of each variant (from the user, or written from a brief: subject, tone, language, length), give each variant a short label, then ' +
-  'call review-variant-texts; (2) if smart object layers were selected, call upload-variant-images ONCE with all variant labels and ' +
+  'texts of each variant (from the user, or written from a brief: subject, tone, language), each with the same number of lines and ' +
+  'about the same number of characters (within 10%) as the original text of its layer, give each variant a short label, check them ' +
+  'with preview-variant-texts (fix or propose corrections for texts that do not fit), then call review-variant-texts with the ' +
+  'checked texts and the original texts; (2) if smart object layers were selected, call upload-variant-images ONCE with all variant labels and ' +
   'the selected smart object layers (id, name, and frame width and height): it shows a single grid, one image per variant and layer, ' +
-  'where the user adjusts each crop. Never call upload-file per image and never ask for image URLs; (3) recap the variants in a Markdown ' +
-  'table (label, texts, image file names), then call create-variant ONCE ' +
-  'with all variants, passing each image crop as given by the grid.'
+  'where the user adjusts each crop. Never call upload-file per image and never ask for image URLs; (3) then call create-variant ONCE ' +
+  'with all variants, passing each image crop as given by the grid, without a recap or another approval.'
 
 // Server-to-server token for Firefly Services, reused across warm invocations.
 let cachedToken = null
@@ -299,6 +305,26 @@ async function createVariant (params, { templateUrl, formats, layers, fileName }
     imageUrl: preview ? preview.readUrl : files[formats.indexOf(shownFormat)].readUrl,
     files: formats.map((format, i) => ({ format, fileName: `${baseName}.${VARIANT_OUTPUTS[format].extension}`, url: files[i].readUrl }))
   }
+}
+
+// Small JPEG of the template with the texts of a variant, to check that they fit the layout: its URL for the texts widget,
+// and its content as base64 for the model unless withData is false. Without support of maxWidth by the Photoshop API,
+// renders it at full size in low quality instead.
+async function renderTextPreview (params, templateUrl, texts, withData = true) {
+  const { uploadUrl, readUrl } = await createStorageUrls('text-previews', 'preview.jpg')
+  const job = output => runPhotoshopJob(params, '/create-composite', {
+    image: { source: { url: templateUrl } },
+    edits: { layers: texts.map(t => toLayerEdit({ id: t.layerId, type: 'text_layer', text: t.text })) },
+    outputs: [{ destination: { url: uploadUrl }, mediaType: 'image/jpeg', ...output }]
+  })
+  await job({ quality: 'medium', maxWidth: PREVIEW_MAX_WIDTH }).catch(error => {
+    console.warn(`Text preview with maxWidth failed, retrying at full size: ${error.message}`)
+    return job({ quality: 'low' })
+  })
+  if (!withData) return { url: readUrl }
+  const response = await fetch(readUrl)
+  if (!response.ok) throw new Error(`preview download failed (${response.status})`)
+  return { url: readUrl, data: Buffer.from(await response.arrayBuffer()).toString('base64') }
 }
 
 function findLayer (layers = [], id) {
@@ -586,7 +612,7 @@ function registerTools (server, params) {
         templateUrl: z.string().url().describe('HTTPS URL of the PSD template (same URL as given to get-psd-manifest)'),
         formats: z.array(z.enum(VARIANT_FORMATS)).min(1).optional()
           .describe('Output formats, one file per format and variant: png and/or jpeg images, psd for the edited layered Photoshop ' +
-            'files. Pass several when the user asks for several (e.g. ["png", "psd"]). Default ["png"]'),
+            'files. Pass several when the user asks for several (e.g. ["png", "psd"]). Default ["jpeg"]'),
         // Single format of earlier versions, still accepted for clients holding a cached tool schema
         format: z.enum(VARIANT_FORMATS).optional().describe('Deprecated: use formats'),
         variants: z.array(z.object({
@@ -606,7 +632,7 @@ function registerTools (server, params) {
       try {
         if (!variants && !layers) throw new Error('Missing "variants": pass a list of variants, each with its "layers".')
         const variantList = variants || [{ fileName, layers }]
-        const outputFormats = [...new Set(formats || [format || 'png'])]
+        const outputFormats = [...new Set(formats || [format || 'jpeg'])]
         const results = await createVariants(params, { templateUrl, formats: outputFormats, variants: variantList })
         const failed = results.filter(v => v.error)
         const summary = `${results.length - failed.length}/${results.length} variant(s) generated and shown to the user with download buttons.` +
@@ -662,6 +688,54 @@ function registerTools (server, params) {
   )
 
   server.registerTool(
+    'preview-variant-texts',
+    {
+      title: 'Preview Variant Texts',
+      description: 'Step 3 of the variant workflow, before review-variant-texts. Renders the template with the texts of each variant ' +
+        'and returns a small preview of each one, for you to check that the texts fit the layout: not overflowing their area, cut off, ' +
+        'wrapped onto more lines than the original, overlapping other elements or hard to read. The user does not see these previews. ' +
+        'Fix the texts you wrote, or propose corrections for those given by the user, then call review-variant-texts.',
+      inputSchema: {
+        forView: z.boolean().optional().describe('Used by the texts widget: returns the preview URLs only'),
+        templateUrl: z.string().url().describe('HTTPS URL of the PSD template (same URL as given to get-psd-manifest)'),
+        variants: z.array(z.object({
+          label: z.string().min(1).describe('Short label of the variant'),
+          texts: z.array(z.object({
+            layerId: z.number().int().describe('Text layer id from get-psd-manifest'),
+            text: z.string().describe('Text of the layer for this variant')
+          })).min(1).describe('One text per selected text layer')
+        })).min(1).max(MAX_VARIANTS).describe('Variants to check, in order')
+      }
+    },
+    async ({ templateUrl, variants, forView }) => {
+      try {
+        const results = await Promise.allSettled(variants.map(v => renderTextPreview(params, templateUrl, v.texts, !forView)))
+        const previews = results.map((result, i) => result.status === 'fulfilled'
+          ? { label: variants[i].label, url: result.value.url }
+          : { label: variants[i].label, error: result.reason.message })
+        if (forView) return { ...jsonResult({ previews }), isError: results.every(r => r.status === 'rejected') }
+        // Previews are given while their total size fits in the response
+        let size = 0
+        const content = [{ type: 'text', text: 'Previews of the template with the texts of each variant, in order. Check that each text fits ' +
+          'its area like the original, then fix or propose corrections.' }]
+        results.forEach((result, i) => {
+          const label = variants[i].label
+          if (result.status === 'rejected') {
+            content.push({ type: 'text', text: `${label}: preview failed (${result.reason.message}).` })
+          } else if ((size += result.value.data.length) > PREVIEWS_MAX_BASE64) {
+            content.push({ type: 'text', text: `${label}: preview left out (response size limit), check it in a separate call.` })
+          } else {
+            content.push({ type: 'text', text: `${label}:` }, { type: 'image', data: result.value.data, mimeType: 'image/jpeg' })
+          }
+        })
+        return { content, isError: results.every(r => r.status === 'rejected') }
+      } catch (error) {
+        return errorResult(error)
+      }
+    }
+  )
+
+  server.registerTool(
     'review-variant-texts',
     {
       title: 'Review Variant Texts',
@@ -669,11 +743,14 @@ function registerTools (server, params) {
         'so the user reviews and edits them. Call it ONCE with all variants, once their texts ' +
         'are known (given by the user or written by you); do not write the texts as a table in chat. When the user confirms, the final ' +
         'texts are added to your context and the user says to continue: use them exactly in create-variant. To let the user edit texts ' +
-        'again, call it again with the latest texts.',
+        'again, call it again with the latest texts. Pass the original text of each layer: the table shows the length of each text ' +
+        'against it. Pass the template URL: the widget shows a preview of each variant with its texts, which the user updates after editing.',
       inputSchema: {
+        templateUrl: z.string().url().optional().describe('HTTPS URL of the PSD template, to show a preview of each variant'),
         layers: z.array(z.object({
           id: z.number().int().describe('Layer id from get-psd-manifest'),
-          name: z.string().describe('Layer name')
+          name: z.string().describe('Layer name'),
+          text: z.string().optional().describe('Original text of the layer in the template, from get-psd-manifest')
         })).min(1).describe('Selected text layers, in the order of get-psd-manifest'),
         variants: z.array(z.object({
           label: z.string().min(1).describe('Short label of the variant'),
@@ -698,7 +775,7 @@ function registerTools (server, params) {
       description: 'Step 4 of the variant workflow. Shows a grid where the user drops one image per variant and smart object layer ' +
         '(one row per variant, one column per layer). Each image is cropped to the frame of its layer, framed on its subject, and the user ' +
         'can reposition and zoom the crop. When the user confirms, the widget adds to your context, for each variant and layer, the image ' +
-        'file name, its temporary HTTPS URL (valid 24 hours), its size and its crop, and the user says to continue: then recap and call create-variant. ' +
+        'file name, its temporary HTTPS URL (valid 24 hours), its size and its crop, and the user says to continue: then call create-variant. ' +
         'To adjust crops or replace some images after a generation, call it again with images (URLs, crops and sizes from the previous ' +
         'confirmation): the grid opens pre-filled, without uploading again; then call create-variant again with the new crops.',
       inputSchema: {

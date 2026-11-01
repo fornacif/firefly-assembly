@@ -8,7 +8,7 @@ MCP server, deployed as an Adobe I/O Runtime (App Builder) action, that creates 
 2. **Layers** (`get-psd-manifest`): the template preview with its editable layers (text and smart object layers); the user picks the ones to change.
 3. **Texts** (`review-variant-texts`): an editable table with the texts of each variant.
 4. **Images** (`upload-variant-images`): a grid with one image per variant and smart object layer, from the computer or AEM, with crops framed on the subject.
-5. **Generation** (`create-variant`): the variants are rendered in parallel, as PNG, JPEG and/or layered PSD files.
+5. **Generation** (`create-variant`): the variants are rendered in parallel, as JPEG (default), PNG and/or layered PSD files.
 
 Widgets return what the user confirmed through a short reference that the assistant reads with `get-widget-result`. The other tools (`save-widget-result`, `suggest-crop`, `create-upload-url`, AEM picker tools…) are used by the widgets. `upload-file` uploads a single file outside the workflow.
 

@@ -499,12 +499,13 @@ ${AEM_SCRIPT}
 
 function getVariantImagesViewHtml (scriptUrl) {
   return page(scriptUrl, 'Variant Images', `
-  /* One card per slot (variant and smart object layer), as many per row as fit */
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: var(--spectrum-spacing-200); align-items: stretch; }
-  .grid > * { min-width: 0; }
+  /* With several layers, one group per variant; one card per slot (variant and smart object layer), as many per row as fit */
+  .grid { display: flex; flex-direction: column; gap: var(--spectrum-spacing-300); }
+  .variant-name { margin: 0 0 var(--spectrum-spacing-100); font-size: var(--spectrum-font-size-100); font-weight: var(--spectrum-bold-font-weight); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: var(--spectrum-spacing-200); align-items: stretch; }
+  .cards > * { min-width: 0; }
   .slot-label { width: 100%; font-weight: var(--spectrum-bold-font-weight); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .slot-empty { margin: auto 0; }
-  .slot-label .layer { font-weight: normal; color: var(--spectrum-neutral-subdued-content-color-default); }
   sp-dropzone {
     display: flex;
     flex-direction: column;
@@ -652,9 +653,10 @@ ${AEM_SCRIPT}
   function cellHtml(slot, index) {
     var ratio = ratioOf(index);
     var layer = layerOf(index);
+    // Grouped by variant with several layers, so the card only names the layer
+    var label = layers.length > 1 ? layer.name : variants[Math.floor(index / layers.length)];
     var html = '<sp-dropzone data-index="' + index + '">'
-      + '<div class="slot-label">' + escapeHtml(variants[Math.floor(index / layers.length)])
-      + (layers.length > 1 ? ' <span class="layer">· ' + escapeHtml(layer.name) + '</span>' : '') + '</div>';
+      + '<div class="slot-label">' + escapeHtml(label) + '</div>';
     if (slot.status === 'done') {
       if (ratio && slot.crop) {
         // The whole image is shown, with the crop frame on top
@@ -698,9 +700,18 @@ ${AEM_SCRIPT}
     });
   }
 
-  // One card per slot, in the order of the variants, each with the variant name (and the layer name with several layers).
+  // One card per slot, in the order of the variants. With several layers, the cards of a variant are grouped under its name.
   function render() {
-    grid.innerHTML = slots.map(cellHtml).join('');
+    if (layers.length > 1) {
+      grid.innerHTML = variants.map(function (variant, v) {
+        var start = v * layers.length;
+        return '<section><h3 class="variant-name">' + escapeHtml(variant) + '</h3><div class="cards">'
+          + slots.slice(start, start + layers.length).map(function (slot, l) { return cellHtml(slot, start + l); }).join('')
+          + '</div></section>';
+      }).join('');
+    } else {
+      grid.innerHTML = '<div class="cards">' + slots.map(cellHtml).join('') + '</div>';
+    }
     slots.forEach(function (slot, i) { positionFrame(i); });
     updateStatus();
   }
@@ -1192,13 +1203,14 @@ function getLayersViewHtml (scriptUrl) {
     var images = chosen.filter(function (l) { return l.type === 'smart_object_layer'; });
     var context = 'Layers selected by the user for the variants: ' + JSON.stringify(chosen.map(function (l) {
       return { id: l.id, name: l.name, type: l.type };
-    })) + '. Next: if text layers were selected, get the texts of each variant (from the user, or written from a brief), give each '
-      + 'variant a short label, then call review-variant-texts'
+    })) + '. Next: if text layers were selected, get the texts of each variant (from the user, or written from a brief), each as long as '
+      + 'the original text of its layer, give each variant a short label, check them with preview-variant-texts (fix the texts that '
+      + 'do not fit), then call review-variant-texts'
       + (images.length
         ? '; then call upload-variant-images ONCE with all variant labels and layers ' + JSON.stringify(images.map(function (l) { return { id: l.id, name: l.name, width: l.frame && l.frame.width, height: l.frame && l.frame.height }; }))
           + ' (one grid for all variants; never call upload-file per image)'
         : '')
-      + '; then recap the variants in a Markdown table (label, texts, image file names) and call create-variant ONCE with all variants.';
+      + '; then call create-variant ONCE with all variants, without a recap.';
     var message = 'I picked these layers: ' + chosen.map(function (l) { return l.name; }).join(', ') + '. '
       + (chosen.length > images.length ? "Let's fill in the texts of each variant." : 'Continue.');
     sendToModel(context, message, 'Selection sent.')
@@ -1251,10 +1263,31 @@ function getTextsViewHtml (scriptUrl) {
   }
   .text-input:hover { border-color: var(--spectrum-gray-400); }
   .text-input:focus { outline: none; border-color: var(--spectrum-accent-background-color-default); background: var(--spectrum-background-base-color); }
+  /* Original text of a layer under its name, and the length of each text against it */
+  .original { font-weight: normal; color: var(--spectrum-neutral-subdued-content-color-default); white-space: pre-line; }
+  .length { margin-top: var(--spectrum-spacing-50); font-size: var(--spectrum-font-size-75); color: var(--spectrum-neutral-subdued-content-color-default); }
+  .length.off { color: var(--spectrum-negative-content-color-default); }
+  /* Preview of each variant with its texts, under the table */
+  .previews-header { display: flex; align-items: center; flex-wrap: wrap; gap: var(--spectrum-spacing-200); margin-top: var(--spectrum-spacing-300); }
+  .previews-header h3 { margin: 0; font-size: var(--spectrum-font-size-100); }
+  .previews { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: var(--spectrum-spacing-200); margin-top: var(--spectrum-spacing-200); }
+  .preview-card { display: flex; flex-direction: column; gap: var(--spectrum-spacing-100); min-width: 0; }
+  .preview-card .name { font-weight: var(--spectrum-bold-font-weight); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .preview-card img { width: 100%; border-radius: var(--spectrum-corner-radius-100); background: var(--spectrum-gray-200); }
+  .previews.stale img { opacity: 0.5; }
+  .preview-card .cell-error { color: var(--spectrum-negative-content-color-default); font-size: var(--spectrum-font-size-75); }
 `, `
 <h2 class="heading" id="title">Texts per variant</h2>
-<div class="subtle intro">Click a text to edit it, then confirm.</div>
+<div class="subtle intro">Click a text to edit it, then confirm. Keep each text about as long as the original, so that it fits the layout.</div>
 <div class="table-wrap"><table class="texts" id="table"></table></div>
+<div id="previews-section" hidden>
+  <div class="previews-header">
+    <h3>Preview</h3>
+    <sp-button size="s" variant="secondary" treatment="outline" id="refresh" disabled>Update the preview</sp-button>
+    <span class="subtle" id="previews-hint"></span>
+  </div>
+  <div class="previews" id="previews"></div>
+</div>
 <div class="actions">
   <sp-button variant="accent" id="confirm" disabled>Use these texts</sp-button>
   <sp-help-text class="status" id="status"></sp-help-text>
@@ -1262,8 +1295,15 @@ function getTextsViewHtml (scriptUrl) {
 `, `
   var table = document.getElementById('table');
   var confirmBtn = document.getElementById('confirm');
+  var refreshBtn = document.getElementById('refresh');
+  var previewsEl = document.getElementById('previews');
+  var previewsHint = document.getElementById('previews-hint');
   var layers = [];
   var variants = [];
+  var templateUrl = null;
+  // The preview shows the texts as they were when it was last rendered; stale once they are edited
+  var previewStale = false;
+  var previewLoading = false;
 
   function textOf(variant, layer) {
     var entry = (variant.texts || []).find(function (t) { return t.layerId === layer.id; });
@@ -1271,6 +1311,81 @@ function getTextsViewHtml (scriptUrl) {
   }
 
   function inputs() { return Array.prototype.slice.call(table.querySelectorAll('.text-input')); }
+
+  // Length of a text against the original of its layer: off with another number of lines or more than 10% more or fewer characters.
+  var LENGTH_TOLERANCE = 0.1;
+  function lineCount(text) { return text.split(/\\r\\n|\\r|\\n/).length; }
+  function lengthCheck(text, original) {
+    if (original == null) return { label: text.length + ' characters', off: false };
+    var lines = lineCount(text);
+    var originalLines = lineCount(original);
+    var off = lines !== originalLines || Math.abs(text.length - original.length) > original.length * LENGTH_TOLERANCE;
+    return {
+      label: text.length + ' / ' + original.length + ' characters' + (lines !== originalLines ? ', ' + lines + ' / ' + originalLines + ' lines' : ''),
+      off: off
+    };
+  }
+  function showLength(field) {
+    var check = lengthCheck(field.value, layers[Number(field.getAttribute('data-layer'))].text);
+    var el = field.nextElementSibling;
+    el.textContent = check.label;
+    el.classList.toggle('off', check.off);
+  }
+  table.addEventListener('input', function (e) {
+    if (!e.target.classList.contains('text-input')) return;
+    showLength(e.target);
+    if (templateUrl && !previewStale) {
+      previewStale = true;
+      updatePreviewState();
+    }
+  });
+
+  // Current texts of the table, one entry per variant with one text per layer.
+  function currentTexts() {
+    var fields = inputs();
+    return variants.map(function (v, r) {
+      return {
+        label: v.label,
+        texts: layers.map(function (l, c) { return { layerId: l.id, layerName: l.name, text: fields[r * layers.length + c].value }; })
+      };
+    });
+  }
+
+  function updatePreviewState() {
+    refreshBtn.disabled = previewLoading || !previewStale;
+    previewsEl.classList.toggle('stale', previewStale);
+    previewsHint.textContent = previewLoading ? 'Rendering the variants...'
+      : previewStale ? 'Texts changed: update the preview to check them.' : 'Check that each text fits its area.';
+    reportSize();
+  }
+
+  // Renders the template with the current texts of each variant (preview-variant-texts) and shows the results.
+  function loadPreviews() {
+    previewLoading = true;
+    previewStale = false;
+    updatePreviewState();
+    var toRender = currentTexts().map(function (v) {
+      return { label: v.label, texts: v.texts.map(function (t) { return { layerId: t.layerId, text: t.text }; }) };
+    });
+    callTool('preview-variant-texts', { templateUrl: templateUrl, variants: toRender, forView: true })
+      .then(function (result) {
+        previewsEl.innerHTML = (result.previews || []).map(function (p) {
+          return '<div class="preview-card"><div class="name">' + escapeHtml(p.label) + '</div>'
+            + (p.url ? '<img src="' + escapeHtml(p.url) + '" alt="' + escapeHtml(p.label) + '">' : '<div class="cell-error">' + escapeHtml(p.error || 'Preview failed') + '</div>')
+            + '</div>';
+        }).join('');
+        previewsEl.querySelectorAll('img').forEach(function (img) { img.addEventListener('load', reportSize); });
+      })
+      .catch(function (error) {
+        previewsEl.innerHTML = '<div class="cell-error">' + escapeHtml((error && error.message) || String(error)) + '</div>';
+      })
+      .then(function () {
+        previewLoading = false;
+        updatePreviewState();
+      });
+  }
+
+  refreshBtn.addEventListener('click', loadPreviews);
 
   // Browsers without CSS field-sizing fit the heights in JS: once per frame at most, resetting all heights before
   // reading them so that the layout is computed once; again when the column widths change.
@@ -1300,16 +1415,19 @@ function getTextsViewHtml (scriptUrl) {
   // One column per text layer, one row per variant with an editable text per layer (in this order in the DOM).
   function render() {
     table.innerHTML = '<thead><tr><th>Variant</th>'
-      + layers.map(function (l) { return '<th>' + escapeHtml(l.name) + '</th>'; }).join('')
+      + layers.map(function (l) {
+        return '<th>' + escapeHtml(l.name) + (l.text != null ? '<div class="original">' + escapeHtml(l.text) + '</div>' : '') + '</th>';
+      }).join('')
       + '</tr></thead><tbody>'
       + variants.map(function (v) {
         return '<tr><td>' + escapeHtml(v.label) + '</td>'
-          + layers.map(function (l) {
-            return '<td><textarea class="text-input" rows="1" aria-label="' + escapeHtml(v.label + ', ' + l.name) + '">'
-              + escapeHtml(textOf(v, l)) + '</textarea></td>';
+          + layers.map(function (l, c) {
+            return '<td><textarea class="text-input" rows="1" data-layer="' + c + '" aria-label="' + escapeHtml(v.label + ', ' + l.name) + '">'
+              + escapeHtml(textOf(v, l)) + '</textarea><div class="length"></div></td>';
           }).join('') + '</tr>';
       }).join('')
       + '</tbody>';
+    inputs().forEach(showLength);
     fitAll();
     confirmBtn.disabled = !variants.length;
   }
@@ -1317,21 +1435,29 @@ function getTextsViewHtml (scriptUrl) {
   onToolInput(function (args) {
     layers = args.layers || [];
     variants = args.variants || [];
+    templateUrl = args.templateUrl || null;
     if (args.title) document.getElementById('title').textContent = args.title;
     render();
+    document.getElementById('previews-section').hidden = !templateUrl;
+    if (templateUrl) loadPreviews();
   });
 
   confirmBtn.addEventListener('click', function () {
     confirmBtn.disabled = true;
-    var fields = inputs();
-    var confirmed = variants.map(function (v, r) {
-      return {
-        label: v.label,
-        texts: layers.map(function (l, c) { return { layerId: l.id, layerName: l.name, text: fields[r * layers.length + c].value }; })
-      };
+    var confirmed = currentTexts();
+    // Texts whose length differs from the original, to check with preview-variant-texts before going on
+    var offLength = [];
+    confirmed.forEach(function (v) {
+      v.texts.forEach(function (t, c) {
+        var check = lengthCheck(t.text, layers[c].text);
+        if (check.off) offLength.push(v.label + ' / ' + t.layerName + ' (' + check.label + ')');
+      });
     });
     var context = 'Texts confirmed by the user for each variant. Use them exactly, as text_layer edits '
-      + '{ id: layerId, type: "text_layer", text } in create-variant:\\n' + JSON.stringify({ variants: confirmed });
+      + '{ id: layerId, type: "text_layer", text } in create-variant:\\n' + JSON.stringify({ variants: confirmed })
+      + (templateUrl && !previewStale ? '\\nThe user checked these texts on the preview of each variant.'
+        : '\\nThe user did not see a preview of these texts: check them with preview-variant-texts and propose corrections before going on.')
+      + (offLength.length ? '\\nTexts whose length differs from the original: ' + offLength.join('; ') : '');
     sendToModel(context, 'I confirmed the texts of the ' + confirmed.length + ' variant(s), continue.', 'Texts sent.')
       .catch(function (error) {
         confirmBtn.disabled = false;
