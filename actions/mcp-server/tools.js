@@ -29,17 +29,19 @@ const VIEWS = {
 const WORKFLOW = `Variant creation workflow. When the user asks to create variants (or versions, adaptations, localizations...) of a banner, ad, visual, social post or any PSD template, ALWAYS follow these steps in order, one at a time, without skipping any:
 1. Start: call start-variant-creation (pass variantCount if the user already gave it). The user sets the number of variants and uploads the PSD template (from their computer or AEM Assets) in the widget, then says to continue. Do not ask for the file in chat and do not look for it elsewhere.
 2. Layer selection: immediately call get-psd-manifest with the template URL. The user picks the layers to vary in the widget. Then wait.
-3. Texts: right after the layer selection, if text layers were selected, list them with their current text and ask the user which texts to use for each variant: either they provide the texts, or you write them (then ask for the brief: subject, tone, language, length constraints). If you write them, show your proposal per variant and let the user adjust it before going on. Give each variant a short label (e.g. its title). Then wait.
+3. Texts: right after the layer selection, if text layers were selected, show their current text in a Markdown table (one column per text layer, named after the layer) and ask the user which texts to use for each variant: either they provide the texts, or you write them (then ask for the brief: subject, tone, language, length constraints). Show the texts of the variants in the same table, a first "Current" row with the texts of the template then one row per variant, its label in the first column, and let the user adjust them before going on. Give each variant a short label (e.g. its title). Then wait.
 4. Images: if smart object layers were selected, call upload-variant-images ONCE with the variant labels and the selected smart object layers (id, name and frame width and height from get-psd-manifest), so the user drops (or picks from AEM Assets) one image per variant and layer in a grid and adjusts how each one is cropped to its frame. Never ask for an image URL. Then wait.
-5. Generation: briefly recap each variant (texts and image file names), then call create-variant ONCE with all variants, passing for each image the crop chosen in the grid. The widget shows the generated files with download buttons.
+5. Generation: recap the variants in a Markdown table (one row per variant: label, the text of each text layer, the image file name of each smart object layer), then call create-variant ONCE with all variants, passing for each image the crop chosen in the grid. The widget shows the generated files with download buttons.
 Changes after generation: to re-crop or swap images, call upload-variant-images again with images pre-filled from the previous confirmation (never ask to upload again the images you already have, unless their URLs expired); to change texts, call create-variant again with the new texts.
 Never show presigned URLs to the user; they are internal. Reply in the user's language.`
 
-const NEXT_STEPS_AFTER_SELECTION = 'Wait for the user to pick layers in the widget. Then: (1) if text layers were selected, list them with their ' +
-  'current text and ask which texts to use for each variant: the user provides them, or you write them (ask for the brief: subject, tone, ' +
-  'language, length) and let the user adjust your proposal; give each variant a short label; (2) if smart object layers were selected, call upload-variant-images ONCE with all variant labels and ' +
+const NEXT_STEPS_AFTER_SELECTION = 'Wait for the user to pick layers in the widget. Then: (1) if text layers were selected, show their ' +
+  'current text in a Markdown table (one column per text layer) and ask which texts to use for each variant: the user provides them, or you ' +
+  'write them (ask for the brief: subject, tone, language, length); show them in the same table (a "Current" row, then one row per variant ' +
+  'with its label first) and let the user adjust them; give each variant a short label; (2) if smart object layers were selected, call upload-variant-images ONCE with all variant labels and ' +
   'the selected smart object layers (id, name, and frame width and height): it shows a single grid, one image per variant and layer, ' +
-  'where the user adjusts each crop. Never call upload-file per image and never ask for image URLs; (3) recap, then call create-variant ONCE ' +
+  'where the user adjusts each crop. Never call upload-file per image and never ask for image URLs; (3) recap the variants in a Markdown ' +
+  'table (label, texts, image file names), then call create-variant ONCE ' +
   'with all variants, passing each image crop as given by the grid.'
 
 // Server-to-server token for Firefly Services, reused across warm invocations.

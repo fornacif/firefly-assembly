@@ -515,6 +515,8 @@ function getVariantImagesViewHtml (scriptUrl) {
   .zoom input { flex: 1; min-width: 0; accent-color: var(--spectrum-gray-800); }
   .file-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   sp-dropzone sp-progress-bar { width: 100%; }
+  /* sp-dropzone gives its content a larger font and a 1.5 line height, which sp-button inherits and which pushes its label down */
+  sp-dropzone sp-button { font-size: var(--spectrum-font-size-75); line-height: var(--spectrum-line-height-100); }
   .cell-error { color: var(--spectrum-negative-content-color-default); font-size: var(--spectrum-font-size-75); }
   .actions { margin-top: var(--spectrum-spacing-300); display: flex; align-items: center; gap: var(--spectrum-spacing-300); }
   .actions .status { margin-top: 0; }
@@ -1072,20 +1074,25 @@ function getLayersViewHtml (scriptUrl) {
     var images = chosen.filter(function (l) { return l.type === 'smart_object_layer'; });
     var context = 'Layers selected by the user for the variants: ' + JSON.stringify(chosen.map(function (l) {
       return { id: l.id, name: l.name, type: l.type };
-    })) + '. Next: if text layers were selected, list them with their current text and ask which texts to use for each variant: '
-      + 'the user provides them, or you write them (ask for the brief: subject, tone, language, length) and let the user adjust your proposal; '
+    })) + '. Next: if text layers were selected, show their current text in a Markdown table (one column per text layer) and ask which texts '
+      + 'to use for each variant: the user provides them, or you write them (ask for the brief: subject, tone, language, length); show them '
+      + 'in the same table (a "Current" row, then one row per variant with its label first) and let the user adjust them; '
       + 'give each variant a short label'
       + (images.length
         ? '; then call upload-variant-images ONCE with all variant labels and layers ' + JSON.stringify(images.map(function (l) { return { id: l.id, name: l.name, width: l.frame && l.frame.width, height: l.frame && l.frame.height }; }))
           + ' (one grid for all variants; never call upload-file per image)'
         : '')
-      + '; then recap and call create-variant ONCE with all variants.';
+      + '; then recap the variants in a Markdown table (label, texts, image file names) and call create-variant ONCE with all variants.';
     request('ui/update-model-context', { content: [{ type: 'text', text: context }] })
       .then(function () {
         setStatus('Selection sent.');
         return request('ui/message', {
           role: 'user',
-          content: [{ type: 'text', text: 'I picked these layers: ' + chosen.map(function (l) { return l.name; }).join(', ') + '. Continue.' }]
+          content: [{
+            type: 'text',
+            text: 'I picked these layers: ' + chosen.map(function (l) { return l.name; }).join(', ') + '. '
+              + (chosen.length > images.length ? "Let's fill in the texts of each variant." : 'Continue.')
+          }]
         });
       })
       .catch(function (error) {
