@@ -22,6 +22,9 @@ const BASE_STYLE = `
     font-weight: var(--spectrum-bold-font-weight);
   }
   .subtle { color: var(--spectrum-neutral-subdued-content-color-default); font-size: var(--spectrum-font-size-75); }
+  .subtle.intro { margin: var(--spectrum-spacing-75) 0 var(--spectrum-spacing-300); }
+  .actions { margin-top: var(--spectrum-spacing-300); display: flex; align-items: center; gap: var(--spectrum-spacing-300); }
+  .actions .status { margin-top: 0; }
 `
 
 // JSON-RPC bridge with the host: request(), notification(), onToolResult(), setStatus(), reportSize().
@@ -109,6 +112,31 @@ const BRIDGE_SCRIPT = `
 
   if (window.ResizeObserver) new ResizeObserver(reportSize).observe(document.body);
 
+  // Calls a tool of this server; resolves to its structured result, rejects with its error text.
+  function callTool(name, args) {
+    return request('tools/call', { name: name, arguments: args || {} }).then(function (result) {
+      if (result.isError) throw new Error(result.content[0].text);
+      return result.structuredContent || JSON.parse(result.content[0].text);
+    });
+  }
+
+  // Sends the result of a view to Claude, then a user message so that it continues. The result is stored on the server
+  // under a short reference carried by the message (get-widget-result), because some models do not reliably see the
+  // model context the host is given with ui/update-model-context; it is still given there too.
+  function sendToModel(context, message, sentStatus) {
+    return callTool('save-widget-result', { text: context })
+      .then(function (saved) { return saved.ref; })
+      // Without a reference, Claude can still read the result in the model context
+      .catch(function () { return null; })
+      .then(function (ref) {
+        return request('ui/update-model-context', { content: [{ type: 'text', text: context }] })
+          .then(function () {
+            if (sentStatus) setStatus(sentStatus);
+            return request('ui/message', { role: 'user', content: [{ type: 'text', text: message + (ref ? ' (ref ' + ref + ')' : '') }] });
+          });
+      });
+  }
+
   function initialize(appName) {
     request('ui/initialize', {
       protocolVersion: '2026-01-26',
@@ -149,10 +177,8 @@ const UPLOAD_SCRIPT = `
   }
 
   function uploadOne(file, onProgress) {
-    return request('tools/call', { name: 'create-upload-url', arguments: { fileName: file.name } })
-      .then(function (result) {
-        if (result.isError) throw new Error(result.content[0].text);
-        var urls = result.structuredContent || JSON.parse(result.content[0].text);
+    return callTool('create-upload-url', { fileName: file.name })
+      .then(function (urls) {
         return putFile(urls.uploadUrl, file, onProgress).then(function () { return { name: file.name, url: urls.readUrl }; });
       });
   }
@@ -168,15 +194,9 @@ const AEM_SCRIPT = `
   var aemConfig = null;
   var aemPickId = 0;
 
-  function toolResult(result) {
-    if (result.isError) throw new Error(result.content[0].text);
-    return result.structuredContent || JSON.parse(result.content[0].text);
-  }
-
   function loadAemConfig() {
     return ready
-      .then(function () { return request('tools/call', { name: 'get-aem-selector-config', arguments: {} }); })
-      .then(toolResult)
+      .then(function () { return callTool('get-aem-selector-config'); })
       .then(function (config) { aemConfig = config.enabled ? config : null; return aemConfig; })
       .catch(function () { return null; });
   }
@@ -186,7 +206,7 @@ const AEM_SCRIPT = `
     return new Promise(function (resolve) { setTimeout(resolve, AEM_POLL_INTERVAL_MS); })
       .then(function () {
         if (pickId !== aemPickId) return { status: 'cancelled', assets: [] };
-        return request('tools/call', { name: 'get-aem-picker-result', arguments: { sessionId: sessionId } }).then(toolResult);
+        return callTool('get-aem-picker-result', { sessionId: sessionId });
       })
       .then(function (result) {
         if (result.status === 'pending' && Date.now() < deadline) return waitForAemSelection(sessionId, pickId, deadline);
@@ -197,8 +217,7 @@ const AEM_SCRIPT = `
 
   function pickAemAssets(multiple) {
     var pickId = ++aemPickId;
-    return request('tools/call', { name: 'create-aem-picker-session', arguments: { multiple: multiple } })
-      .then(toolResult)
+    return callTool('create-aem-picker-session', { multiple: multiple })
       .then(function (session) {
         return request('ui/open-link', { url: session.pickerUrl }).then(function (result) {
           if (result && result.isError) throw new Error('The AEM selector tab could not be opened.');
@@ -213,8 +232,7 @@ const AEM_SCRIPT = `
   }
 
   function importAemAsset(asset) {
-    return request('tools/call', { name: 'import-aem-asset', arguments: { repositoryId: asset['repo:repositoryId'], assetId: asset['repo:assetId'] || undefined, path: asset['repo:path'] || undefined, fileName: asset['repo:name'] } })
-      .then(toolResult)
+    return callTool('import-aem-asset', { repositoryId: asset['repo:repositoryId'], assetId: asset['repo:assetId'] || undefined, path: asset['repo:path'] || undefined, fileName: asset['repo:name'] })
       .then(function (imported) { return { name: imported.fileName, url: imported.url }; });
   }
 `
@@ -310,14 +328,8 @@ ${UPLOAD_SCRIPT}
         var context = 'The user uploaded ' + uploaded.length + ' file(s), in this order (URLs valid 24 hours):\\n'
           + uploaded.map(function (u, i) { return (i + 1) + '. ' + u.name + ': ' + u.url; }).join('\\n');
         setStatus(uploaded.length > 1 ? uploaded.length + ' files uploaded.' : names + ' uploaded.');
-        // Put the URLs in the model context (not shown to the user), then send a short prompt so Claude continues.
-        return request('ui/update-model-context', { content: [{ type: 'text', text: context }] })
-          .then(function () {
-            return request('ui/message', {
-              role: 'user',
-              content: [{ type: 'text', text: 'I uploaded ' + names + ', continue.' }]
-            });
-          });
+        // The URLs go to Claude only (not shown to the user), with a short prompt so that it continues
+        return sendToModel(context, 'I uploaded ' + names + ', continue.');
       })
       .catch(function (error) {
         setStatus((error && error.message) || String(error), true);
@@ -333,7 +345,6 @@ ${UPLOAD_SCRIPT}
 
 function getStartViewHtml (scriptUrl) {
   return page(scriptUrl, 'Create Variants', `
-  .subtle.intro { margin: var(--spectrum-spacing-75) 0 var(--spectrum-spacing-300); }
   .field { display: flex; flex-direction: column; gap: var(--spectrum-spacing-75); margin-bottom: var(--spectrum-spacing-300); }
   .field label { font-size: var(--spectrum-font-size-75); color: var(--spectrum-neutral-subdued-content-color-default); }
   .field input {
@@ -364,8 +375,6 @@ function getStartViewHtml (scriptUrl) {
   sp-dropzone sp-button { font-size: var(--spectrum-font-size-100); line-height: var(--spectrum-line-height-100); }
   #file { display: none; }
   sp-progress-bar { width: 100%; margin-top: var(--spectrum-spacing-200); }
-  .actions { margin-top: var(--spectrum-spacing-300); display: flex; align-items: center; gap: var(--spectrum-spacing-300); }
-  .actions .status { margin-top: 0; }
 `, `
 <h2 class="heading">Create variants</h2>
 <div class="subtle intro">Set the number of variants and drop the layered PSD template.</div>
@@ -479,14 +488,7 @@ ${AEM_SCRIPT}
     continueBtn.disabled = true;
     var context = 'Variant creation started. Number of variants: ' + n + '. PSD template: ' + template.name
       + ', URL (valid 24 hours): ' + template.url + '. Next step: call get-psd-manifest with this URL.';
-    request('ui/update-model-context', { content: [{ type: 'text', text: context }] })
-      .then(function () {
-        setStatus('Template sent.');
-        return request('ui/message', {
-          role: 'user',
-          content: [{ type: 'text', text: 'I want ' + n + ' variant(s) of ' + template.name + ', continue.' }]
-        });
-      })
+    sendToModel(context, 'I want ' + n + ' variant(s) of ' + template.name + ', continue.', 'Template sent.')
       .catch(function (error) {
         updateButton();
         setStatus((error && error.message) || String(error), true);
@@ -497,7 +499,6 @@ ${AEM_SCRIPT}
 
 function getVariantImagesViewHtml (scriptUrl) {
   return page(scriptUrl, 'Variant Images', `
-  .subtle.intro { margin: var(--spectrum-spacing-75) 0 var(--spectrum-spacing-300); }
   /* One card per slot (variant and smart object layer), as many per row as fit */
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: var(--spectrum-spacing-200); align-items: stretch; }
   .grid > * { min-width: 0; }
@@ -542,8 +543,6 @@ function getVariantImagesViewHtml (scriptUrl) {
   /* sp-dropzone gives its content a larger font and a 1.5 line height, which sp-button inherits and which pushes its label down */
   sp-dropzone sp-button { font-size: var(--spectrum-font-size-75); line-height: var(--spectrum-line-height-100); }
   .cell-error { color: var(--spectrum-negative-content-color-default); font-size: var(--spectrum-font-size-75); }
-  .actions { margin-top: var(--spectrum-spacing-300); display: flex; align-items: center; gap: var(--spectrum-spacing-300); }
-  .actions .status { margin-top: 0; }
   #file { display: none; }
   .library { margin-bottom: var(--spectrum-spacing-300); }
   .library-header { display: flex; align-items: center; flex-wrap: wrap; gap: var(--spectrum-spacing-200); }
@@ -627,6 +626,9 @@ ${AEM_SCRIPT}
   var libraryHint = document.getElementById('library-hint');
   var library = [];
   var armed = -1;
+
+  // Size of the image and a crop at the frame ratio, framed on its subject.
+  function suggestCrop(imageUrl, ratio) { return callTool('suggest-crop', { imageUrl: imageUrl, ratio: ratio }); }
 
   // Slots are stored row by row: index = variant * layers.length + layer.
   function layerOf(index) { return layers[index % layers.length]; }
@@ -723,13 +725,10 @@ ${AEM_SCRIPT}
         if (!ratio) return null;
         slot.status = 'framing';
         render();
-        return request('tools/call', { name: 'suggest-crop', arguments: { imageUrl: uploaded.url, ratio: ratio } })
-          .then(function (result) {
-            if (result.isError) throw new Error(result.content[0].text);
-            var suggestion = result.structuredContent || JSON.parse(result.content[0].text);
-            slot.image = suggestion.image;
-            slot.crop = suggestion.crop;
-          });
+        return suggestCrop(uploaded.url, ratio).then(function (suggestion) {
+          slot.image = suggestion.image;
+          slot.crop = suggestion.crop;
+        });
       })
       .then(function () {
         if (slots[index] !== slot) return;
@@ -832,10 +831,8 @@ ${AEM_SCRIPT}
     var ratio = ratioOf(index);
     if (!ratio || (slot.image && slot.crop)) return;
     slot.status = 'framing';
-    request('tools/call', { name: 'suggest-crop', arguments: { imageUrl: image.url, ratio: ratio } })
-      .then(function (result) {
-        if (result.isError) throw new Error(result.content[0].text);
-        var suggestion = result.structuredContent || JSON.parse(result.content[0].text);
+    suggestCrop(image.url, ratio)
+      .then(function (suggestion) {
         slot.image = suggestion.image;
         if (!slot.crop) slot.crop = suggestion.crop;
         slot.status = 'done';
@@ -994,14 +991,7 @@ ${AEM_SCRIPT}
       + '(smart_object_layer edit = { id: layerId, type: "smart_object_layer", imageUrl: url, crop }). '
       + 'To re-crop later, pass this "images" array as is to upload-variant-images:\\n'
       + JSON.stringify({ images: images });
-    request('ui/update-model-context', { content: [{ type: 'text', text: context }] })
-      .then(function () {
-        setStatus('Images sent.');
-        return request('ui/message', {
-          role: 'user',
-          content: [{ type: 'text', text: 'I added and framed the images for the ' + variants.length + ' variant(s), continue.' }]
-        });
-      })
+    sendToModel(context, 'I added and framed the images for the ' + variants.length + ' variant(s), continue.', 'Images sent.')
       .catch(function (error) {
         confirmBtn.disabled = false;
         setStatus((error && error.message) || String(error), true);
@@ -1012,7 +1002,7 @@ ${AEM_SCRIPT}
 
 function getLayersViewHtml (scriptUrl) {
   return page(scriptUrl, 'PSD Layers', `
-  .subtle.intro { margin: var(--spectrum-spacing-75) 0 var(--spectrum-spacing-200); }
+  .subtle.intro { margin-bottom: var(--spectrum-spacing-200); }
   .list { border: 1px solid var(--spectrum-gray-200); border-radius: var(--spectrum-corner-radius-200); overflow: hidden; display: none; }
   .row {
     display: flex;
@@ -1029,7 +1019,6 @@ function getLayersViewHtml (scriptUrl) {
   #layers .row.hover { background: var(--spectrum-gray-100); }
   .layer-name { font-weight: var(--spectrum-bold-font-weight); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .row sp-badge { justify-self: start; }
-  .actions { margin-top: var(--spectrum-spacing-300); }
   /* Preview on the left (half of the width at most) and list on the right; the list goes below on very narrow views */
   .picker { display: flex; align-items: flex-start; gap: var(--spectrum-spacing-300); }
   .picker .list { flex: 1 1 0; min-width: 0; }
@@ -1210,18 +1199,9 @@ function getLayersViewHtml (scriptUrl) {
           + ' (one grid for all variants; never call upload-file per image)'
         : '')
       + '; then recap the variants in a Markdown table (label, texts, image file names) and call create-variant ONCE with all variants.';
-    request('ui/update-model-context', { content: [{ type: 'text', text: context }] })
-      .then(function () {
-        setStatus('Selection sent.');
-        return request('ui/message', {
-          role: 'user',
-          content: [{
-            type: 'text',
-            text: 'I picked these layers: ' + chosen.map(function (l) { return l.name; }).join(', ') + '. '
-              + (chosen.length > images.length ? "Let's fill in the texts of each variant." : 'Continue.')
-          }]
-        });
-      })
+    var message = 'I picked these layers: ' + chosen.map(function (l) { return l.name; }).join(', ') + '. '
+      + (chosen.length > images.length ? "Let's fill in the texts of each variant." : 'Continue.');
+    sendToModel(context, message, 'Selection sent.')
       .catch(function (error) {
         confirmBtn.disabled = false;
         setStatus((error && error.message) || String(error), true);
@@ -1232,7 +1212,7 @@ function getLayersViewHtml (scriptUrl) {
 
 function getTextsViewHtml (scriptUrl) {
   return page(scriptUrl, 'Variant Texts', `
-  .subtle.intro { margin: var(--spectrum-spacing-75) 0 var(--spectrum-spacing-200); }
+  .subtle.intro { margin-bottom: var(--spectrum-spacing-200); }
   .table-wrap { overflow-x: auto; }
   /* Compact table with Spectrum tokens: header row above a rounded, bordered body, one column per text layer */
   .texts { width: 100%; border-collapse: separate; border-spacing: 0; }
@@ -1271,8 +1251,6 @@ function getTextsViewHtml (scriptUrl) {
   }
   .text-input:hover { border-color: var(--spectrum-gray-400); }
   .text-input:focus { outline: none; border-color: var(--spectrum-accent-background-color-default); background: var(--spectrum-background-base-color); }
-  .actions { margin-top: var(--spectrum-spacing-300); display: flex; align-items: center; gap: var(--spectrum-spacing-300); }
-  .actions .status { margin-top: 0; }
 `, `
 <h2 class="heading" id="title">Texts per variant</h2>
 <div class="subtle intro">Click a text to edit it, then confirm.</div>
@@ -1354,14 +1332,7 @@ function getTextsViewHtml (scriptUrl) {
     });
     var context = 'Texts confirmed by the user for each variant. Use them exactly, as text_layer edits '
       + '{ id: layerId, type: "text_layer", text } in create-variant:\\n' + JSON.stringify({ variants: confirmed });
-    request('ui/update-model-context', { content: [{ type: 'text', text: context }] })
-      .then(function () {
-        setStatus('Texts sent.');
-        return request('ui/message', {
-          role: 'user',
-          content: [{ type: 'text', text: 'I confirmed the texts of the ' + confirmed.length + ' variant(s), continue.' }]
-        });
-      })
+    sendToModel(context, 'I confirmed the texts of the ' + confirmed.length + ' variant(s), continue.', 'Texts sent.')
       .catch(function (error) {
         confirmBtn.disabled = false;
         setStatus((error && error.message) || String(error), true);
@@ -1395,6 +1366,7 @@ function getVariantViewHtml (scriptUrl) {
     cursor: zoom-in;
   }
   .card-name { word-break: break-all; }
+  .downloads { display: flex; flex-wrap: wrap; gap: var(--spectrum-spacing-100); }
   .card-error { color: var(--spectrum-negative-content-color-default); font-size: var(--spectrum-font-size-75); word-break: break-word; }
   .preview { display: none; }
   .preview.open { display: block; }
@@ -1416,7 +1388,7 @@ function getVariantViewHtml (scriptUrl) {
     <span class="preview-name" id="preview-name"></span>
     <sp-button size="s" variant="secondary" treatment="outline" data-action="prev">Previous</sp-button>
     <sp-button size="s" variant="secondary" treatment="outline" data-action="next">Next</sp-button>
-    <sp-button size="s" variant="accent" data-action="download">Download</sp-button>
+    <span class="downloads" id="preview-downloads"></span>
   </div>
   <img id="preview-image" alt="">
 </div>
@@ -1428,6 +1400,20 @@ function getVariantViewHtml (scriptUrl) {
   var previewImage = document.getElementById('preview-image');
   var variants = [];
   var current = -1;
+  var FORMAT_LABELS = { png: 'PNG', jpeg: 'JPEG', psd: 'PSD' };
+
+  // Files of a variant, one per format (results of earlier versions have a single image)
+  function filesOf(v) {
+    return v.files || [{ format: v.format, url: v.downloadUrl || v.imageUrl }];
+  }
+
+  // One "Download <format>" button per file of the variant
+  function downloadButtons(index, variant) {
+    return filesOf(variants[index]).map(function (file, f) {
+      return '<sp-button size="s" variant="' + variant + '" treatment="outline" data-action="download" data-index="' + index + '" data-file="' + f + '">'
+        + 'Download ' + (FORMAT_LABELS[file.format] || '') + '</sp-button>';
+    }).join('');
+  }
 
   function render() {
     grid.innerHTML = variants.map(function (v, i) {
@@ -1437,7 +1423,7 @@ function getVariantViewHtml (scriptUrl) {
       }
       return '<div class="card"><img src="' + escapeHtml(v.imageUrl) + '" alt="' + escapeHtml(v.fileName) + '" data-index="' + i + '">'
         + '<div class="subtle card-name">' + escapeHtml(v.fileName) + '</div>'
-        + '<sp-button variant="secondary" treatment="outline" size="s" data-action="download" data-index="' + i + '">Download</sp-button></div>';
+        + '<div class="downloads">' + downloadButtons(i, 'secondary') + '</div></div>';
     }).join('');
     var ok = variants.filter(function (v) { return !v.error; }).length;
     setStatus(ok + '/' + variants.length + ' variant(s) generated — click a visual to enlarge it — links valid for 24 hours', ok === 0);
@@ -1458,6 +1444,7 @@ function getVariantViewHtml (scriptUrl) {
       previewImage.alt = variants[index].fileName;
       var list = generated();
       document.getElementById('preview-name').textContent = variants[index].fileName + ' (' + (list.indexOf(index) + 1) + '/' + list.length + ')';
+      document.getElementById('preview-downloads').innerHTML = downloadButtons(index, 'accent');
     }
     reportSize();
   }
@@ -1467,8 +1454,9 @@ function getVariantViewHtml (scriptUrl) {
     showPreview(list[(list.indexOf(current) + delta + list.length) % list.length]);
   }
 
-  function download(index) {
-    request('ui/open-link', { url: variants[index].downloadUrl || variants[index].imageUrl }).catch(function () {
+  function download(button) {
+    var file = filesOf(variants[Number(button.getAttribute('data-index'))])[Number(button.getAttribute('data-file'))];
+    request('ui/open-link', { url: file.url }).catch(function () {
       setStatus('Could not open the download link.', true);
     });
   }
@@ -1478,7 +1466,7 @@ function getVariantViewHtml (scriptUrl) {
     if (!target) return;
     var index = Number(target.getAttribute('data-index'));
     if (target.tagName === 'IMG') showPreview(index);
-    else download(index);
+    else download(target);
   });
 
   preview.addEventListener('click', function (e) {
@@ -1489,7 +1477,7 @@ function getVariantViewHtml (scriptUrl) {
     if (action === 'back') showPreview(-1);
     else if (action === 'prev') step(-1);
     else if (action === 'next') step(1);
-    else if (action === 'download') download(current);
+    else if (action === 'download') download(button);
   });
 
   previewImage.addEventListener('load', reportSize);

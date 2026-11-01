@@ -31,16 +31,25 @@ function getTokenFromRequest (params) {
 }
 
 /**
+ * Read the claims of a JWT without verifying it (IMS verifies it).
+ * @param {string} token
+ * @returns {Record<string, any>}
+ */
+function getUnverifiedClaims (token) {
+  try {
+    return JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8')) || {}
+  } catch (_) {
+    return {}
+  }
+}
+
+/**
  * Read the client_id claim from a JWT without verifying it (IMS verifies it).
  * @param {string} token
  * @returns {string}
  */
 function getUnverifiedClientId (token) {
-  try {
-    return JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8')).client_id || ''
-  } catch (_) {
-    return ''
-  }
+  return getUnverifiedClaims(token).client_id || ''
 }
 
 /**
@@ -89,6 +98,7 @@ async function validateRequestAuth (params, logger = console) {
 module.exports = {
   getHeadersNormalized,
   getTokenFromRequest,
+  getUnverifiedClaims,
   getUnverifiedClientId,
   validateRequestAuth
 }

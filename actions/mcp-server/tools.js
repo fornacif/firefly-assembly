@@ -3,7 +3,8 @@ const { Readable } = require('stream')
 const { z } = require('zod')
 const filesLib = require('@adobe/aio-lib-files')
 const { getStartViewHtml, getUploadViewHtml, getVariantImagesViewHtml, getLayersViewHtml, getTextsViewHtml, getVariantViewHtml } = require('./views.js')
-const { getTokenFromRequest, getUnverifiedClientId } = require('./validator.js')
+const stateLib = require('@adobe/aio-lib-state')
+const { getTokenFromRequest, getUnverifiedClaims, getUnverifiedClientId } = require('./validator.js')
 const { createPickerSession, getPickerResult } = require('./aem-picker.js')
 const spectrumAsset = require('./spectrum-asset.js')
 
@@ -15,6 +16,8 @@ const URL_EXPIRY_SECONDS = 24 * 3600
 const STORAGE_ORIGIN = 'https://firefly.azureedge.net'
 const EDITABLE_LAYER_TYPES = ['text_layer', 'smart_object_layer']
 const MAX_VARIANTS = 10
+const WIDGET_RESULT_TTL_SECONDS = 24 * 3600
+const WIDGET_RESULT_REF = /^r[0-9a-f]{16}$/
 const AEM_PICKER_PAGE = 'aem-picker.html'
 
 const RESOURCE_MIME_TYPE = 'text/html;profile=mcp-app'
@@ -34,6 +37,7 @@ const WORKFLOW = `Variant creation workflow. When the user asks to create varian
 4. Images: if smart object layers were selected, call upload-variant-images ONCE with the variant labels and the selected smart object layers (id, name and frame width and height from get-psd-manifest), so the user drops (or picks from AEM Assets) one image per variant and layer in a grid and adjusts how each one is cropped to its frame. Never ask for an image URL. Then wait.
 5. Generation: recap the variants in a Markdown table (one row per variant: label, the text of each text layer, the image file name of each smart object layer), then call create-variant ONCE with all variants, passing for each image the crop chosen in the grid. The widget shows the generated files with download buttons.
 Changes after generation: to re-crop or swap images, call upload-variant-images again with images pre-filled from the previous confirmation (never ask to upload again the images you already have, unless their URLs expired); to change texts, call create-variant again with the new texts.
+Widgets send their result (template URL, layers, texts, images) in your context and end the user's message with "(ref r...)": if you do not have that result in your context, call get-widget-result with this ref before going on; never ask the user to redo a step because a result seems missing.
 Never show presigned URLs to the user; they are internal. Reply in the user's language.`
 
 const NEXT_STEPS_AFTER_SELECTION = 'Wait for the user to pick layers in the widget. Then: (1) if text layers were selected, get the ' +
@@ -71,6 +75,8 @@ const RATE_LIMIT_RETRIES = 6
 const RATE_LIMIT_BASE_DELAY_MS = 1000
 const RATE_LIMIT_MAX_DELAY_MS = 30000
 
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
+
 // fetch that waits and retries when Firefly Services answers 429 (rate limit): for the Retry-After delay when given,
 // otherwise with an exponential backoff, randomized so that parallel jobs do not retry all at once.
 async function fetchWithRateLimit (url, options) {
@@ -79,20 +85,21 @@ async function fetchWithRateLimit (url, options) {
     if (response.status !== 429 || attempt >= RATE_LIMIT_RETRIES) return response
     const retryAfterMs = Number(response.headers.get('retry-after')) * 1000
     const backoffMs = RATE_LIMIT_BASE_DELAY_MS * 2 ** attempt * (0.5 + Math.random())
-    await new Promise(resolve => setTimeout(resolve, Math.min(retryAfterMs > 0 ? retryAfterMs : backoffMs, RATE_LIMIT_MAX_DELAY_MS)))
+    await wait(Math.min(retryAfterMs > 0 ? retryAfterMs : backoffMs, RATE_LIMIT_MAX_DELAY_MS))
+  }
+}
+
+// Headers of the Firefly Services APIs (Photoshop, auto-crop), with the server-to-server token.
+async function fireflyHeaders (params) {
+  return {
+    Authorization: `Bearer ${await getFireflyServicesToken(params)}`,
+    'x-api-key': params.FIREFLY_SERVICES_API_CLIENT_ID,
+    'Content-Type': 'application/json'
   }
 }
 
 async function callPhotoshop (params, path, options = {}) {
-  const token = await getFireflyServicesToken(params)
-  const response = await fetchWithRateLimit(`${PHOTOSHOP_API}${path}`, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'x-api-key': params.FIREFLY_SERVICES_API_CLIENT_ID,
-      'Content-Type': 'application/json'
-    }
-  })
+  const response = await fetchWithRateLimit(`${PHOTOSHOP_API}${path}`, { ...options, headers: await fireflyHeaders(params) })
   const body = await response.json()
   if (!response.ok) throw new Error(`Photoshop API ${response.status}: ${JSON.stringify(body)}`)
   return body
@@ -104,7 +111,7 @@ async function runPhotoshopJob (params, path, body) {
 
   const deadline = Date.now() + POLL_TIMEOUT_MS
   while (Date.now() < deadline) {
-    await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS))
+    await wait(POLL_INTERVAL_MS)
     const status = await callPhotoshop(params, `/status/${jobId}`)
     if (status.status === 'succeeded') return status.result
     if (status.status === 'failed') throw new Error(`Photoshop job failed: ${JSON.stringify(status.errorDetails)}`)
@@ -203,6 +210,12 @@ function getAemConfig (params) {
   }
 }
 
+function requireAemConfig (params) {
+  const aem = getAemConfig(params)
+  if (!aem) throw new Error('AEM is not configured on this server (AEM_REPOSITORY_ID).')
+  return aem
+}
+
 function getAemEnvironment (aem, repositoryId) {
   const environment = aemEnvironment(toAemHost(repositoryId || aem.pinnedRepository))
   if (!environment || !(aem.environments === '*' || aem.environments.includes(environment))) {
@@ -251,32 +264,39 @@ function toLayerEdit (layer) {
   return edit
 }
 
-// Output files of create-variant by format. A PSD cannot be shown in the view, so the same job also renders a JPEG preview.
+// Output files of create-variant by format. A PSD cannot be shown in the view: when no format is displayable, the
+// same job also renders a JPEG preview.
 const VARIANT_OUTPUTS = {
-  png: { extension: 'png', output: { mediaType: 'image/png', compression: 'medium' } },
-  jpeg: { extension: 'jpg', output: { mediaType: 'image/jpeg', quality: 'photoshop_max' } },
-  psd: { extension: 'psd', output: { mediaType: 'image/vnd.adobe.photoshop' }, preview: { mediaType: 'image/jpeg', quality: 'high' } }
+  png: { extension: 'png', displayable: true, output: { mediaType: 'image/png', compression: 'medium' } },
+  jpeg: { extension: 'jpg', displayable: true, output: { mediaType: 'image/jpeg', quality: 'photoshop_max' } },
+  psd: { extension: 'psd', displayable: false, output: { mediaType: 'image/vnd.adobe.photoshop' } }
 }
+const VARIANT_FORMATS = Object.keys(VARIANT_OUTPUTS)
+const PREVIEW_OUTPUT = { mediaType: 'image/jpeg', quality: 'high' }
 
-async function createVariant (params, { templateUrl, format, layers, fileName }) {
-  const { extension, output, preview } = VARIANT_OUTPUTS[format]
+// Renders one variant in all the requested formats with a single Photoshop job.
+async function createVariant (params, { templateUrl, formats, layers, fileName }) {
   const baseName = (fileName || 'variant').replace(/\.(png|jpe?g|psd)$/i, '')
-  const outputName = `${baseName}.${extension}`
-  const [file, previewFile] = await Promise.all([
-    createStorageUrls('variants', outputName),
-    preview && createStorageUrls('variants', `${baseName}-preview.jpg`)
+  const shownFormat = formats.find(format => VARIANT_OUTPUTS[format].displayable)
+  const [files, preview] = await Promise.all([
+    Promise.all(formats.map(format => createStorageUrls('variants', `${baseName}.${VARIANT_OUTPUTS[format].extension}`))),
+    shownFormat ? null : createStorageUrls('variants', `${baseName}-preview.jpg`)
   ])
 
   await runPhotoshopJob(params, '/create-composite', {
     image: { source: { url: templateUrl } },
     edits: { layers: layers.map(toLayerEdit) },
     outputs: [
-      { destination: { url: file.uploadUrl }, ...output },
-      ...(previewFile ? [{ destination: { url: previewFile.uploadUrl }, ...preview }] : [])
+      ...formats.map((format, i) => ({ destination: { url: files[i].uploadUrl }, ...VARIANT_OUTPUTS[format].output })),
+      ...(preview ? [{ destination: { url: preview.uploadUrl }, ...PREVIEW_OUTPUT }] : [])
     ]
   })
-  // imageUrl is shown in the view, downloadUrl is the file to download
-  return { imageUrl: (previewFile || file).readUrl, downloadUrl: file.readUrl, fileName: outputName, format }
+  return {
+    fileName: baseName,
+    // Shown in the view: the first displayable file, or the preview
+    imageUrl: preview ? preview.readUrl : files[formats.indexOf(shownFormat)].readUrl,
+    files: formats.map((format, i) => ({ format, fileName: `${baseName}.${VARIANT_OUTPUTS[format].extension}`, url: files[i].readUrl }))
+  }
 }
 
 function findLayer (layers = [], id) {
@@ -305,8 +325,7 @@ function closestAutoCropRatio (ratio) {
 
 // Returns the box auto-crop suggests around the subject, in auto-crop coordinates (see toImageCoordinates).
 async function detectSubjectBox (params, imageUrl, ratio) {
-  const token = await getFireflyServicesToken(params)
-  const headers = { Authorization: `Bearer ${token}`, 'x-api-key': params.FIREFLY_SERVICES_API_CLIENT_ID, 'Content-Type': 'application/json' }
+  const headers = await fireflyHeaders(params)
   const submit = await fetchWithRateLimit(AUTO_CROP_API, {
     method: 'POST',
     headers,
@@ -317,7 +336,7 @@ async function detectSubjectBox (params, imageUrl, ratio) {
 
   const deadline = Date.now() + POLL_TIMEOUT_MS
   while (Date.now() < deadline) {
-    await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS))
+    await wait(POLL_INTERVAL_MS)
     const status = await (await fetchWithRateLimit(statusUrl, { headers })).json()
     if (status.status === 'failed') throw new Error(`auto-crop failed: ${JSON.stringify(status)}`)
     if (status.status !== 'succeeded') continue
@@ -407,10 +426,10 @@ async function cropVariantImages (params, templateUrl, variants) {
 }
 
 // Runs all variant jobs in parallel; a failed variant does not prevent the others from being returned.
-async function createVariants (params, { templateUrl, format, variants }) {
+async function createVariants (params, { templateUrl, formats, variants }) {
   const prepared = await cropVariantImages(params, templateUrl, variants)
   const results = await Promise.allSettled(prepared.map((variant, index) =>
-    createVariant(params, { templateUrl, format, layers: variant.layers, fileName: variant.fileName || `variant-${index + 1}` })))
+    createVariant(params, { templateUrl, formats, layers: variant.layers, fileName: variant.fileName || `variant-${index + 1}` })))
   return results.map((result, index) => result.status === 'fulfilled'
     ? result.value
     : { fileName: variants[index].fileName || `variant-${index + 1}`, error: result.reason.message })
@@ -427,6 +446,28 @@ function findSharedImages (variants) {
     }))
   return [...byLayerAndUrl.entries()].filter(([, names]) => names.length > 1)
     .map(([key, names]) => ({ layerId: Number(key.split('|')[0]), variants: names }))
+}
+
+// Results of the widgets, stored for 24 hours under a random reference and readable only by the user who created them.
+const widgetResultKey = ref => `widget-result-${ref}`
+
+async function saveWidgetResult (params, text) {
+  const ref = `r${crypto.randomBytes(8).toString('hex')}`
+  const state = await stateLib.init()
+  await state.put(widgetResultKey(ref), { userId: getUnverifiedClaims(getTokenFromRequest(params)).user_id, text }, { ttl: WIDGET_RESULT_TTL_SECONDS })
+  return ref
+}
+
+async function readWidgetResult (params, ref) {
+  if (!WIDGET_RESULT_REF.test(ref)) return null
+  const state = await stateLib.init()
+  const stored = (await state.get(widgetResultKey(ref)))?.value
+  return stored && stored.userId === getUnverifiedClaims(getTokenFromRequest(params)).user_id ? stored.text : null
+}
+
+// Tool result with structured content, also given as JSON text for clients without structured content.
+function jsonResult (data) {
+  return { content: [{ type: 'text', text: JSON.stringify(data) }], structuredContent: data }
 }
 
 function errorResult (error) {
@@ -521,14 +562,17 @@ function registerTools (server, params) {
       title: 'Generate Variants',
       description: 'Step 5 (last) of the variant workflow. Generates variants of a PSD template with the Photoshop API, in parallel: ' +
         'for each variant, replaces the text of text layers and the content of smart object layers (with image URLs from upload-variant-images), ' +
-        'then renders it as PNG or JPEG, or saves it as a layered PSD (format psd, when the user wants the Photoshop files). Only call it once the layers are selected (get-psd-manifest) and all values are known. ' +
+        'then saves it in the requested formats (PNG, JPEG and/or layered PSD, several at once if asked). Only call it once the layers are selected (get-psd-manifest) and all values are known. ' +
         'Pass all variants in a single call. The user sees a recap of the generated files with download buttons; do not print the image URLs. ' +
         'Use layer ids and types from get-psd-manifest. For each smart object image, pass the crop chosen in upload-variant-images; ' +
         'without crop, the image is cropped centered to its frame (fit "fill", default). Do not crop or resize images with other tools.',
       inputSchema: {
         templateUrl: z.string().url().describe('HTTPS URL of the PSD template (same URL as given to get-psd-manifest)'),
-        format: z.enum(['png', 'jpeg', 'psd']).default('png')
-          .describe('Output format: png or jpeg images, or psd to get the edited layered Photoshop files (shown with a JPEG preview)'),
+        formats: z.array(z.enum(VARIANT_FORMATS)).min(1).optional()
+          .describe('Output formats, one file per format and variant: png and/or jpeg images, psd for the edited layered Photoshop ' +
+            'files. Pass several when the user asks for several (e.g. ["png", "psd"]). Default ["png"]'),
+        // Single format of earlier versions, still accepted for clients holding a cached tool schema
+        format: z.enum(VARIANT_FORMATS).optional().describe('Deprecated: use formats'),
         variants: z.array(z.object({
           fileName: z.string().optional().describe('Output file name without extension, e.g. "variant-summer"'),
           layers: z.array(layerEditSchema).min(1).describe('Edits to apply, one per layer')
@@ -539,11 +583,12 @@ function registerTools (server, params) {
       },
       _meta: uiMeta(VIEWS.variant)
     },
-    async ({ templateUrl, format, variants, layers, fileName }) => {
+    async ({ templateUrl, formats, format, variants, layers, fileName }) => {
       try {
         if (!variants && !layers) throw new Error('Missing "variants": pass a list of variants, each with its "layers".')
         const variantList = variants || [{ fileName, layers }]
-        const results = await createVariants(params, { templateUrl, format, variants: variantList })
+        const outputFormats = [...new Set(formats || [format || 'png'])]
+        const results = await createVariants(params, { templateUrl, formats: outputFormats, variants: variantList })
         const failed = results.filter(v => v.error)
         const summary = `${results.length - failed.length}/${results.length} variant(s) generated and shown to the user with download buttons.` +
           failed.map(v => `\n- ${v.fileName} failed: ${v.error}`).join('') +
@@ -555,6 +600,42 @@ function registerTools (server, params) {
           structuredContent: { variants: results },
           isError: failed.length === results.length
         }
+      } catch (error) {
+        return errorResult(error)
+      }
+    }
+  )
+
+  server.registerTool(
+    'get-widget-result',
+    {
+      title: 'Get Widget Result',
+      description: 'Returns what the user confirmed in a widget of the variant workflow (template URL, selected layers, texts, images), ' +
+        'from the reference "(ref r...)" at the end of their message. Call it when that result is not in your context.',
+      inputSchema: { ref: z.string().describe('Reference from the user message, e.g. r0123456789abcdef') }
+    },
+    async ({ ref }) => {
+      try {
+        const text = await readWidgetResult(params, ref.trim())
+        if (!text) return errorResult(new Error(`No widget result for ${ref}: it expired (24 hours) or belongs to another user.`))
+        return { content: [{ type: 'text', text }] }
+      } catch (error) {
+        return errorResult(error)
+      }
+    }
+  )
+
+  server.registerTool(
+    'save-widget-result',
+    {
+      title: 'Save Widget Result',
+      description: 'Used by the widgets: stores what the user confirmed and returns a reference for get-widget-result.',
+      inputSchema: { text: z.string().min(1).max(500000).describe('Result of the widget, as sent to the model context') },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    async ({ text }) => {
+      try {
+        return jsonResult({ ref: await saveWidgetResult(params, text) })
       } catch (error) {
         return errorResult(error)
       }
@@ -664,7 +745,7 @@ function registerTools (server, params) {
     async ({ imageUrl, ratio }) => {
       try {
         const suggestion = await suggestCrop(params, imageUrl, ratio)
-        return { content: [{ type: 'text', text: JSON.stringify(suggestion) }], structuredContent: suggestion }
+        return jsonResult(suggestion)
       } catch (error) {
         return errorResult(error)
       }
@@ -682,7 +763,7 @@ function registerTools (server, params) {
     async ({ fileName }) => {
       try {
         const urls = await createStorageUrls('uploads', fileName)
-        return { content: [{ type: 'text', text: JSON.stringify(urls) }], structuredContent: urls }
+        return jsonResult(urls)
       } catch (error) {
         return errorResult(error)
       }
@@ -699,7 +780,7 @@ function registerTools (server, params) {
     },
     async () => {
       const config = { enabled: Boolean(getAemConfig(params)) }
-      return { content: [{ type: 'text', text: JSON.stringify(config) }], structuredContent: config }
+      return jsonResult(config)
     }
   )
 
@@ -713,9 +794,8 @@ function registerTools (server, params) {
       _meta: { ui: { visibility: ['app'] } }
     },
     async ({ multiple }) => {
-      const aem = getAemConfig(params)
-      if (!aem) return errorResult(new Error('AEM is not configured on this server (AEM_REPOSITORY_ID).'))
       try {
+        const aem = requireAemConfig(params)
         const token = getTokenFromRequest(params)
         // The selector needs AEM entitlements in the token: log its client and scopes (never the token) for diagnosis
         try {
@@ -772,11 +852,9 @@ function registerTools (server, params) {
       _meta: { ui: { visibility: ['app'] } }
     },
     async (asset) => {
-      const aem = getAemConfig(params)
-      if (!aem) return errorResult(new Error('AEM is not configured on this server (AEM_REPOSITORY_ID).'))
       try {
-        const imported = await importAemAsset(params, aem, asset)
-        return { content: [{ type: 'text', text: JSON.stringify(imported) }], structuredContent: imported }
+        const imported = await importAemAsset(params, requireAemConfig(params), asset)
+        return jsonResult(imported)
       } catch (error) {
         return errorResult(error)
       }
