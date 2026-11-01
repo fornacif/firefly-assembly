@@ -1401,17 +1401,21 @@ function getVariantViewHtml (scriptUrl) {
   var variants = [];
   var current = -1;
   var FORMAT_LABELS = { png: 'PNG', jpeg: 'JPEG', psd: 'PSD' };
+  // Download icon (arrow into a tray), in the text color of the button
+  var DOWNLOAD_ICON = '<svg slot="icon" viewBox="0 0 18 18" width="16" height="16" aria-hidden="true">'
+    + '<path fill="currentColor" d="M9 1.5a.75.75 0 0 1 .75.75v7.94l2.47-2.47a.75.75 0 1 1 1.06 1.06l-3.75 3.75a.75.75 0 0 1-1.06 0L4.72 8.78a.75.75 0 0 1 1.06-1.06l2.47 2.47V2.25A.75.75 0 0 1 9 1.5ZM2.25 12a.75.75 0 0 1 .75.75v1.5c0 .41.34.75.75.75h10.5c.41 0 .75-.34.75-.75v-1.5a.75.75 0 0 1 1.5 0v1.5A2.25 2.25 0 0 1 14.25 16.5H3.75A2.25 2.25 0 0 1 1.5 14.25v-1.5a.75.75 0 0 1 .75-.75Z"/></svg>';
 
   // Files of a variant, one per format (results of earlier versions have a single image)
   function filesOf(v) {
     return v.files || [{ format: v.format, url: v.downloadUrl || v.imageUrl }];
   }
 
-  // One "Download <format>" button per file of the variant
+  // One compact button per file of the variant: download icon and format, "Download <format>" as its accessible name
   function downloadButtons(index, variant) {
     return filesOf(variants[index]).map(function (file, f) {
-      return '<sp-button size="s" variant="' + variant + '" treatment="outline" data-action="download" data-index="' + index + '" data-file="' + f + '">'
-        + 'Download ' + (FORMAT_LABELS[file.format] || '') + '</sp-button>';
+      var label = FORMAT_LABELS[file.format] || 'file';
+      return '<sp-button size="s" variant="' + variant + '" treatment="outline" data-action="download" data-index="' + index + '" data-file="' + f + '"'
+        + ' label="Download ' + label + '" title="Download ' + label + '">' + DOWNLOAD_ICON + label + '</sp-button>';
     }).join('');
   }
 

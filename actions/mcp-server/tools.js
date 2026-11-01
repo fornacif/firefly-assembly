@@ -425,11 +425,16 @@ async function cropVariantImages (params, templateUrl, variants) {
   })))
 }
 
-// Runs all variant jobs in parallel; a failed variant does not prevent the others from being returned.
+// Runs all variant jobs in parallel, each in its own formats or the formats of the call; a failed variant does not
+// prevent the others from being returned.
 async function createVariants (params, { templateUrl, formats, variants }) {
   const prepared = await cropVariantImages(params, templateUrl, variants)
-  const results = await Promise.allSettled(prepared.map((variant, index) =>
-    createVariant(params, { templateUrl, formats, layers: variant.layers, fileName: variant.fileName || `variant-${index + 1}` })))
+  const results = await Promise.allSettled(prepared.map((variant, index) => createVariant(params, {
+    templateUrl,
+    formats: variant.formats ? [...new Set(variant.formats)] : formats,
+    layers: variant.layers,
+    fileName: variant.fileName || `variant-${index + 1}`
+  })))
   return results.map((result, index) => result.status === 'fulfilled'
     ? result.value
     : { fileName: variants[index].fileName || `variant-${index + 1}`, error: result.reason.message })
@@ -563,7 +568,7 @@ function registerTools (server, params) {
       description: 'Step 5 (last) of the variant workflow. Generates variants of a PSD template with the Photoshop API, in parallel: ' +
         'for each variant, replaces the text of text layers and the content of smart object layers (with image URLs from upload-variant-images), ' +
         'then saves it in the requested formats (PNG, JPEG and/or layered PSD, several at once if asked). Only call it once the layers are selected (get-psd-manifest) and all values are known. ' +
-        'Pass all variants in a single call. The user sees a recap of the generated files with download buttons; do not print the image URLs. ' +
+        'Pass all variants in a single call, even when their formats differ (set formats on those variants). The user sees a recap of the generated files with download buttons; do not print the image URLs. ' +
         'Use layer ids and types from get-psd-manifest. For each smart object image, pass the crop chosen in upload-variant-images; ' +
         'without crop, the image is cropped centered to its frame (fit "fill", default). Do not crop or resize images with other tools.',
       inputSchema: {
@@ -575,7 +580,10 @@ function registerTools (server, params) {
         format: z.enum(VARIANT_FORMATS).optional().describe('Deprecated: use formats'),
         variants: z.array(z.object({
           fileName: z.string().optional().describe('Output file name without extension, e.g. "variant-summer"'),
-          layers: z.array(layerEditSchema).min(1).describe('Edits to apply, one per layer')
+          layers: z.array(layerEditSchema).min(1).describe('Edits to apply, one per layer'),
+          formats: z.array(z.enum(VARIANT_FORMATS)).min(1).optional()
+            .describe('Formats of this variant only, when they differ between variants (e.g. ["png", "psd"] for one of them); ' +
+              'otherwise the formats of the call')
         })).min(1).max(MAX_VARIANTS).optional().describe(`Variants to generate (max ${MAX_VARIANTS} per call)`),
         // Single-variant format of earlier versions, still accepted for clients holding a cached tool schema
         layers: z.array(layerEditSchema).min(1).optional().describe('Deprecated: use variants'),
