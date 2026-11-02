@@ -123,8 +123,8 @@ function wordsBox (api) {
 // Checks texts in an image: [{ text, rect: { left, top, width, height } }] (in pixels of the canvas: the image may be rendered at
 // another size, the areas are scaled to it and the boxes back) → per text, null when it is not
 // checked (not in Latin script), otherwise { missing: [words not found], share: of the letters,
-// broken: [{ word, fit }] (see compareTexts), box: rectangle of the words read in the area, read: start of the text read }. Throws when the OCR is not
-// available.
+// broken: [{ word, fit }] (see compareTexts), box: rectangle of the words read in the area, read: start of the text read }.
+// Throws when the OCR is not available.
 async function checkTexts (image, texts, canvas) {
   const toCheck = texts.map(({ text }) => isLatin(text) && wordsOf(text).length > 0)
   if (!toCheck.some(Boolean)) return texts.map(() => null)
