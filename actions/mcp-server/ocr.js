@@ -90,7 +90,11 @@ function compareTexts (expected, read) {
     }
     const close = remaining.findIndex(r => isClose(word, r))
     if (close >= 0 && use(close)) return
-    if (!(word.length > 3 && readJoined.includes(word))) {
+    // Words read joined (e.g. "jointheclub"): a longer word in the text read, or a shorter one with a word next to it
+    const neighbors = [expectedWords[wordIndex - 1], expectedWords[wordIndex + 1]]
+    const joined = (word.length > 3 && readJoined.includes(word)) ||
+      [neighbors[0] + word, word + neighbors[1]].some(pair => !pair.includes('undefined') && readJoined.includes(pair))
+    if (!joined) {
       missing.push(word)
       missingIndexes.push(wordIndex)
     }
@@ -144,13 +148,16 @@ function unionBox (boxes) {
 }
 
 // Rectangle of the words of the expected text in the words read: for each expected word, the nearest word read that is it, or
-// a piece of it (broken across lines). Words of other texts read in the area are left out.
+// a piece of it (broken across lines), or words read joined with it. Words of other texts read in the area are left out. A word
+// read joined with several words of the text counts once.
 function textBox (expected, words, near) {
   const distance = box => Math.hypot(box.left + box.width / 2 - near.x, box.top + box.height / 2 - near.y)
   const candidates = words.map(word => ({ ...word, tokens: wordsOf(word.text) }))
   const used = new Set()
   wordsOf(expected).forEach(word => {
-    const matches = candidates.filter(c => !used.has(c) && c.tokens.some(token => isClose(word, token) || (token.length > 1 && word.includes(token))))
+    // The word, a piece of it (broken across lines), or words read joined with it (at least 3 letters, to be specific)
+    const matches = candidates.filter(c => !used.has(c) && c.tokens.some(token => isClose(word, token) ||
+      (token.length > 1 && word.includes(token)) || (word.length > 2 && token.includes(word))))
     matches.sort((a, b) => distance(a.box) - distance(b.box))
     if (matches[0]) used.add(matches[0])
   })
