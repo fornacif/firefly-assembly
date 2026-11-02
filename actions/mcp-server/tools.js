@@ -741,7 +741,13 @@ async function measureRenderedTexts (imageUrl, templateManifest, layers, languag
 
     const issues = measured.flatMap((t, i) => {
       const check = checks[i]
-      if (!check || (!check.missing.length && !check.broken.length && check.box && isInside(check.box, t.before))) return []
+      if (!check) return []
+      const round = rect => rect && [rect.left, rect.top, rect.width, rect.height].map(Math.round).join(',')
+      console.log(`Text check: "${t.original?.name}" read "${check.read}" at ${round(check.box)}, within "${t.bounds.name || 'canvas'}" ` +
+        `${round(t.bounds.rect)}, area read ${round(t.read)}`)
+      // In place: read whole in its area of the template, and not out of its bounds
+      if (!check.missing.length && !check.broken.length && check.box && isInside(check.box, t.before) &&
+        !pastBounds(check.box, t.bounds.rect, t.read)) return []
       const problems = []
       // Factors by which the text must shrink to fix each problem
       const factors = []
@@ -776,7 +782,6 @@ async function measureRenderedTexts (imageUrl, templateManifest, layers, languag
           factors.push(fit)
         })
         if (check.missing.length) {
-          console.log(`Text check: "${t.original?.name}" read "${check.read}"`)
           problems.push(check.share === 1
             ? 'cannot be read in the visual (cut, hidden or low contrast)'
             : `${quoteWords(check.missing)} cannot be read in the visual (cut, hidden or low contrast)`)
