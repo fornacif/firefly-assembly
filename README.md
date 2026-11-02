@@ -24,7 +24,7 @@ Each edited text of a generated variant is checked on the rendered visual, with 
 | Check | How | Finds |
 |---|---|---|
 | Edges | Where the text would end, from the words read and the share of letters not read (missing at its end or start) | A text past an edge of the canvas |
-| Overlaps | Rectangle of the words read, against the other visible layers of the template, compared with the template | A text overlapping an element (logo, button, other text) more than in the template. Backgrounds and the elements the text lies on in the template are by design and not reported |
+| Overlaps | Rectangle of the words read, against the other visible layers of the template, compared with the template | A text overlapping an element (logo, button, other text) more than in the template, or going out of an element it lies within in the template (a panel, a band). Backgrounds are not taken into account |
 | Words | Words read against the text sent | Words missing (cut, hidden, unreadable), or broken across two lines by a paragraph box too narrow for them; only when no edge or overlap explains them |
 
 Only the texts that the OCR reads whole in the preview of the template are checked: a text over a photo, which it cannot tell from the photo, is not (the card says so). The OCR reads the Latin script only (English model, accents and case ignored): texts in other scripts are not checked. Its model is downloaded once per container from the jsDelivr CDN; if it cannot be, the variants are shown without checks. The checks of a variant are given up after 60 seconds: it is shown, its texts not checked.

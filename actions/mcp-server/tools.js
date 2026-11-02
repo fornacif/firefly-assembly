@@ -544,24 +544,55 @@ function intersection (a, b) {
 
 const surface = rect => rect ? rect.width * rect.height : 0
 
+// Part of a text area (box) out of an element it lay within in the template (textBefore inside it, give or take the margin of
+// the OCR): { overflow, factor, area } when it goes past by more than OCR_EDGE_PX, factor being the font scale at which it is
+// within again, area the part out of the element; null otherwise.
+function leftElement (box, textBefore, element) {
+  const margin = ocrMargin(textBefore, OCR_MARGIN)
+  const wasWithin = textBefore.left >= element.left - margin && textBefore.top >= element.top - margin &&
+    textBefore.left + textBefore.width <= element.left + element.width + margin &&
+    textBefore.top + textBefore.height <= element.top + element.height + margin
+  if (!wasWithin) return null
+  const right = box.left + box.width - (element.left + element.width)
+  const bottom = box.top + box.height - (element.top + element.height)
+  const left = element.left - box.left
+  const top = element.top - box.top
+  const overflow = Math.max(right, bottom, left, top)
+  if (overflow <= OCR_EDGE_PX) return null
+  // The share of the text within the element, along each axis it goes past
+  const factor = Math.min(
+    right > 0 || left > 0 ? (box.width - Math.max(right, 0) - Math.max(left, 0)) / box.width : 1,
+    bottom > 0 || top > 0 ? (box.height - Math.max(bottom, 0) - Math.max(top, 0)) / box.height : 1)
+  const area = right > 0 ? { left: element.left + element.width, top: box.top, width: right, height: box.height }
+    : left > 0 ? { left: box.left, top: box.top, width: left, height: box.height }
+      : bottom > 0 ? { left: box.left, top: element.top + element.height, width: box.width, height: bottom }
+        : { left: box.left, top: box.top, width: box.width, height: top }
+  return { overflow, factor, area }
+}
+
 // Elements of the template that a rendered text overlaps more than in the template: other texts, images, shapes, logos...
 // Layers are compared by their bounding boxes (a round logo counts as its box): only overlaps that appear or grow are
-// reported, and not with the elements the text lies on in the template (a photo, a band), as they are by design. Returns
-// [{ name, factor, area }], factor being the font scale that removes the overlap, the text shrinking along the axis that needs
-// the least, and area the common rectangle.
+// reported. A text that lies on an element in the template (a photo, a band, a panel) is there by design: it is only reported
+// when it goes out of it, if it lay within it. Returns [{ name, problem, factor, area }], factor being the font scale that
+// fixes it (for an overlap, the text shrinking along the axis that needs the least), and area the rectangle to mark.
 function findOverlaps (textArea, textBefore, edited, templateManifest, canvas) {
   const canvasSurface = canvas.width * canvas.height
   return drawnLayers(templateManifest.layers).flatMap(other => {
     if (other.id === edited) return []
     const otherBefore = layerArea(other)
     if (!otherBefore || surface(otherBefore) > canvasSurface * BACKGROUND_SHARE) return []
+    const name = other.name || String(other.id)
     const after = intersection(textArea, otherBefore)
     const before = textBefore ? surface(intersection(textBefore, otherBefore)) : 0
-    if (textBefore && before >= surface(textBefore) * DESIGNED_OVERLAP_SHARE) return []
+    if (textBefore && before >= surface(textBefore) * DESIGNED_OVERLAP_SHARE) {
+      const out = leftElement(textArea, textBefore, otherBefore)
+      return out ? [{ name, problem: `goes about ${Math.round(out.overflow)} px out of "${name}", which it lies within in the template`, factor: out.factor, area: out.area }] : []
+    }
     const grown = surface(after) - before
     if (!after || grown <= surface(textArea) * OVERLAP_TOLERANCE) return []
     return [{
-      name: other.name || String(other.id),
+      name,
+      problem: `now overlaps "${name}"`,
       factor: Math.max((textArea.width - after.width) / textArea.width, (textArea.height - after.height) / textArea.height),
       area: after
     }]
@@ -695,7 +726,7 @@ async function measureRenderedTexts (imageUrl, templateManifest, layers, deadlin
           factors.push(past.factor)
         }
         findOverlaps(box, t.before, t.edit.id, templateManifest, canvas).forEach(overlap => {
-          problems.push(`now overlaps "${overlap.name}"`)
+          problems.push(overlap.problem)
           factors.push(overlap.factor)
           marks.push(overlap.area)
         })
