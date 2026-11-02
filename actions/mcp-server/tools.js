@@ -422,7 +422,7 @@ const PREVIEW_OUTPUT = { mediaType: 'image/jpeg', quality: 'high' }
 
 // Renders one variant in all the requested formats with a single Photoshop job, then measures its texts against the template
 // manifest on the PSD output (rendered for that purpose when PSD is not a requested format).
-async function createVariant (params, { templateUrl, templateManifest, formats, layers, fileName: baseName, deadline }) {
+async function createVariant (params, { templateUrl, templateManifest, formats, layers, fileName: baseName, deadline, onRendered }) {
   const shownFormat = formats.find(format => VARIANT_OUTPUTS[format].displayable)
   const [files, preview, measureCopy] = await Promise.all([
     Promise.all(formats.map(format => createStorageUrls('variants', `${baseName}.${VARIANT_OUTPUTS[format].extension}`))),
@@ -442,12 +442,17 @@ async function createVariant (params, { templateUrl, templateManifest, formats, 
   const psdUrl = measureCopy ? measureCopy.readUrl : files[formats.indexOf('psd')].readUrl
   // Shown in the view: the first displayable file, or the preview
   const imageUrl = preview ? preview.readUrl : files[formats.indexOf(shownFormat)].readUrl
-  return {
+  const rendered = {
     fileName: baseName,
     imageUrl,
     files: formats.map((format, i) => ({ format, fileName: `${baseName}.${VARIANT_OUTPUTS[format].extension}`, url: files[i].readUrl })),
     // For the view, which marks the text problems on the image
-    canvas: boundsSize(templateManifest.document.bounds),
+    canvas: boundsSize(templateManifest.document.bounds)
+  }
+  // Shown while its texts are checked
+  onRendered?.(rendered)
+  return {
+    ...rendered,
     ...await beforeDeadline(measureRenderedTexts(params, psdUrl, imageUrl, templateManifest, layers, deadline)
       .then(({ issues, unchecked }) => ({ textIssues: issues, ...(unchecked ? { textsUnchecked: unchecked } : {}) })),
     deadline, () => ({ textIssues: null, textsUnchecked: 'not finished within the time limit' }))
@@ -877,9 +882,13 @@ function uniqueFileNames (variants) {
 }
 
 // Runs each variant on its own, in parallel: its crops, then its render as soon as they are done, in its own formats or the
-// formats of the call. A failed or late variant does not prevent the others from being returned.
-async function createVariants (params, { templateUrl, formats, variants, deadline }) {
+// formats of the call. A failed or late variant does not prevent the others from being returned. onProgress(list) gets the
+// variants each time one changes: { fileName, pending: true } until rendered, then with checking: true until its texts are
+// checked, then as returned.
+async function createVariants (params, { templateUrl, formats, variants, deadline, onProgress }) {
   const fileNames = uniqueFileNames(variants)
+  const progress = fileNames.map(fileName => ({ fileName, pending: true }))
+  const report = (index, variant) => { progress[index] = variant; onProgress?.([...progress]) }
   // The OCR engine loads during the renders
   if (variants.some(variant => variant.layers.some(layer => layer.type === 'text_layer'))) warmUpOcr()
   const templateManifest = beforeDeadline(getManifest(params, templateUrl), deadline, tooLate('Reading the template'))
@@ -887,16 +896,21 @@ async function createVariants (params, { templateUrl, formats, variants, deadlin
     try {
       const manifest = await templateManifest
       const layers = await beforeDeadline(prepareLayers(params, manifest, variant.layers), deadline, tooLate('Cropping the images'))
-      return await createVariant(params, {
+      const result = await createVariant(params, {
         templateUrl,
         templateManifest: manifest,
         deadline,
         formats: variant.formats ? [...new Set(variant.formats)] : formats,
         layers,
-        fileName: fileNames[index]
+        fileName: fileNames[index],
+        onRendered: rendered => report(index, { ...rendered, checking: true })
       })
+      report(index, result)
+      return result
     } catch (error) {
-      return { fileName: fileNames[index], error: error.message }
+      const failed = { fileName: fileNames[index], error: error.message }
+      report(index, failed)
+      return failed
     }
   }))
 }
@@ -932,27 +946,32 @@ function generationKey (userId, templateUrl) {
   return `generation-${shortHash(userId)}-${shortHash(templateUrl)}`
 }
 
-async function readEarlierVariants (params, templateUrl) {
+async function readEarlierVariants (userId, templateUrl) {
   const state = await initState()
-  return (await state.get(generationKey(currentUserId(params), templateUrl)))?.value?.variants || []
+  return (await state.get(generationKey(userId, templateUrl)))?.value?.variants || []
 }
 
-// Merges new results into the variants generated earlier from the same template (same file name: replaced in place, others
-// added at the end) and stores the merged list. Without earlier variants, or when fresh, only the new results are shown.
-// Returns the variants to show. Best effort: on a storage error, only the new results are shown.
-async function mergeWithEarlierVariants (params, templateUrl, results, fresh) {
+// Variants to show: the earlier ones, with those of the same file name replaced in place, and the others added at the end.
+function mergeVariants (earlier, current) {
+  const byName = new Map(current.map(variant => [variant.fileName, variant]))
+  const merged = earlier.map(variant => byName.get(variant.fileName) || variant)
+  current.forEach(variant => { if (!earlier.some(e => e.fileName === variant.fileName)) merged.push(variant) })
+  return merged
+}
+
+// Merges new results into the variants generated earlier from the same template (see mergeVariants) and stores the merged list.
+// Without earlier variants, or when fresh, only the new results are shown. Returns the variants to show. Best effort: on a
+// storage error, only the new results are shown.
+async function mergeWithEarlierVariants (userId, templateUrl, results, earlier) {
   const updated = results.map(variant => ({ ...variant, updated: true }))
   try {
-    const earlier = fresh ? [] : (await readEarlierVariants(params, templateUrl)).map(({ updated, layers, ...variant }) => variant)
-    const byName = new Map(updated.map(variant => [variant.fileName, variant]))
-    const merged = earlier.map(variant => byName.get(variant.fileName) || variant)
-    updated.forEach(variant => { if (!earlier.some(e => e.fileName === variant.fileName)) merged.push(variant) })
+    const merged = mergeVariants(earlier, updated)
     // Failed variants are not kept for the next generation
     const state = await initState()
-    await state.put(generationKey(currentUserId(params), templateUrl), { variants: merged.filter(v => !v.error) }, { ttl: WIDGET_RESULT_TTL_SECONDS })
+    await state.put(generationKey(userId, templateUrl), { variants: merged.filter(v => !v.error) }, { ttl: WIDGET_RESULT_TTL_SECONDS })
     return merged
   } catch (error) {
-    console.warn(`Earlier variants not available: ${error.message}`)
+    console.warn(`Earlier variants not stored: ${error.message}`)
     return updated
   }
 }
@@ -982,6 +1001,151 @@ async function readWidgetResult (params, ref) {
   const stored = (await state.get(widgetResultKey(userId, ref)))?.value
   return stored && stored.userId === userId ? stored.text : null
 }
+
+// Long operations run as tasks, each in its own activation of this action, invoked without waiting for it: a task has the
+// action timeout (5 minutes) whatever the time limit of web requests (about 60 seconds), and goes on whichever container
+// answers the next requests. The tool that starts a task answers at once with its id; the views poll get-task, which reads
+// its progress and result in App Builder state.
+const TASK_TTL_SECONDS = 24 * 3600
+// Time a task gives its jobs, within the action timeout
+const TASK_BUDGET_MS = 270000
+// A task still running after this long has stopped (e.g. the activation was ended)
+const TASK_STALE_MS = 330000
+const TASK_ID = /^[0-9a-f-]{36}$/
+
+const taskKey = (userId, taskId) => `task-${shortHash(userId)}-${taskId}`
+
+// Signature of the task invocations: only this action, which holds the secret, can start a task. The task is passed and signed
+// as JSON text, as Runtime does not keep the order of the keys of an object parameter.
+const signTask = (params, taskJson) =>
+  crypto.createHmac('sha256', String(params.FIREFLY_SERVICES_API_CLIENT_SECRET)).update(taskJson).digest('hex')
+
+// Starts a task of the current user; returns its id.
+async function startTask (params, type, args) {
+  const task = { id: crypto.randomUUID(), type, args, userId: currentUserId(params) }
+  const state = await initState()
+  await state.put(taskKey(task.userId, task.id), { status: 'running', startedAt: Date.now() }, { ttl: TASK_TTL_SECONDS })
+  const [namespace, ...action] = (process.env.__OW_ACTION_NAME || '').split('/').filter(Boolean)
+  const response = await fetchWithRetry(`${process.env.__OW_API_HOST}/api/v1/namespaces/${namespace}/actions/${action.join('/')}?blocking=false`, {
+    method: 'POST',
+    headers: { Authorization: `Basic ${Buffer.from(String(process.env.__OW_API_KEY)).toString('base64')}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ __task: JSON.stringify(task), __taskSignature: signTask(params, JSON.stringify(task)) })
+  })
+  await response.body?.cancel().catch(() => {})
+  if (!response.ok) throw new Error(`The task could not be started (HTTP ${response.status})`)
+  return task.id
+}
+
+// Writes the state of a task: each update is merged into the last one, and written after the previous writes.
+function taskWriter (task) {
+  let current = { status: 'running', startedAt: Date.now() }
+  let writes = Promise.resolve()
+  return patch => {
+    current = { ...current, ...patch, updatedAt: Date.now() }
+    const value = current
+    writes = writes
+      .then(async () => (await initState()).put(taskKey(task.userId, task.id), value, { ttl: TASK_TTL_SECONDS }))
+      .catch(error => console.warn(`Task ${task.id} not written: ${error.message}`))
+    return writes
+  }
+}
+
+// What get-psd-manifest shows of a template: its title, size and editable layers.
+function templateData (manifest) {
+  return {
+    document: {
+      // Strip the upload timestamp prefix and the job id suffix added by the storage and the Photoshop API
+      title: manifest.document?.title?.replace(/^\d+-([0-9a-f]{8}-)?/, '').replace(/_[0-9a-f-]{36}(\.\w+)$/, '$1'),
+      width: manifest.document?.bounds?.right,
+      height: manifest.document?.bounds?.bottom
+    },
+    layers: getEditableLayers(manifest.layers)
+  }
+}
+
+// Text of the result of a generation, for the model: failures, warnings and text problems.
+function describeGeneration (results, kept, warnings) {
+  const failed = results.filter(v => v.error)
+  return `${results.length - failed.length}/${results.length} variant(s) generated and shown to the user with download buttons` +
+    (kept ? `, with ${kept} variant(s) generated earlier from the same template, shown unchanged.` : '.') +
+    failed.map(v => `\n- ${v.fileName} failed: ${v.error}`).join('') + warnings + describeGeneratedTexts(results)
+}
+
+// Tasks by type: (params, task, update, deadline) → result. update({ partial }) gives the views what is ready.
+const TASKS = {
+  // Manifest of a template (given as soon as read) and its preview
+  async template (params, { args }, update) {
+    let previewError = null
+    const preview = renderPreview(params, args.url).catch(error => { previewError = error.message; return null })
+    const data = templateData(await getManifest(params, args.url))
+    await update({ partial: data })
+    const previewUrl = await preview
+    return { ...data, previewUrl, previewError }
+  },
+
+  // Size of an image and a crop framed on its subject
+  async crop (params, { args }, update, deadline) {
+    return suggestCrop(params, args.imageUrl, args.ratio, deadline)
+  },
+
+  // Variants, shown as they are rendered, with the variants generated earlier from the same template
+  async variants (params, { args, userId }, update, deadline) {
+    const earlier = args.fresh ? [] : await readEarlierVariants(userId, args.templateUrl).catch(() => [])
+    const kept = earlier.map(({ updated, layers, ...variant }) => variant)
+    const results = await createVariants(params, {
+      templateUrl: args.templateUrl,
+      formats: args.formats,
+      variants: args.variants,
+      deadline,
+      onProgress: list => update({ partial: { templateUrl: args.templateUrl, variants: mergeVariants(kept, list.map(v => ({ ...v, updated: true }))) } })
+    })
+    const variants = await mergeWithEarlierVariants(userId, args.templateUrl, results, kept)
+    return { templateUrl: args.templateUrl, variants, summary: describeGeneration(results, variants.length - results.length, args.warnings || '') }
+  }
+}
+
+// Runs a task invoked by startTask (not a web request), and writes its result or error.
+async function runTask (params) {
+  if (params.__ow_method) return { error: 'A task cannot come from a web request' }
+  const expected = Buffer.from(signTask(params, String(params.__task)))
+  const signature = Buffer.from(String(params.__taskSignature || ''))
+  if (signature.length !== expected.length || !crypto.timingSafeEqual(signature, expected)) return { error: 'Invalid task signature' }
+  const task = JSON.parse(params.__task)
+  if (!TASKS[task.type]) return { error: 'Unknown task type' }
+  const update = taskWriter(task)
+  try {
+    const result = await TASKS[task.type](params, task, update, Date.now() + TASK_BUDGET_MS)
+    await update({ status: 'done', result, partial: null })
+  } catch (error) {
+    console.warn(`Task ${task.type} failed: ${error.message}`)
+    await update({ status: 'failed', error: error.message })
+  }
+  return { done: task.id }
+}
+
+// State of a task of the current user, null if none (expired, or of another user).
+async function readTask (params, taskId) {
+  if (!TASK_ID.test(String(taskId))) return null
+  const state = await initState()
+  const task = (await state.get(taskKey(currentUserId(params), taskId)))?.value
+  if (task?.status === 'running' && Date.now() - task.startedAt > TASK_STALE_MS) {
+    return { ...task, status: 'failed', error: 'The task stopped before the end: start it again.' }
+  }
+  return task || null
+}
+
+// Waits for the partial or final result of a task, up to the deadline (polling its state); null if not ready by then.
+async function awaitTask (params, taskId, deadline, ready) {
+  while (Date.now() < deadline) {
+    const task = await readTask(params, taskId)
+    if (task?.status === 'failed') throw new Error(task.error)
+    const data = ready(task)
+    if (data) return data
+    await wait(TASK_AWAIT_POLL_MS)
+  }
+  return null
+}
+const TASK_AWAIT_POLL_MS = 1000
 
 // Tool result with structured content, also given as JSON text for clients without structured content.
 function jsonResult (data) {
@@ -1045,33 +1209,29 @@ function registerTools (server, params) {
     },
     async ({ url }) => {
       try {
-        const deadline = Date.now() + RESPONSE_BUDGET_MS
-        let previewError = null
-        const [manifest, previewUrl] = await Promise.all([
-          beforeDeadline(getManifest(params, url), deadline, tooLate('Reading the template')),
-          // The preview is best effort: without it, the view shows the list of layers, then asks for the preview again
-          // (get-template-preview), which gets the render still running or starts another one
-          beforeDeadline(renderPreview(params, url), deadline, tooLate('The preview'))
-            .catch(error => { previewError = error.message; console.warn(`Template preview: ${error.message}`); return null })
-        ])
-        const data = {
-          document: {
-            // Strip the upload timestamp prefix and the job id suffix added by the storage and the Photoshop API
-            title: manifest.document?.title?.replace(/^\d+-([0-9a-f]{8}-)?/, '').replace(/_[0-9a-f-]{36}(\.\w+)$/, '$1'),
-            width: manifest.document?.bounds?.right,
-            height: manifest.document?.bounds?.bottom
-          },
-          layers: getEditableLayers(manifest.layers)
+        const taskId = await startTask(params, 'template', { url })
+        // The model needs the layers: they are waited for here, the preview is waited for by the view
+        const ready = await awaitTask(params, taskId, Date.now() + RESPONSE_BUDGET_MS,
+          task => task?.status === 'done' ? task.result : task?.partial)
+        if (!ready) {
+          return {
+            content: [{
+              type: 'text',
+              text: 'The template is still being read: the widget shows its layers when ready. Wait for the user\'s selection, which gives ' +
+                'you the selected layers with their original texts and frames.\n\n' + NEXT_STEPS_AFTER_SELECTION
+            }],
+            structuredContent: { taskId, templateUrl: url }
+          }
         }
         // The preview URL and the layer areas are for the view only
-        const forModel = { document: data.document, layers: data.layers.map(({ area, ...layer }) => layer) }
+        const forModel = { document: ready.document, layers: ready.layers.map(({ area, ...layer }) => layer) }
         return {
           content: [{
             type: 'text',
             text: `Editable layers (unlocked text and smart object layers), shown to the user for selection:\n${JSON.stringify(forModel, null, 2)}\n\n` +
               NEXT_STEPS_AFTER_SELECTION
           }],
-          structuredContent: { ...data, previewUrl, previewError, templateUrl: url }
+          structuredContent: { ...ready, taskId, templateUrl: url }
         }
       } catch (error) {
         return errorResult(error)
@@ -1086,7 +1246,7 @@ function registerTools (server, params) {
       description: 'Step 5 of the variant workflow. Generates variants of a PSD template with the Photoshop API, in parallel: ' +
         'for each variant, replaces the text of text layers and the content of smart object layers (with image URLs from upload-variant-images), ' +
         'then saves it in the requested formats (PNG, JPEG and/or layered PSD, several at once if asked). Only call it once the layers are selected (get-psd-manifest) and all values are known. ' +
-        'Pass all variants in a single call, even when their formats differ (set formats on those variants). The user sees a recap of the generated files with download buttons; do not print the image URLs. ' +
+        'Pass all variants in a single call, even when their formats differ (set formats on those variants). It starts the generation and answers at once: the widget shows each variant as soon as it is rendered, with download buttons, and gives you the result (failures, text problems) when all are done; do not print the image URLs. ' +
         'Use layer ids and types from get-psd-manifest. For each smart object image, pass the crop chosen in upload-variant-images; ' +
         'without crop, the image is cropped centered to its frame (fit "fill", default). Do not crop or resize images with other tools. ' +
         'Pass the fontScale of each text as confirmed in review-variant-texts or in the changes sent from the widget of the generated variants. The ' +
@@ -1118,22 +1278,24 @@ function registerTools (server, params) {
       try {
         if (!variants && !layers) throw new Error('Missing "variants": pass a list of variants, each with its "layers".')
         const variantList = variants || [{ fileName, layers }]
-        const outputFormats = [...new Set(formats || [format || 'jpeg'])]
-        const deadline = Date.now() + RESPONSE_BUDGET_MS
-        const results = await createVariants(params, { templateUrl, formats: outputFormats, variants: variantList, deadline })
-        const shown = await mergeWithEarlierVariants(params, templateUrl, results, fresh)
-        const kept = shown.length - results.length
-        const failed = results.filter(v => v.error)
-        const summary = `${results.length - failed.length}/${results.length} variant(s) generated and shown to the user with download buttons` +
-          (kept ? `, with ${kept} variant(s) generated earlier from the same template, shown unchanged.` : '.') +
-          failed.map(v => `\n- ${v.fileName} failed: ${v.error}`).join('') +
-          findSharedImages(variantList).map(shared => `\nWarning: variants ${shared.variants.join(', ')} use the same image for layer ` +
-            `${shared.layerId}. If the user chose different images in upload-variant-images, check the image of each variant in its ` +
-            'confirmation (one line per variant and layer) and call create-variant again with the right URLs and crops.').join('')
+        const warnings = findSharedImages(variantList).map(shared => `\nWarning: variants ${shared.variants.join(', ')} use the same image for layer ` +
+          `${shared.layerId}. If the user chose different images in upload-variant-images, check the image of each variant in its ` +
+          'confirmation (one line per variant and layer) and call create-variant again with the right URLs and crops.').join('')
+        const taskId = await startTask(params, 'variants', {
+          templateUrl,
+          formats: [...new Set(formats || [format || 'jpeg'])],
+          variants: variantList,
+          fresh: Boolean(fresh),
+          warnings
+        })
         return {
-          content: [{ type: 'text', text: summary + describeGeneratedTexts(results) }],
-          structuredContent: { templateUrl, variants: shown },
-          isError: failed.length === results.length
+          content: [{
+            type: 'text',
+            text: `Generation of ${variantList.length} variant(s) started. The widget shows each variant as soon as it is rendered, with ` +
+              'download buttons, marks the text problems on the visuals, and gives you the result when all are done; the user then sends ' +
+              'you the changes to make. Do not call create-variant again meanwhile.' + warnings
+          }],
+          structuredContent: { taskId, templateUrl, pending: uniqueFileNames(variantList) }
         }
       } catch (error) {
         return errorResult(error)
@@ -1142,17 +1304,19 @@ function registerTools (server, params) {
   )
 
   server.registerTool(
-    'get-template-preview',
+    'get-task',
     {
-      title: 'Get Template Preview',
-      description: 'Used by the widget of get-psd-manifest when the preview of the template was not ready: returns its URL.',
-      inputSchema: { url: z.string().url().describe('HTTPS URL of the PSD file') },
+      title: 'Get Task',
+      description: 'Used by the widgets: returns the state of a task started by a tool (template reading, crop, generation): ' +
+        'status (running, done or failed), partial result while running, result or error.',
+      inputSchema: { taskId: z.string().describe('Task id returned by the tool') },
       _meta: { ui: { visibility: ['app'] } }
     },
-    async ({ url }) => {
+    async ({ taskId }) => {
       try {
-        const previewUrl = await beforeDeadline(renderPreview(params, url), Date.now() + RESPONSE_BUDGET_MS, tooLate('The preview'))
-        return jsonResult({ previewUrl })
+        const task = await readTask(params, taskId)
+        if (!task) return errorResult(new Error('This task is not known: it expired (24 hours) or belongs to another user.'))
+        return jsonResult(task)
       } catch (error) {
         return errorResult(error)
       }
@@ -1291,7 +1455,8 @@ function registerTools (server, params) {
     'suggest-crop',
     {
       title: 'Suggest Crop',
-      description: 'Used by the upload-variant-images widget: returns the image size and a crop at the given ratio framed on its subject.',
+      description: 'Used by the upload-variant-images widget: starts a task (see get-task) whose result is the image size and a crop ' +
+        'at the given ratio framed on its subject.',
       inputSchema: {
         imageUrl: z.string().url().describe('HTTPS URL of the image'),
         ratio: z.number().positive().describe('Width / height ratio of the frame')
@@ -1300,8 +1465,7 @@ function registerTools (server, params) {
     },
     async ({ imageUrl, ratio }) => {
       try {
-        const suggestion = await suggestCrop(params, imageUrl, ratio, Date.now() + RESPONSE_BUDGET_MS)
-        return jsonResult(suggestion)
+        return jsonResult({ taskId: await startTask(params, 'crop', { imageUrl, ratio }) })
       } catch (error) {
         return errorResult(error)
       }
@@ -1475,4 +1639,4 @@ function registerResources (server, params) {
   }
 }
 
-module.exports = { WORKFLOW, registerTools, registerResources, registerPrompts }
+module.exports = { WORKFLOW, registerTools, registerResources, registerPrompts, runTask }

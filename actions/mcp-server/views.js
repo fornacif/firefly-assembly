@@ -120,6 +120,33 @@ const BRIDGE_SCRIPT = `
     });
   }
 
+  // Polls a task started by a tool (get-task) until it is done: resolves to its result, and calls onProgress(partial) with
+  // what is ready meanwhile. A few failed polls in a row (e.g. a gateway error) are tolerated.
+  var TASK_POLL_MS = 1500;
+  var TASK_POLL_ERRORS = 5;
+  function waitForTask(taskId, onProgress) {
+    var errors = 0;
+    var lastUpdate = null;
+    return new Promise(function (resolve, reject) {
+      function poll() {
+        callTool('get-task', { taskId: taskId }).then(function (task) {
+          errors = 0;
+          if (task.status === 'done') return resolve(task.result);
+          if (task.status === 'failed') return reject(new Error(task.error || 'The task failed'));
+          if (onProgress && task.partial && task.updatedAt !== lastUpdate) {
+            lastUpdate = task.updatedAt;
+            onProgress(task.partial);
+          }
+          setTimeout(poll, TASK_POLL_MS);
+        }, function (error) {
+          if (++errors >= TASK_POLL_ERRORS) return reject(error);
+          setTimeout(poll, TASK_POLL_MS);
+        });
+      }
+      poll();
+    });
+  }
+
   // Sends the result of a view to Claude, then a user message so that it continues. The result is stored on the server
   // under a short reference carried by the message (get-widget-result), because some models do not reliably see the
   // model context the host is given with ui/update-model-context; it is still given there too.
@@ -643,7 +670,7 @@ ${AEM_SCRIPT}
   var library = [];
   var armed = -1;
 
-  // Size of the image and a crop at the frame ratio, framed on its subject. Each call runs Photoshop jobs on the server: at
+  // Size of the image and a crop at the frame ratio, framed on its subject. Each call runs Photoshop jobs in a task: at
   // most SUGGEST_CROP_CONCURRENCY at once, one per image and ratio (an image used in several slots is framed once), and
   // tried again once on failure (e.g. a gateway error).
   var SUGGEST_CROP_CONCURRENCY = 4;
@@ -655,8 +682,12 @@ ${AEM_SCRIPT}
     cropsRunning++;
     var job = cropQueue.shift();
     var args = { imageUrl: job.imageUrl, ratio: job.ratio };
-    callTool('suggest-crop', args)
-      .catch(function () { return callTool('suggest-crop', args); })
+    // suggest-crop starts a task, whose result is the suggestion
+    var suggest = function () {
+      return callTool('suggest-crop', args).then(function (started) { return started.taskId ? waitForTask(started.taskId) : started; });
+    };
+    suggest()
+      .catch(suggest)
       .then(job.resolve, job.reject)
       .then(function () { cropsRunning--; nextCropSuggestion(); });
   }
@@ -1177,30 +1208,18 @@ function getLayersViewHtml (scriptUrl) {
     document.getElementById('list').style.display = 'block';
     if (hasPreview) renderPreview(data.previewUrl, doc);
     setStatus(layers.length + ' editable layer(s).');
-    if (!data.previewUrl && data.templateUrl && doc.width && doc.height) loadPreview(data.templateUrl, doc, data.previewError);
   }
 
-  // Asks the server again for the preview not ready with the manifest (tried twice), and shows it with the numbers of the
-  // layers, without changing the boxes already ticked.
-  function loadPreview(templateUrl, doc, firstError) {
-    setStatus(layers.length + ' editable layer(s). Rendering the preview of the template...');
-    var args = { url: templateUrl };
-    callTool('get-template-preview', args)
-      .catch(function () { return callTool('get-template-preview', args); })
-      .then(function (result) {
-        if (!result.previewUrl || !layers.some(function (l) { return l.area; })) throw new Error(firstError || 'no preview');
-        var next = 0;
-        numbers = layers.map(function (l) { return l.area ? ++next : null; });
-        layers.forEach(function (l, i) {
-          listEl.querySelector('.row[data-index="' + i + '"] .num').textContent = numbers[i] || '';
-        });
-        renderPreview(result.previewUrl, doc);
-        updateSelection();
-        setStatus(layers.length + ' editable layer(s).');
-      })
-      .catch(function (error) {
-        setStatus(layers.length + ' editable layer(s). Preview not available: ' + ((error && error.message) || error));
-      });
+  // Shows the preview rendered after the list, with the numbers of the layers, without changing the boxes already ticked.
+  function showLatePreview(previewUrl, doc) {
+    if (!doc.width || !doc.height || !layers.some(function (l) { return l.area; })) return;
+    var next = 0;
+    numbers = layers.map(function (l) { return l.area ? ++next : null; });
+    layers.forEach(function (l, i) {
+      listEl.querySelector('.row[data-index="' + i + '"] .num').textContent = numbers[i] || '';
+    });
+    renderPreview(previewUrl, doc);
+    updateSelection();
   }
 
   // Numbered zones of the layers over the preview, the largest first so that smaller ones stay clickable on top.
@@ -1253,12 +1272,31 @@ function getLayersViewHtml (scriptUrl) {
     updateSelection();
   });
 
+  // The template is read in a task: the layers come with the tool result when read in time, otherwise from the task, then
+  // the preview from the task.
   onToolResult(function (result) {
     if (result.isError) {
       setStatus(result.content && result.content[0] ? result.content[0].text : 'Error', true);
       return;
     }
-    render(result.structuredContent || {});
+    var data = result.structuredContent || {};
+    if (data.layers) render(data);
+    if (!data.taskId || data.previewUrl) return;
+    setStatus(layers.length ? layers.length + ' editable layer(s). Rendering the preview of the template...' : 'Reading the template...');
+    waitForTask(data.taskId, function (partial) {
+      if (layers.length || !partial.layers) return;
+      render(partial);
+      setStatus(layers.length + ' editable layer(s). Rendering the preview of the template...');
+    })
+      .then(function (template) {
+        if (!layers.length) render(template);
+        else if (template.previewUrl) showLatePreview(template.previewUrl, template.document || {});
+        setStatus(layers.length + ' editable layer(s).' + (template.previewUrl ? '' : ' Preview not available: ' + (template.previewError || 'no preview')));
+      })
+      .catch(function (error) {
+        var reason = (error && error.message) || String(error);
+        setStatus(layers.length ? layers.length + ' editable layer(s). Preview not available: ' + reason : reason, !layers.length);
+      });
   });
 
   confirmBtn.addEventListener('click', function () {
@@ -1532,6 +1570,8 @@ function getVariantViewHtml (scriptUrl) {
   // Changes of each variant, by file name: pre-filled with the proposed fixes, edited by the user
   var requests = {};
   var busy = false;
+  // While the variants of the tool call are generated
+  var generating = false;
   var sendBtn = document.getElementById('send-changes');
   var FORMAT_LABELS = { png: 'PNG', jpeg: 'JPEG', psd: 'PSD' };
   // Download icon (arrow into a tray), in the text color of the button
@@ -1579,7 +1619,15 @@ function getVariantViewHtml (scriptUrl) {
 
   function render() {
     var allUpdated = variants.every(function (v) { return v.updated; });
+    // The field being typed in keeps its focus and caret when the grid is drawn again (variants arrive while the user types)
+    var active = document.activeElement && document.activeElement.classList.contains('change-request')
+      ? { index: document.activeElement.getAttribute('data-index'), start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd }
+      : null;
     grid.innerHTML = variants.map(function (v, i) {
+      if (v.pending) {
+        return '<div class="card"><div class="subtle card-name">' + escapeHtml(v.fileName) + '</div>'
+          + '<sp-progress-bar size="s" label="Rendering" indeterminate></sp-progress-bar></div>';
+      }
       if (v.error) {
         return '<div class="card"><div class="subtle card-name">' + escapeHtml(v.fileName) + '</div>'
           + '<div class="card-error">' + escapeHtml(v.error) + '</div></div>';
@@ -1591,8 +1639,10 @@ function getVariantViewHtml (scriptUrl) {
       }).join('')
         // Checks not done, and why: the user checks the visual
         + (v.textsUnchecked ? '<div class="subtle">' + escapeHtml((v.textIssues ? 'Texts partly checked, ' : 'Texts not checked, check the visual: ')
-          + v.textsUnchecked) + '</div>' : '');
-      if (requests[v.fileName] == null) requests[v.fileName] = recommendationOf(v);
+          + v.textsUnchecked) + '</div>' : '')
+        + (v.checking ? '<sp-progress-bar size="s" label="Checking the texts" indeterminate></sp-progress-bar>' : '');
+      // Pre-filled once the texts are checked
+      if (requests[v.fileName] == null && !v.checking) requests[v.fileName] = recommendationOf(v);
       return '<div class="card">' + visualHtml(v, i, 320)
         + '<div class="subtle card-name">' + escapeHtml(v.fileName) + '</div>'
         // With variants generated earlier shown again, the ones of this generation are marked
@@ -1600,8 +1650,14 @@ function getVariantViewHtml (scriptUrl) {
         + '<textarea class="change-request" data-index="' + i + '" placeholder="What should change?">' + escapeHtml(requests[v.fileName] || '') + '</textarea>'
         + '<div class="downloads">' + downloadButtons(i, 'secondary') + '</div></div>';
     }).join('');
-    var ok = variants.filter(function (v) { return !v.error; }).length;
-    setStatus(ok + '/' + variants.length + ' variant(s) generated — click a visual to enlarge it — links valid for 24 hours', ok === 0);
+    if (active) {
+      var field = grid.querySelector('.change-request[data-index="' + active.index + '"]');
+      if (field) { field.focus(); field.setSelectionRange(active.start, active.end); }
+    }
+    var ok = variants.filter(function (v) { return !v.error && !v.pending; }).length;
+    var rendering = variants.filter(function (v) { return v.pending; }).length;
+    if (generating) setStatus('Generating: ' + ok + ' variant(s) ready, ' + rendering + ' rendering...');
+    else setStatus(ok + '/' + variants.length + ' variant(s) generated — click a visual to enlarge it — links valid for 24 hours', ok === 0);
     document.getElementById('fix-actions').hidden = !ok;
     updateFixActions();
   }
@@ -1620,7 +1676,8 @@ function getVariantViewHtml (scriptUrl) {
   function updateFixActions() {
     var count = variants.filter(function (v) { return !v.error && requestOf(v); }).length;
     sendBtn.textContent = count ? 'Send changes (' + count + ')' : 'Send changes';
-    sendBtn.disabled = busy || !count;
+    // Changes are sent once the generation is done, so that the next one does not start meanwhile
+    sendBtn.disabled = busy || generating || !count;
   }
 
   // Sends the changes of the variants to the model, which generates them again with create-variant. With the measured
@@ -1657,7 +1714,7 @@ function getVariantViewHtml (scriptUrl) {
   });
 
   function generated() {
-    return variants.map(function (v, i) { return i; }).filter(function (i) { return !variants[i].error; });
+    return variants.map(function (v, i) { return i; }).filter(function (i) { return !variants[i].error && !variants[i].pending; });
   }
 
   // Enlarged view of one variant inside the widget; index -1 goes back to the grid.
@@ -1715,13 +1772,38 @@ function getVariantViewHtml (scriptUrl) {
     else if (e.key === 'ArrowRight') step(1);
   });
 
+  // The variants are generated in a task: shown as they are rendered, then checked; when all are done, the model is given
+  // the result (failures, warnings, text problems).
   onToolResult(function (result) {
-    variants = (result.structuredContent && result.structuredContent.variants) || [];
-    if (!variants.length) {
+    var data = result.structuredContent || {};
+    if (result.isError || (!data.taskId && !data.variants)) {
       setStatus(result.content && result.content[0] ? result.content[0].text : 'Error', true);
       return;
     }
+    if (!data.taskId) {
+      variants = data.variants;
+      render();
+      return;
+    }
+    generating = true;
+    variants = (data.pending || []).map(function (fileName) { return { fileName: fileName, pending: true }; });
     render();
+    waitForTask(data.taskId, function (partial) {
+      variants = partial.variants || variants;
+      render();
+    })
+      .then(function (generation) {
+        generating = false;
+        variants = generation.variants || variants;
+        render();
+        return request('ui/update-model-context', { content: [{ type: 'text', text: 'Result of create-variant: ' + generation.summary }] });
+      })
+      .catch(function (error) {
+        generating = false;
+        // Variants not rendered are marked as failed, the others are kept
+        variants = variants.map(function (v) { return v.pending ? { fileName: v.fileName, error: (error && error.message) || String(error) } : v; });
+        render();
+      });
   });
 `)
 }

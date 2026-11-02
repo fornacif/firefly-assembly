@@ -1,7 +1,7 @@
 const { Core } = require('@adobe/aio-sdk')
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js')
 const { WebStandardStreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js')
-const { WORKFLOW, registerTools, registerResources, registerPrompts } = require('./tools.js')
+const { WORKFLOW, registerTools, registerResources, registerPrompts, runTask } = require('./tools.js')
 const { validateRequestAuth } = require('./validator.js')
 const { handlePickerRequest } = require('./aem-picker.js')
 
@@ -136,6 +136,9 @@ async function main (params) {
                 body: JSON.stringify({ error: `Logger creation error: ${loggerError.message}` })
             }
         }
+
+        // Task started by a tool (tools.js, startTask): an invocation of this action, not a web request
+        if (params.__task && !params.__ow_method) return await runTask(params)
 
         const incomingHeaders = normalizeHeaders(params.__ow_headers)
         const requestPath = params.__ow_path || ''

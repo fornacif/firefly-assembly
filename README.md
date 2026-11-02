@@ -13,6 +13,10 @@ MCP server, deployed as an Adobe I/O Runtime (App Builder) action, that creates 
 
 Widgets return what the user confirmed through a short reference that the assistant reads with `get-widget-result`. The other tools (`save-widget-result`, `suggest-crop`, `create-upload-url`, AEM picker tools…) are used by the widgets. `upload-file` uploads a single file outside the workflow.
 
+## Long operations
+
+Adobe I/O Runtime ends a web request after about 60 seconds, and Photoshop jobs on large files can take longer. The operations that run Photoshop jobs (reading a template and rendering its preview, framing an image, generating variants) run as tasks: the tool starts an activation of the same action without waiting for it (5 minutes, the action timeout), signed with a secret of the action, and answers at once with a task id. The task writes its progress and result in App Builder state; the widgets poll `get-task` and show what is ready: the layers then the preview, each variant as soon as it is rendered then its text checks. `get-psd-manifest` still waits up to 50 seconds for the layers, as the assistant needs them.
+
 ## Text checks
 
 Each edited text of a generated variant is checked once rendered, one check per cause:
