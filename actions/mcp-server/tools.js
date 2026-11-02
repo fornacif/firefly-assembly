@@ -489,6 +489,7 @@ async function downloadImage (url) {
   return Buffer.from(await response.arrayBuffer())
 }
 
+// Margin of an area read by the OCR: a share of its height, at least OCR_MIN_MARGIN_PX for OCR_MARGIN (in proportion for others)
 const ocrMargin = (area, share) => Math.max(area.height * share, OCR_MIN_MARGIN_PX * share / OCR_MARGIN)
 
 // Area read by the OCR: the text area with a margin (share of its height), inside the canvas.
@@ -527,12 +528,13 @@ const surface = rect => rect ? rect.width * rect.height : 0
 
 // Elements of the template that a rendered text overlaps more than in the template: other texts, images, shapes, logos...
 // Layers are compared by their bounding boxes (a round logo counts as its box): only overlaps that appear or grow are
-// reported, and not with the elements the text lies on in the template (a photo, a band), as they are by design. Returns [{ name, factor, area }], factor being the
-// font scale that removes the overlap, the text shrinking along the axis that needs the least, and area the common rectangle.
-function findOverlaps (textArea, textBefore, edited, original, templateManifest, rendered, canvas) {
+// reported, and not with the elements the text lies on in the template (a photo, a band), as they are by design. Returns
+// [{ name, factor, area }], factor being the font scale that removes the overlap, the text shrinking along the axis that needs
+// the least, and area the common rectangle.
+function findOverlaps (textArea, textBefore, edited, templateManifest, rendered, canvas) {
   const canvasSurface = canvas.width * canvas.height
   return drawnLayers(templateManifest.layers).flatMap(other => {
-    if (other.id === edited || other === original) return []
+    if (other.id === edited) return []
     const otherBefore = layerArea(other)
     if (!otherBefore || surface(otherBefore) > canvasSurface * BACKGROUND_SHARE) return []
     // Where the element is in the render (another edited text may have moved or grown)
@@ -581,8 +583,8 @@ function isInPlace (check, before) {
 // other elements more than in the template, measured on the manifest of the rendered PSD against the template; words not
 // found in the visual by the OCR otherwise (a text cut by its box, hidden or unreadable), as words cut by an edge or hidden by
 // an element are only a consequence of these. A text that only grows is not a problem: what it may cause is checked.
-// The visual is read first, on the areas of the texts in the template: when every text is read whole in its area, the texts
-// fit and the rendered PSD is not read (a Photoshop job less). One entry per text with problems, with the font scale that
+// The visual is read first, on the areas of the texts in the template: a text read whole in its area fits, and is not checked
+// further; when all do, the rendered PSD is not read (a Photoshop job less). One entry per text with problems, with the font scale that
 // brings it back in its bounds (rounded down to 5%, not below MIN_FONT_SCALE, then marked as not enough), its area and the
 // rectangles of its overlaps. Best effort: returns { issues, unchecked }, issues being null when the texts could not be
 // measured, and unchecked what could not be checked and why (e.g. the OCR, not ready by the deadline: the edges and overlaps
@@ -608,14 +610,16 @@ async function measureRenderedTexts (params, psdUrl, imageUrl, templateManifest,
         .catch(error => notRead(error.message)),
       deadline - OCR_DEADLINE_MARGIN_MS, () => notRead('not finished within the time limit'))
 
-    const placed = texts.every(t => t.before && isReadable(t))
-      ? await read(texts.map(t => ({ text: t.edit.text, rect: ocrRect(t.before, canvas, IN_PLACE_READ_MARGIN) })))
-      : null
-    if (placed && texts.every((t, i) => isInPlace(placed[i], t.before))) return { issues: [], unchecked: null }
+    const candidates = texts.filter(t => t.before && isReadable(t))
+    const placed = candidates.length
+      ? await read(candidates.map(t => ({ text: t.edit.text, rect: ocrRect(t.before, canvas, IN_PLACE_READ_MARGIN) }))) || []
+      : []
+    const toMeasure = texts.filter(t => !isInPlace(placed[candidates.indexOf(t)], t.before))
+    // A failure of this first read is reported by the second one, if any text is read again
     unchecked = null
 
-    const rendered = await generateManifest(params, psdUrl)
-    const measures = texts.map(({ edit, original, before }) => {
+    const rendered = toMeasure.length ? await generateManifest(params, psdUrl) : null
+    const measures = toMeasure.map(({ edit, original, before }) => {
       // By id, or by name in case the render gives new ids to the layers
       const renderedLayer = findLayer(rendered.layers, edit.id) ||
         (original && findLayer(rendered.layers, layer => layer.type === 'text_layer' && layer.name === original.name))
@@ -633,7 +637,7 @@ async function measureRenderedTexts (params, psdUrl, imageUrl, templateManifest,
           const size = edge === 'left' || edge === 'right' ? area.width : area.height
           factors.push((size - px) / size)
         })
-        findOverlaps(area, before, edit.id, original, templateManifest, rendered, canvas).forEach(overlap => {
+        findOverlaps(area, before, edit.id, templateManifest, rendered, canvas).forEach(overlap => {
           problems.push(`now overlaps "${overlap.name}"`)
           factors.push(overlap.factor)
           marks.push(overlap.area)
@@ -644,7 +648,7 @@ async function measureRenderedTexts (params, psdUrl, imageUrl, templateManifest,
 
     // The words of the texts without other problems, read again in their rendered areas
     const toRead = measures.filter(m => m.area && !m.problems.length && isReadable(m))
-    const unreadable = measures.filter(m => !isReadable(m)).map(m => `"${m.original?.name || m.edit.id}"`)
+    const unreadable = texts.filter(t => !isReadable(t)).map(t => `"${t.original?.name || t.edit.id}"`)
     const checks = toRead.length ? await read(toRead.map(m => ({ text: m.edit.text, rect: ocrRect(m.area, canvas) }))) || [] : []
     toRead.forEach((m, i) => {
       const check = checks[i]
