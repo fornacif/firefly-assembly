@@ -1569,9 +1569,7 @@ function getVariantViewHtml (scriptUrl) {
     line-height: 18px;
     text-align: center;
   }
-  /* Above the box, so as not to hide the text it marks; below it for a text at the top of the visual */
-  .mark-number { position: absolute; bottom: 100%; left: -2px; margin-bottom: 3px; }
-  .mark-number.below { bottom: auto; top: 100%; margin: 3px 0 0; }
+  .mark-number { position: absolute; top: -9px; left: -9px; }
   .issue-number { margin-right: 4px; }
   .card-name { word-break: break-all; }
   /* In place of the visual of a variant being rendered */
@@ -1664,8 +1662,7 @@ function getVariantViewHtml (scriptUrl) {
     if (right <= left || bottom <= top) return '';
     return '<div class="mark ' + className + '" style="left:' + left / canvas.width * 100 + '%;top:' + top / canvas.height * 100
       + '%;width:' + (right - left) / canvas.width * 100 + '%;height:' + (bottom - top) / canvas.height * 100 + '%">'
-      // Room above the box for its number: 24 px at the largest size of the visual
-      + (number ? '<span class="mark-number' + (top / canvas.height < 0.06 ? ' below' : '') + '">' + number + '</span>' : '') + '</div>';
+      + (number ? '<span class="mark-number">' + number + '</span>' : '') + '</div>';
   }
 
   // Visual of a variant with its text problems marked over it: the box of each text with problems, numbered as in the list,
