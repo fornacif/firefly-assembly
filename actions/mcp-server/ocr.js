@@ -24,7 +24,8 @@ const readers = new Map()
 function getEngine () {
   // Required here: the engine (4 MB of script) is only loaded by the requests that read visuals. Without the warnings it
   // prints about parameters of older models.
-  engine = engine || Promise.resolve().then(() => require('tesseract.js-core/tesseract-core-simd-lstm.wasm.js')({ print: () => {}, printErr: () => {} }))
+  engine = engine || Promise.resolve()
+    .then(() => require('tesseract.js-core/tesseract-core-simd-lstm.wasm.js')({ print: () => {}, printErr: () => {} }))
     .catch(error => { engine = null; throw error })
   return engine
 }
@@ -37,7 +38,10 @@ function getReader (language) {
 }
 
 async function loadReader (model) {
-  const [tesseract, response] = await Promise.all([getEngine(), fetch(modelUrl(model), { signal: AbortSignal.timeout(MODEL_DOWNLOAD_TIMEOUT_MS) })])
+  const [tesseract, response] = await Promise.all([
+    getEngine(),
+    fetch(modelUrl(model), { signal: AbortSignal.timeout(MODEL_DOWNLOAD_TIMEOUT_MS) })
+  ])
   if (!response.ok) throw new Error(`OCR model ${model} download failed (HTTP ${response.status})`)
   tesseract.FS.writeFile(`/${model}.traineddata`, zlib.gunzipSync(Buffer.from(await response.arrayBuffer())))
   const api = new tesseract.TessBaseAPI()
@@ -48,10 +52,17 @@ async function loadReader (model) {
   return { tesseract, api }
 }
 
+// Letters without accents and case; letters that do not decompose are spelled out
+const SPELLED = { ß: 'ss', æ: 'ae', œ: 'oe', ø: 'o', ł: 'l', đ: 'd', ð: 'd', þ: 'th', ı: 'i' }
+const normalize = text => text.toLowerCase().normalize('NFKD').replace(/\p{M}/gu, '').replace(/[ßæœøłđðþı]/g, c => SPELLED[c])
+
+const wordsOf = text => normalize(text).match(/[\p{L}\p{N}]+/gu) || []
+const isLatin = text => !/[^\p{Script=Latin}\p{Script=Common}\p{M}]/u.test(text)
+
 // Small words of each language, to tell the language of a text that has none given
 const COMMON_WORDS = {
   en: 'the and of to for with your you our is are on in new now at this all from get off free shop discover',
-  fr: 'le les un une des et est du de pour avec votre vos nos notre sur dans au aux ce qui plus en decouvrez des jusqu nouvelle nouveautes offre',
+  fr: 'le les un une des et est du de pour avec votre vos nos notre sur dans au aux ce qui plus en decouvrez jusqu nouvelle nouveautes offre',
   de: 'der die das und ist mit fur ihr ihre unser unsere auf im ein eine den dem zu jetzt neu von bis entdecken angebot',
   es: 'el los las y es con para tu tus su sus nuestra nuestro del de en por hasta ya mas nuevo nueva descubre oferta ahora todo',
   it: 'il lo gli e con per tuo tua tuoi nostra nostro del della di in sul al nei dei delle fino ora nuovo nuova che scopri offerta'
@@ -70,13 +81,6 @@ function guessLanguage (text) {
   return best
 }
 
-// Letters without accents and case; letters that do not decompose are spelled out
-const SPELLED = { ß: 'ss', æ: 'ae', œ: 'oe', ø: 'o', ł: 'l', đ: 'd', ð: 'd', þ: 'th', ı: 'i' }
-const normalize = text => text.toLowerCase().normalize('NFKD').replace(/\p{M}/gu, '').replace(/[ßæœøłđðþı]/g, c => SPELLED[c])
-
-const wordsOf = text => normalize(text).match(/[\p{L}\p{N}]+/gu) || []
-const isLatin = text => !/[^\p{Script=Latin}\p{Script=Common}\p{M}]/u.test(text)
-
 function editDistance (a, b) {
   let previous = Array.from({ length: b.length + 1 }, (_, j) => j)
   for (let i = 1; i <= a.length; i++) {
@@ -93,6 +97,7 @@ function isClose (word, read) {
   return Math.abs(read.length - word.length) <= allowed && editDistance(read, word) <= allowed
 }
 
+// Font scale proposed at most for a word broken across lines
 const MAX_BROKEN_FIT = 0.95
 // A word read is at most this many times as wide as its letters at the median width of the letters read; a word misread (or
 // read joined with others) as its letters with a punctuation sign, PUNCTUATION_LETTERS wide
@@ -131,9 +136,10 @@ function compareTexts (expected, read) {
     const close = remaining.findIndex(r => isClose(word, r))
     if (close >= 0 && use(close)) return
     // Words read joined (e.g. "jointheclub"): a longer word in the text read, or a shorter one with a word next to it
-    const neighbors = [expectedWords[wordIndex - 1], expectedWords[wordIndex + 1]]
+    const before = expectedWords[wordIndex - 1]
+    const after = expectedWords[wordIndex + 1]
     const joined = (word.length > 3 && readJoined.includes(word)) ||
-      [neighbors[0] + word, word + neighbors[1]].some(pair => !pair.includes('undefined') && readJoined.includes(pair))
+      (before && readJoined.includes(before + word)) || (after && readJoined.includes(word + after))
     if (!joined) {
       missing.push(word)
       missingIndexes.push(wordIndex)
@@ -270,7 +276,10 @@ async function checkTexts (image, texts, canvas) {
         width: Math.min(pixels.width, Math.round((rect.left + rect.width) * sx)) - left,
         height: Math.min(pixels.height, Math.round((rect.top + rect.height) * sy)) - top
       }
-      if (area.width < 1 || area.height < 1) return { missing: wordsOf(text), share: 1, broken: [], missingAt: 'middle', box: null, lines: [], read: '' }
+      // Out of the image: nothing read
+      if (area.width < 1 || area.height < 1) {
+        return { missing: wordsOf(text), share: 1, broken: [], missingAt: 'middle', box: null, lines: [], read: '' }
+      }
       const scale = lineHeight ? Math.min(MAX_UPSCALE, Math.max(1, MIN_LINE_HEIGHT / (lineHeight * sy))) : 1
       tesseract.FS.writeFile('/input', areaImage(pixels, area, scale))
       if (api.SetImageFile(1, 0) === 1) throw new Error('the visual could not be read')
