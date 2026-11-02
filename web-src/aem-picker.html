@@ -6,7 +6,8 @@
 <meta name="referrer" content="no-referrer">
 <title>Choose from AEM</title>
 <!-- AEM Asset Selector opened in a tab by the MCP App views (see actions/mcp-server/aem-picker.js): the URL fragment
-     carries the session id and the path of the picker endpoint, which gives the selector config and takes the selection. -->
+     carries the session id and the path of the picker endpoint, which gives the selector config and takes the selection.
+     A folder session first signs the user in with Adobe IMS (redirect back to this page with a code, PKCE). -->
 <script src="https://experience.adobe.com/solutions/CQ-assets-selectors/static-assets/resources/assets-selectors.js"></script>
 <style>
   html, body { margin: 0; height: 100%; font-family: adobe-clean, "Source Sans Pro", -apple-system, system-ui, sans-serif; background: #f8f8f8; color: #222; }
@@ -20,11 +21,22 @@
 <div id="message"></div>
 <script>
 (function () {
+  var LOGIN_KEY = 'aem-picker-login';
   var params = new URLSearchParams(location.hash.slice(1));
+  // Back from the IMS sign-in: the code (or error) in the query, the session in the session storage
+  var signIn = new URLSearchParams(location.search);
+  var login = null;
+  if (signIn.has('code') || signIn.has('error')) {
+    try { login = JSON.parse(sessionStorage.getItem(LOGIN_KEY)); } catch (e) {}
+    sessionStorage.removeItem(LOGIN_KEY);
+    if (login && login.state !== signIn.get('state')) login = null;
+    params = new URLSearchParams(login ? { session: login.session, api: login.api } : {});
+  }
   var sessionId = params.get('session');
   var api = params.get('api') || '';
   var done = false;
-  // The fragment holds the session id: remove it from the address bar and the history
+  var redirecting = false;
+  // The fragment holds the session id, the query the code: remove them from the address bar and the history
   history.replaceState(null, '', location.pathname);
 
   function showMessage(text) {
@@ -64,6 +76,30 @@
     return;
   }
 
+  function base64Url(bytes) {
+    return btoa(String.fromCharCode.apply(null, new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  function randomString() {
+    return base64Url(crypto.getRandomValues(new Uint8Array(32)));
+  }
+
+  // Sign-in with the client of the session (authorization code with PKCE): the page comes back with a code
+  function startSignIn(config) {
+    var verifier = randomString();
+    var state = randomString();
+    return crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)).then(function (digest) {
+      sessionStorage.setItem(LOGIN_KEY, JSON.stringify({ session: sessionId, api: api, verifier: verifier, state: state }));
+      var url = new URL(config.authorizeUrl);
+      url.search = new URLSearchParams({
+        client_id: config.clientId, redirect_uri: config.redirectUri, scope: config.scope, response_type: 'code',
+        code_challenge: base64Url(digest), code_challenge_method: 'S256', state: state
+      }).toString();
+      redirecting = true;
+      location.assign(url.toString());
+    });
+  }
+
   // Folder chosen in the Destination Selector, with the fields of an asset of the Asset Selector
   function folderOf(destination, config) {
     var folder = Array.isArray(destination) ? destination[0] : destination;
@@ -95,8 +131,16 @@
     });
   }
 
-  call({ action: 'config' })
+  if (login && signIn.has('error')) {
+    done = true;
+    call({ action: 'cancel' }).catch(function () {});
+    showMessage('The Adobe sign-in did not complete (' + signIn.get('error') + '). Start again from Claude.');
+    return;
+  }
+
+  (login ? call({ action: 'token', code: signIn.get('code'), codeVerifier: login.verifier }) : call({ action: 'config' }))
     .then(function (config) {
+      if (config.login) return startSignIn(config.login);
       if (config.folder) return renderFolderSelector(config);
       var selectionType = config.multiple ? 'multiple' : 'single';
       PureJSSelectors.renderAssetSelector(document.getElementById('selector'), {
@@ -117,7 +161,7 @@
 
   window.addEventListener('pagehide', function () {
     // Closing the tab without choosing cancels the selection, so the widget does not wait for it
-    if (!done && navigator.sendBeacon) {
+    if (!done && !redirecting && navigator.sendBeacon) {
       navigator.sendBeacon(api, new Blob([JSON.stringify({ sessionId: sessionId, action: 'cancel' })], { type: 'application/json' }));
     }
   });

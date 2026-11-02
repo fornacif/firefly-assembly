@@ -228,7 +228,8 @@ const UPLOAD_SCRIPT = `
 // AEM Asset Selector (Content Advisor), opened in a browser tab: Claude does not let views frame experience.adobe.com.
 // loadAemConfig() resolves to the config, or null when AEM is not configured; pickAemAssets() opens the selector page
 // (aem-picker.html) and resolves to the assets selected there ([] if cancelled); pickAemFolder() opens it to choose a
-// destination folder and resolves to it (null if cancelled); importAemAsset() copies an asset to storage: { name, url }.
+// destination folder and resolves to the id of its session, which keeps the folder for send-to-aem (null if cancelled);
+// importAemAsset() copies an asset to storage: { name, url }.
 const AEM_SCRIPT = `
   var AEM_POLL_INTERVAL_MS = 3000;
   var AEM_PICK_TIMEOUT_MS = 15 * 60 * 1000;
@@ -256,11 +257,14 @@ const AEM_SCRIPT = `
       });
   }
 
-  // Opens the selector page of a new session, and resolves to what is selected there; what names it in the status.
+  // Opens the selector page of a new session, and resolves to what is selected there, with the session id: { sessionId,
+  // assets }; what names it in the status.
   function pickInAem(options, what) {
     var pickId = ++aemPickId;
+    var sessionId;
     return callTool('create-aem-picker-session', options)
       .then(function (session) {
+        sessionId = session.sessionId;
         return request('ui/open-link', { url: session.pickerUrl }).then(function (result) {
           if (result && result.isError) throw new Error('The AEM selector tab could not be opened.');
           setStatus('Choose ' + what + ' in the AEM tab that opened, then come back here.');
@@ -269,16 +273,16 @@ const AEM_SCRIPT = `
       })
       .then(function (assets) {
         if (pickId === aemPickId) setStatus('');
-        return assets;
+        return { sessionId: sessionId, assets: assets };
       });
   }
 
   function pickAemAssets(multiple) {
-    return pickInAem({ multiple: multiple }, multiple ? 'the images' : 'the PSD template');
+    return pickInAem({ multiple: multiple }, multiple ? 'the images' : 'the PSD template').then(function (picked) { return picked.assets; });
   }
 
   function pickAemFolder() {
-    return pickInAem({ folder: true }, 'the destination folder').then(function (folders) { return folders[0] || null; });
+    return pickInAem({ folder: true }, 'the destination folder').then(function (picked) { return picked.assets.length ? picked.sessionId : null; });
   }
 
   function importAemAsset(asset) {
@@ -1759,7 +1763,7 @@ ${AEM_SCRIPT}
     var files = generated().reduce(function (total, i) { return total + filesOf(variants[i]).length; }, 0);
     downloadAllBtn.hidden = !generationTaskId || files < 2;
     downloadAllBtn.disabled = generating || zipping;
-    sendAemBtn.hidden = !generationTaskId || !aemConfig || !files;
+    sendAemBtn.hidden = !generationTaskId || !aemConfig || !aemConfig.send || !files;
     sendAemBtn.disabled = generating || sendingToAem;
   }
 
@@ -1784,10 +1788,10 @@ ${AEM_SCRIPT}
     sendingToAem = true;
     updateFixActions();
     pickAemFolder()
-      .then(function (folder) {
-        if (!folder) return null;
+      .then(function (sessionId) {
+        if (!sessionId) return null;
         setStatus('Sending the files to AEM...', false, true);
-        return callTool('send-to-aem', { taskId: generationTaskId, repositoryId: folder['repo:repositoryId'], path: folder['repo:path'] })
+        return callTool('send-to-aem', { taskId: generationTaskId, sessionId: sessionId })
           .then(function (started) { return waitForTask(started.taskId); });
       })
       .then(function (result) {

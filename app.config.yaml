@@ -40,6 +40,9 @@ application:
               AEM_REPOSITORY_ID: $AEM_REPOSITORY_ID
               # Tier browsed by the selector: delivery (default, approved assets) or author
               AEM_TIER: $AEM_TIER
+              # Client ID of an OAuth Single-Page App credential allowed in the AEM environments (allowedClientIDs of
+              # api.yaml): the user signs in with it to send the variants to AEM. Empty: no Send to AEM button.
+              AEM_CLIENT_ID: $AEM_CLIENT_ID
             annotations:
               # The action validates the Adobe IMS token itself (validator.js) and serves the OAuth metadata
               require-adobe-auth: false
