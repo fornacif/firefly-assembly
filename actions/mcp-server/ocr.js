@@ -208,9 +208,10 @@ function textBox (expected, words, near) {
   const candidates = words.map(word => ({ ...word, tokens: wordsOf(word.text) }))
   const used = new Set()
   wordsOf(expected).forEach(word => {
-    // The word, a piece of it (broken across lines), or words read joined with it (at least 3 letters, to be specific)
+    // The word, a piece of it (broken across lines), words read joined with it (at least 3 letters, to be specific), or the word
+    // with a letter more (e.g. "da," read "day": a punctuation sign read as a letter)
     const matches = candidates.filter(c => !used.has(c) && c.tokens.some(token => isClose(word, token) ||
-      (token.length > 1 && word.includes(token)) || (word.length > 2 && token.includes(word))))
+      (token.length > 1 && word.includes(token)) || ((word.length > 2 || token.length === word.length + 1) && token.includes(word))))
     matches.sort((a, b) => distance(a.box) - distance(b.box))
     if (matches[0]) used.add(matches[0])
   })
