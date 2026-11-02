@@ -97,6 +97,24 @@ function isClose (word, read) {
   return Math.abs(read.length - word.length) <= allowed && editDistance(read, word) <= allowed
 }
 
+// Letters that the OCR reads one for the other, in thin or round shapes
+const CONFUSED_LETTERS = ['il1jt', 'ao0qd', 'ce', 'uv', 'nh']
+const isConfused = (a, b) => CONFUSED_LETTERS.some(letters => letters.includes(a) && letters.includes(b))
+
+// Whether a text holds words (joined) with at most one letter in four misread as a letter of a similar shape (e.g. "estla" in
+// "lefroidestia"): other letters, missing or more, are not taken for a misread.
+function includesClose (text, words) {
+  const allowed = Math.floor(words.length / 4)
+  for (let start = 0; start + words.length <= text.length; start++) {
+    let errors = 0
+    for (let i = 0; i < words.length && errors <= allowed; i++) {
+      if (text[start + i] !== words[i]) errors += isConfused(text[start + i], words[i]) ? 1 : allowed + 1
+    }
+    if (errors <= allowed) return true
+  }
+  return false
+}
+
 // Font scale proposed at most for a word broken across lines
 const MAX_BROKEN_FIT = 0.95
 // A word read is at most this many times as wide as its letters at the median width of the letters read; a word misread (or
@@ -139,7 +157,7 @@ function compareTexts (expected, read) {
     const before = expectedWords[wordIndex - 1]
     const after = expectedWords[wordIndex + 1]
     const joined = (word.length > 3 && readJoined.includes(word)) ||
-      (before && readJoined.includes(before + word)) || (after && readJoined.includes(word + after))
+      (before && includesClose(readJoined, before + word)) || (after && includesClose(readJoined, word + after))
     if (!joined) {
       missing.push(word)
       missingIndexes.push(wordIndex)
@@ -211,10 +229,10 @@ function unionBox (boxes) {
   return { left, top, width: right - left, height: bottom - top }
 }
 
-// Rectangle of the words of the expected text in the words read: for each expected word, the nearest word read that is it, or
-// a piece of it (broken across lines), or words read joined with it. Words of other texts read in the area are left out. A word
-// read joined with several words of the text counts once.
-function textBox (expected, words, near) {
+// Words read that are words of the expected text: for each expected word, the nearest word read that is it, or a piece of it
+// (broken across lines), or words read joined with it. Words of other texts, or of the image, read in the area are left out. A
+// word read joined with several words of the text counts once. Returns the words read, with their boxes cut to their letters.
+function textWords (expected, words, near) {
   const distance = box => Math.hypot(box.left + box.width / 2 - near.x, box.top + box.height / 2 - near.y)
   const candidates = words.map(word => ({ ...word, tokens: wordsOf(word.text) }))
   // Word read → the expected word it is
@@ -233,16 +251,17 @@ function textBox (expected, words, near) {
   const isRead = (c, word) => c.tokens.length === 1 && isClose(word, c.tokens[0])
   const letterWidths = [...used].filter(([c, word]) => isRead(c, word))
     .map(([c]) => c.box.width / Math.max(1, c.tokens[0].length)).sort((a, b) => a - b)
-  if (!letterWidths.length) return unionBox([...used.keys()].map(c => c.box))
   const letterWidth = letterWidths[Math.floor(letterWidths.length / 2)]
-  return unionBox([...used].map(([c, word]) => {
-    const { box } = c
-    const width = isRead(c, word)
-      ? c.tokens[0].length * letterWidth * WORD_WIDTH_TOLERANCE
-      : (Math.min(word.length, c.tokens.join('').length) + PUNCTUATION_LETTERS) * letterWidth * MISREAD_WIDTH_TOLERANCE
-    if (!(box.width > width)) return box
-    return box.left + box.width / 2 >= near.x ? { ...box, width } : { ...box, left: box.left + box.width - width, width }
-  }))
+  // In reading order
+  return candidates.filter(c => used.has(c)).map(c => {
+    const { tokens, box, ...read } = c
+    const word = used.get(c)
+    const width = !letterWidth ? Infinity : isRead(c, word)
+      ? tokens[0].length * letterWidth * WORD_WIDTH_TOLERANCE
+      : (Math.min(word.length, tokens.join('').length) + PUNCTUATION_LETTERS) * letterWidth * MISREAD_WIDTH_TOLERANCE
+    if (!(box.width > width)) return { ...read, box }
+    return { ...read, box: box.left + box.width / 2 >= near.x ? { ...box, width } : { ...box, left: box.left + box.width - width, width } }
+  })
 }
 
 // Checks texts in an image: [{ text, rect, near, language, lineHeight }] in pixels of the canvas (the image may be rendered at
@@ -293,12 +312,16 @@ async function checkTexts (image, texts, canvas) {
       const read = words.reduce((lines, word, k) => lines + (k && word.line !== words[k - 1].line ? '\n' : k ? ' ' : '') + word.text, '')
       const { missing, broken, missingAt } = compareTexts(text, read)
       const center = near || { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
-      // Each line read: its rectangle and its letters
-      const lines = [...new Set(words.map(word => word.line))].map(line => {
-        const lineWords = words.filter(word => word.line === line)
-        return { box: scaleRect(unionBox(lineWords.map(word => word.box)), 1 / sx, 1 / sy), letters: wordsOf(lineWords.map(word => word.text).join(' ')).join('').length }
+      const ownWords = textWords(text, words, { x: center.x * sx, y: center.y * sy })
+      const box = unionBox(ownWords.map(word => word.box))
+      // Each line of the text read: its rectangle and its letters
+      const lines = [...new Set(ownWords.map(word => word.line))].map(line => {
+        const lineWords = ownWords.filter(word => word.line === line)
+        return {
+          box: scaleRect(unionBox(lineWords.map(word => word.box)), 1 / sx, 1 / sy),
+          letters: wordsOf(lineWords.map(word => word.text).join(' ')).join('').length
+        }
       })
-      const box = textBox(text, words, { x: center.x * sx, y: center.y * sy })
       return {
         missing,
         share: missing.join('').length / wordsOf(text).join('').length,
