@@ -9,8 +9,35 @@ MCP server, deployed as an Adobe I/O Runtime (App Builder) action, that creates 
 3. **Texts** (`review-variant-texts`): an editable table with the texts of each variant.
 4. **Images** (`upload-variant-images`): a grid with one image per variant and smart object layer, from the computer or AEM, with crops framed on the subject.
 5. **Generation** (`create-variant`): the variants are rendered in parallel, as JPEG (default), PNG and/or layered PSD files.
+6. **Review**: the widget checks the texts of each variant (see below) and marks their problems on the visual, numbered, with a proposed fix (a smaller font size). Each variant has a "What should change?" field, pre-filled with the proposed fixes; the user edits it and sends the changes to the assistant, which generates again only these variants. The widget shows them in place of their earlier version, next to the other variants generated from the same template.
 
 Widgets return what the user confirmed through a short reference that the assistant reads with `get-widget-result`. The other tools (`save-widget-result`, `suggest-crop`, `create-upload-url`, AEM picker tools…) are used by the widgets. `upload-file` uploads a single file outside the workflow.
+
+## Text checks
+
+Each edited text of a generated variant is checked once rendered, one check per cause:
+
+| Check | How | Finds |
+|---|---|---|
+| Edges | Bounds of the text in the manifest of the rendered PSD | A text past an edge of the canvas |
+| Overlaps | Bounds of the text and of the other visible layers, compared with the template | A text overlapping an element (logo, button, other text) more than in the template. Backgrounds and the elements the text lies on in the template are by design and not reported |
+| Words (OCR) | The text area of the rendered visual read with Tesseract (`actions/mcp-server/ocr.js`) and compared with the text sent | Words missing (cut, hidden, unreadable), or broken across two lines by a paragraph box too narrow for them |
+
+The visual is read first, on the area of each text in the template: when every text is read whole inside its area, the texts have not grown, so they cannot pass an edge or overlap an element, and the rendered PSD is not read (one Photoshop job less per variant). Otherwise its manifest gives the exact cause, the area to mark and the font scale. The OCR is only reported for a text without an edge or overlap problem, as missing words are then a consequence of it. It reads the Latin script only (English model, accents and case ignored): texts in other scripts are not read. Its model is downloaded once per container from the jsDelivr CDN; if it cannot be, the variants are generated without this check.
+
+Every check is best effort: a generation answers within about 50 seconds (Adobe I/O Runtime ends web requests after about 60 seconds), and checks not done by then are skipped.
+
+## Best practices for templates
+
+- **Use point text, not paragraph text**, for the texts to vary. A paragraph text keeps its box: a longer text is hidden past its last line or has its words broken across lines. A point text only breaks lines where its text does, and grows from its anchor, which the edge and overlap checks measure.
+- **Align the texts from the side they should grow from**: centered texts grow on both sides, left-aligned texts to the right.
+- **Leave room around the texts** that will be translated or rewritten: localized texts are often longer.
+- **Keep each element in its own layer** (logo, button, badge), not merged into a background: the overlap check compares layers.
+- **Use smart object layers for the images to replace**, with the frame of the image at the size it should fill: images are cropped to the ratio of their frame.
+- **Do not lock the layers to vary**: locked layers are not offered in the layer picker.
+- **Name the layers** (e.g. "headline", "cta"): the names are shown to the user and to the assistant.
+- **Break the lines of the original texts where they should be**: the assistant writes the new texts with the same number of lines and about the same number of characters per line. A new text written without any line break is spread over as many lines as the original text, of balanced lengths, without breaking words; a text with line breaks is kept as written.
+- **Avoid texts on busy areas of an image**: they are hard to read, and the OCR reports them as such.
 
 ## Authentication
 
@@ -24,6 +51,7 @@ Widgets return what the user confirmed through a short reference that the assist
 | `actions/mcp-server/index.js` | Action entry point: HTTP routing, OAuth metadata, MCP transport |
 | `actions/mcp-server/tools.js` | MCP tools, resources and prompt, Photoshop API and storage calls |
 | `actions/mcp-server/views.js` | HTML of the widgets |
+| `actions/mcp-server/ocr.js` | Reading of the texts of the rendered visuals (Tesseract, WebAssembly) |
 | `actions/mcp-server/aem-picker.js` | Sessions of the AEM Asset Selector page |
 | `actions/mcp-server/validator.js` | IMS token validation |
 | `ui/` | Build of the Spectrum Web Components bundle used by the widgets |

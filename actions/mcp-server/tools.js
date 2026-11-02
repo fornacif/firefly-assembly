@@ -2,6 +2,7 @@ const crypto = require('crypto')
 const { Readable } = require('stream')
 const { z } = require('zod')
 const filesLib = require('@adobe/aio-lib-files')
+const { checkTexts, warmUp: warmUpOcr } = require('./ocr.js')
 const { getStartViewHtml, getUploadViewHtml, getVariantImagesViewHtml, getLayersViewHtml, getTextsViewHtml, getVariantViewHtml } = require('./views.js')
 const stateLib = require('@adobe/aio-lib-state')
 const { getTokenFromRequest, getUnverifiedClaims, getUnverifiedClientId } = require('./validator.js')
@@ -10,15 +11,13 @@ const spectrumAsset = require('./spectrum-asset.js')
 
 const IMS_TOKEN_URL = 'https://ims-na1.adobelogin.com/ims/token/v3'
 const PHOTOSHOP_API = 'https://photoshop-api.adobe.io/v2'
-const POLL_INTERVAL_MS = 2000
+const POLL_FIRST_DELAY_MS = 1000
+const POLL_MAX_DELAY_MS = 3000
 const POLL_TIMEOUT_MS = 240000
 const URL_EXPIRY_SECONDS = 24 * 3600
 const STORAGE_ORIGIN = 'https://firefly.azureedge.net'
 const EDITABLE_LAYER_TYPES = ['text_layer', 'smart_object_layer']
 const MAX_VARIANTS = 10
-// Text previews given to the model: width, and total base64 size, under the response limit of the action
-const PREVIEW_MAX_WIDTH = 640
-const PREVIEWS_MAX_BASE64 = 600000
 const WIDGET_RESULT_TTL_SECONDS = 24 * 3600
 // Short reference shown at the end of the user's message: "r" and 6 base-36 characters (2 billion values per user)
 const WIDGET_RESULT_REF = /^r[0-9a-z]{6}$/
@@ -38,31 +37,38 @@ const VIEWS = {
 const WORKFLOW = `Variant creation workflow. When the user asks to create variants (or versions, adaptations, localizations...) of a banner, ad, visual, social post or any PSD template, ALWAYS follow these steps in order, one at a time, without skipping any:
 1. Start: call start-variant-creation (pass variantCount if the user already gave it). The user sets the number of variants and uploads the PSD template (from their computer or AEM Assets) in the widget, then says to continue. The widget gives you the template name and URL in your context (or through get-widget-result, see below): use that URL. Never ask for the file or its URL in chat.
 2. Layer selection: immediately call get-psd-manifest with the template URL. The user picks the layers to vary in the widget. Then wait.
-3. Texts: right after the layer selection, if text layers were selected, get the texts of each variant: the user provides them, or you write them from a brief (subject, tone, language). Each text must have the same length as the original text of its layer (given by get-psd-manifest): the same number of lines and about the same number of characters (within 10%), so that it fits the layout. Give each variant a short label (e.g. its title).
-   Check the texts right away: call preview-variant-texts, which renders the template with the texts of each variant, and look at each preview: text overflowing its area, cut off, wrapped onto more lines than the original, overlapping other elements or hard to read. Fix the texts you wrote (shorter wording) and check again; for texts given by the user, put a corrected version in the table and say briefly in chat what you changed and why, so the user can keep or edit it. Then call review-variant-texts with the checked texts, the original text of each layer and the template URL: the user sees a preview of each variant under the texts, updates it after editing and confirms. Then wait.
-   When the user confirms texts whose preview was not updated after their last edits, call preview-variant-texts for those variants and propose corrections before going on.
+3. Texts: right after the layer selection, if text layers were selected, get the texts of each variant: the user provides them, or you write them from a brief (subject, tone, language). Each text must have the same length as the original text of its layer (given by get-psd-manifest): the same number of lines and about the same number of characters per line (within 10%), so that it fits the layout. Write the line breaks yourself (\\n), where the original text has them: a point text layer does not wrap its lines by itself (a text without any line break is spread over the lines of the original text, by length). Give each variant a short label (e.g. its title), then call review-variant-texts with the texts and the original text of each layer. Then wait.
 4. Images: if smart object layers were selected, call upload-variant-images ONCE with the variant labels and the selected smart object layers (id, name and frame width and height from get-psd-manifest), so the user drops (or picks from AEM Assets) one image per variant and layer in a grid and adjusts how each one is cropped to its frame. When the user confirms, the widget gives you the URL, size and crop of each image the same way. Never ask for image URLs in chat. Then wait.
-5. Generation: as soon as the images are confirmed (or the texts, without smart object layers), call create-variant ONCE with all variants, passing for each image the crop chosen in the grid; the texts were already checked at step 3, so do not recap the variants or ask for another approval. The widget shows the generated files with download buttons.
-Changes after generation: to re-crop or swap images, call upload-variant-images again with images pre-filled from the previous confirmation (never ask to upload again the images you already have, unless their URLs expired); to change texts, call create-variant again with the new texts.
+5. Generation: as soon as the images are confirmed (or the texts, without smart object layers), call create-variant ONCE with all variants, passing for each image the crop chosen in the grid; do not recap the variants or ask for another approval. The widget shows the generated files with download buttons.
+6. Review: create-variant measures the texts of the generated files (past the edges of the canvas, overlapping other elements more than in the template, or, read by an OCR, words broken across two lines by a text box too narrow for them, or not found in the visual: cut by a text box that is too small, hidden or hard to read) and the widget marks each problem on the visual, with a proposed fix (a smaller font size). Each variant has a field of changes, pre-filled with its proposed fixes, that the user edits, then sends to you: nothing is generated again before. Do not list the problems in chat: briefly say that the widget shows them and takes the changes. When the user sends changes, call create-variant again with the variants to change only, with the same file names and the same edits except the changes (a font size of N% is fontScale N/100; keep the fontScale of the other texts): the widget shows all variants, the changed ones in place of their earlier version, without generating the others again. For texts too long even with a smaller font, propose a shorter text.
+Changes after generation: to re-crop or swap images, call upload-variant-images again with images pre-filled from the previous confirmation (never ask to upload again the images you already have, unless their URLs expired); to change texts, call create-variant again with the variants to change only (same file names; the others are shown again unchanged). To start a new set of variants from the same template, pass fresh: true.
 Widgets send their result (template URL, layers, texts, images) in your context and end the user's message with a reference in parentheses like "(r7k2p9)": if you do not have that result in your context, call get-widget-result with this ref before going on; never ask the user to redo a step because a result seems missing.
 The URLs from the widgets are temporary presigned URLs: use them in tool calls, but never show them to the user. Reply in the user's language.`
 
 const NEXT_STEPS_AFTER_SELECTION = 'Wait for the user to pick layers in the widget. Then: (1) if text layers were selected, get the ' +
   'texts of each variant (from the user, or written from a brief: subject, tone, language), each with the same number of lines and ' +
-  'about the same number of characters (within 10%) as the original text of its layer, give each variant a short label, check them ' +
-  'with preview-variant-texts (fix or propose corrections for texts that do not fit), then call review-variant-texts with the ' +
-  'checked texts and the original texts; (2) if smart object layers were selected, call upload-variant-images ONCE with all variant labels and ' +
+  'about the same number of characters (within 10%) as the original text of its layer, give each variant a short label, then ' +
+  'call review-variant-texts with the texts and the original texts; (2) if smart object layers were selected, call upload-variant-images ONCE with all variant labels and ' +
   'the selected smart object layers (id, name, and frame width and height): it shows a single grid, one image per variant and layer, ' +
   'where the user adjusts each crop. Never call upload-file per image and never ask for image URLs; (3) then call create-variant ONCE ' +
   'with all variants, passing each image crop as given by the grid, without a recap or another approval.'
 
 // Server-to-server token for Firefly Services, reused across warm invocations.
 let cachedToken = null
+let tokenRequest = null
 
+// Server-to-server token of Firefly Services, kept until a minute before it expires. Parallel calls share one request.
 async function getFireflyServicesToken (params) {
   if (cachedToken && cachedToken.expiresAt > Date.now() + 60000) return cachedToken.value
+  tokenRequest = tokenRequest || requestFireflyServicesToken(params).finally(() => { tokenRequest = null })
+  return tokenRequest
+}
 
-  const response = await fetch(IMS_TOKEN_URL, {
+async function requestFireflyServicesToken (params) {
+  if (!params.FIREFLY_SERVICES_API_CLIENT_ID || !params.FIREFLY_SERVICES_API_CLIENT_SECRET) {
+    throw new Error('Firefly Services credentials are not configured on this server.')
+  }
+  const response = await fetchWithRetry(IMS_TOKEN_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
@@ -72,28 +78,58 @@ async function getFireflyServicesToken (params) {
       scope: params.FIREFLY_SERVICES_API_SCOPES
     })
   })
-  const result = await response.json()
+  const result = await readJson(response)
   if (!result.access_token) throw new Error(`IMS token request failed: ${result.error_description || result.error || response.status}`)
 
   cachedToken = { value: result.access_token, expiresAt: Date.now() + result.expires_in * 1000 }
   return cachedToken.value
 }
 
+// Time limit of one HTTP request (answer and body)
+const REQUEST_TIMEOUT_MS = 30000
 const RATE_LIMIT_RETRIES = 6
-const RATE_LIMIT_BASE_DELAY_MS = 1000
-const RATE_LIMIT_MAX_DELAY_MS = 30000
+// Retries of server errors and network failures, which are usually transient
+const TRANSIENT_RETRIES = 2
+const TRANSIENT_STATUSES = [500, 502, 503, 504]
+const RETRY_BASE_DELAY_MS = 1000
+const RETRY_MAX_DELAY_MS = 30000
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 
-// fetch that waits and retries when Firefly Services answers 429 (rate limit): for the Retry-After delay when given,
-// otherwise with an exponential backoff, randomized so that parallel jobs do not retry all at once.
-async function fetchWithRateLimit (url, options) {
+// Exponential backoff, randomized so that parallel jobs do not retry all at once
+const backoff = attempt => Math.min(RETRY_BASE_DELAY_MS * 2 ** attempt * (0.5 + Math.random()), RETRY_MAX_DELAY_MS)
+
+// fetch with a time limit, that waits and retries when Firefly Services answers 429 (rate limit), for the Retry-After delay
+// when given, and on server errors and network failures.
+async function fetchWithRetry (url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
   for (let attempt = 0; ; attempt++) {
-    const response = await fetch(url, options)
-    if (response.status !== 429 || attempt >= RATE_LIMIT_RETRIES) return response
+    let response
+    try {
+      response = await fetch(url, { ...options, signal: AbortSignal.timeout(timeoutMs) })
+    } catch (error) {
+      const reason = error.name === 'TimeoutError' ? `no answer within ${timeoutMs / 1000}s` : error.cause?.message || error.message
+      if (attempt >= TRANSIENT_RETRIES) throw new Error(`Request to ${new URL(url).host} failed: ${reason}`)
+      await wait(backoff(attempt))
+      continue
+    }
+    const retry = response.status === 429
+      ? attempt < RATE_LIMIT_RETRIES
+      : TRANSIENT_STATUSES.includes(response.status) && attempt < TRANSIENT_RETRIES
+    if (!retry) return response
     const retryAfterMs = Number(response.headers.get('retry-after')) * 1000
-    const backoffMs = RATE_LIMIT_BASE_DELAY_MS * 2 ** attempt * (0.5 + Math.random())
-    await wait(Math.min(retryAfterMs > 0 ? retryAfterMs : backoffMs, RATE_LIMIT_MAX_DELAY_MS))
+    // Frees the connection
+    await response.body?.cancel().catch(() => {})
+    await wait(retryAfterMs > 0 ? Math.min(retryAfterMs, RETRY_MAX_DELAY_MS) : backoff(attempt))
+  }
+}
+
+// Body of a JSON answer; an error page (e.g. HTML from a gateway) is returned as { message } with its start.
+async function readJson (response) {
+  const text = await response.text()
+  try {
+    return text ? JSON.parse(text) : {}
+  } catch (_) {
+    return { message: text.slice(0, 300) }
   }
 }
 
@@ -106,25 +142,63 @@ async function fireflyHeaders (params) {
   }
 }
 
-async function callPhotoshop (params, path, options = {}) {
-  const response = await fetchWithRateLimit(`${PHOTOSHOP_API}${path}`, { ...options, headers: await fireflyHeaders(params) })
-  const body = await response.json()
-  if (!response.ok) throw new Error(`Photoshop API ${response.status}: ${JSON.stringify(body)}`)
+// Calls a Firefly Services API; on 401 (token revoked or expired early), once again with a new token.
+async function callFirefly (params, label, url, options = {}, renewed = false) {
+  const response = await fetchWithRetry(url, { ...options, headers: await fireflyHeaders(params) })
+  if (response.status === 401 && !renewed) {
+    cachedToken = null
+    await response.body?.cancel().catch(() => {})
+    return callFirefly(params, label, url, options, true)
+  }
+  const body = await readJson(response)
+  if (!response.ok) throw new Error(`${label} ${response.status}: ${JSON.stringify(body)}`)
   return body
 }
 
-// Submits an asynchronous Photoshop job and polls it until it finishes; returns the job result.
-async function runPhotoshopJob (params, path, body) {
-  const { jobId } = await callPhotoshop(params, path, { method: 'POST', body: JSON.stringify(body) })
+function callPhotoshop (params, path, options) {
+  return callFirefly(params, 'Photoshop API', `${PHOTOSHOP_API}${path}`, options)
+}
 
-  const deadline = Date.now() + POLL_TIMEOUT_MS
-  while (Date.now() < deadline) {
-    await wait(POLL_INTERVAL_MS)
-    const status = await callPhotoshop(params, `/status/${jobId}`)
-    if (status.status === 'succeeded') return status.result
-    if (status.status === 'failed') throw new Error(`Photoshop job failed: ${JSON.stringify(status.errorDetails)}`)
+// Runs tasks with at most max of them at once, the others waiting in order.
+function createLimiter (max) {
+  let active = 0
+  const queue = []
+  const next = () => {
+    if (active >= max || !queue.length) return
+    active++
+    const { task, resolve, reject } = queue.shift()
+    Promise.resolve().then(task).then(resolve, reject).finally(() => { active--; next() })
   }
-  throw new Error(`Photoshop job ${jobId} did not finish within ${POLL_TIMEOUT_MS / 1000}s`)
+  return task => new Promise((resolve, reject) => { queue.push({ task, resolve, reject }); next() })
+}
+
+// Asynchronous Firefly Services jobs running at once in this container (a generation of 10 variants runs up to 10 renders, plus
+// their crops and text measures): keeps the polling within the rate limits, without delaying the renders of a full generation.
+const MAX_CONCURRENT_JOBS = 10
+const limitJob = createLimiter(MAX_CONCURRENT_JOBS)
+
+// Polls check() until it returns a value (undefined: not finished), more often at first, as most jobs take a few seconds.
+async function pollJob (check, label) {
+  const deadline = Date.now() + POLL_TIMEOUT_MS
+  for (let delay = POLL_FIRST_DELAY_MS; Date.now() < deadline; delay = Math.min(delay * 1.5, POLL_MAX_DELAY_MS)) {
+    await wait(delay)
+    const result = await check()
+    if (result !== undefined) return result
+  }
+  throw new Error(`${label} did not finish within ${POLL_TIMEOUT_MS / 1000}s`)
+}
+
+// Submits an asynchronous Photoshop job and polls it until it finishes; returns the job result.
+function runPhotoshopJob (params, path, body) {
+  return limitJob(async () => {
+    const { jobId } = await callPhotoshop(params, path, { method: 'POST', body: JSON.stringify(body) })
+    if (!jobId) throw new Error(`Photoshop API ${path}: no job id in the answer`)
+    return pollJob(async () => {
+      const status = await callPhotoshop(params, `/status/${jobId}`)
+      if (status.status === 'succeeded') return status.result
+      if (status.status === 'failed') throw new Error(`Photoshop job failed: ${JSON.stringify(status.errorDetails)}`)
+    }, `Photoshop job ${jobId}`)
+  })
 }
 
 async function generateManifest (params, url) {
@@ -132,7 +206,56 @@ async function generateManifest (params, url) {
     image: { source: { url } },
     outputs: [{ destination: { embedded: 'json' }, mediaType: 'application/json' }]
   })
-  return result?.outputs?.[0]?.destination?.content ?? result
+  const manifest = result?.outputs?.[0]?.destination?.content ?? result
+  if (!manifest?.document?.bounds) throw new Error('The Photoshop API returned no document in the manifest of the file.')
+  return manifest
+}
+
+// Results kept by a warm container for an hour, by key: the workflow reads the same template at each step, and the same image
+// for the crop of each slot that uses it. A promise is kept while running, so that parallel and repeated calls share it; a
+// failed one is not kept.
+const CACHE_TTL_MS = 3600000
+
+function createCache (size) {
+  const entries = new Map()
+  return (key, compute) => {
+    const hit = entries.get(key)
+    if (hit && hit.expiresAt > Date.now()) return hit.value
+    const value = compute()
+    entries.delete(key)
+    entries.set(key, { value, expiresAt: Date.now() + CACHE_TTL_MS })
+    value.catch(() => { if (entries.get(key)?.value === value) entries.delete(key) })
+    if (entries.size > size) entries.delete(entries.keys().next().value)
+    return value
+  }
+}
+
+const manifestCache = createCache(50)
+const previewCache = createCache(20)
+const cropCache = createCache(100)
+
+// Manifest of a template or image, from the cache.
+function getManifest (params, url) {
+  return manifestCache(url, () => generateManifest(params, url))
+}
+
+// Adobe I/O Runtime ends a web request after about 60 seconds, whatever the action timeout: tools that can take longer
+// answer within this time, with what they could not finish marked as such. Jobs still running go on in the container, and
+// their results are cached for the next call.
+const RESPONSE_BUDGET_MS = 50000
+
+// Settles like the promise, or with fallback() if it is not settled by the deadline (fallback may throw).
+function beforeDeadline (promise, deadline, fallback) {
+  let timer
+  const late = new Promise((resolve, reject) => {
+    timer = setTimeout(() => { try { resolve(fallback()) } catch (error) { reject(error) } }, Math.max(0, deadline - Date.now()))
+  })
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer))
+}
+
+// Fallback of beforeDeadline for a result that cannot be left out.
+const tooLate = what => () => {
+  throw new Error(`${what} did not finish within the time limit of a request. Generate it again alone, or with fewer variants at once (finished steps are reused).`)
 }
 
 function isUnlocked (layer) {
@@ -164,13 +287,15 @@ function getEditableLayers (layers = []) {
 }
 
 // Flattened JPEG of a PSD, on which the layer picker of the views shows the editable layers.
-async function renderPreview (params, url) {
-  const { uploadUrl, readUrl } = await createStorageUrls('previews', 'preview.jpg')
-  await runPhotoshopJob(params, '/create-composite', {
-    image: { source: { url } },
-    outputs: [{ destination: { url: uploadUrl }, mediaType: 'image/jpeg', quality: 'high' }]
+function renderPreview (params, url) {
+  return previewCache(url, async () => {
+    const { uploadUrl, readUrl } = await createStorageUrls('previews', 'preview.jpg')
+    await runPhotoshopJob(params, '/create-composite', {
+      image: { source: { url } },
+      outputs: [{ destination: { url: uploadUrl }, mediaType: 'image/jpeg', quality: 'high' }]
+    })
+    return readUrl
   })
-  return readUrl
 }
 
 function newStoragePath (folder, fileName) {
@@ -179,14 +304,21 @@ function newStoragePath (folder, fileName) {
   return `${folder}/${Date.now()}-${crypto.randomUUID().slice(0, 8)}-${safeName}`
 }
 
+// Clients of App Builder storage and state, initialized once per container (a failed init is tried again on the next call).
+let filesClient = null
+let stateClient = null
+const initFiles = () => (filesClient = filesClient || filesLib.init().catch(error => { filesClient = null; throw error }))
+const initState = () => (stateClient = stateClient || stateLib.init().catch(error => { stateClient = null; throw error }))
+
 async function createStorageUrls (folder, fileName) {
-  const files = await filesLib.init()
+  const files = await initFiles()
   const path = newStoragePath(folder, fileName)
   const options = { expiryInSeconds: URL_EXPIRY_SECONDS }
-  return {
-    uploadUrl: await files.generatePresignURL(path, { ...options, permissions: 'w' }),
-    readUrl: await files.generatePresignURL(path, { ...options, permissions: 'r' })
-  }
+  const [uploadUrl, readUrl] = await Promise.all([
+    files.generatePresignURL(path, { ...options, permissions: 'w' }),
+    files.generatePresignURL(path, { ...options, permissions: 'r' })
+  ])
+  return { uploadUrl, readUrl }
 }
 
 const AEM_HOST = /^(author|delivery)-(p\d+-e\d+)\.adobeaemcloud\.com$/
@@ -251,15 +383,17 @@ function getAemDownloadUrl (aem, { repositoryId, assetId, path, fileName }) {
 // when the binary requires authentication.
 async function importAemAsset (params, aem, asset) {
   const url = getAemDownloadUrl(aem, asset)
-  let response = await fetch(url)
+  // The time limit covers the download of the binary
+  let response = await fetchWithRetry(url, {}, RESPONSE_BUDGET_MS)
   if (response.status === 401 || response.status === 403) {
+    await response.body?.cancel().catch(() => {})
     const token = getTokenFromRequest(params)
-    response = await fetch(url, { headers: { Authorization: `Bearer ${token}`, 'X-Api-Key': params.AEM_API_KEY || getUnverifiedClientId(token) } })
+    response = await fetchWithRetry(url, { headers: { Authorization: `Bearer ${token}`, 'X-Api-Key': params.AEM_API_KEY || getUnverifiedClientId(token) } }, RESPONSE_BUDGET_MS)
   }
   const fileName = asset.fileName
   if (!response.ok) throw new Error(`AEM download of ${fileName} failed (HTTP ${response.status})`)
 
-  const files = await filesLib.init()
+  const files = await initFiles()
   const path = newStoragePath('aem', fileName)
   await files.write(path, Readable.fromWeb(response.body))
   return { fileName, url: await files.generatePresignURL(path, { expiryInSeconds: URL_EXPIRY_SECONDS, permissions: 'r' }) }
@@ -267,7 +401,11 @@ async function importAemAsset (params, aem, asset) {
 
 function toLayerEdit (layer) {
   const edit = { id: layer.id, type: layer.type, operation: { type: 'edit' } }
-  if (layer.type === 'text_layer') edit.text = { content: layer.text }
+  if (layer.type === 'text_layer') {
+    // Photoshop separates lines with \r: line breaks typed in the views or written by the model are \n
+    edit.text = { content: layer.text.replace(/\r?\n/g, '\r') }
+    if (layer.characterStyle) edit.text.characterStyles = [{ characterStyle: layer.characterStyle }]
+  }
   else edit.smartObject = { smartObjectFile: { source: { url: layer.imageUrl } } }
   return edit
 }
@@ -282,55 +420,289 @@ const VARIANT_OUTPUTS = {
 const VARIANT_FORMATS = Object.keys(VARIANT_OUTPUTS)
 const PREVIEW_OUTPUT = { mediaType: 'image/jpeg', quality: 'high' }
 
-// Renders one variant in all the requested formats with a single Photoshop job.
-async function createVariant (params, { templateUrl, formats, layers, fileName }) {
-  const baseName = (fileName || 'variant').replace(/\.(png|jpe?g|psd)$/i, '')
+// Renders one variant in all the requested formats with a single Photoshop job, then measures its texts against the template
+// manifest on the PSD output (rendered for that purpose when PSD is not a requested format).
+async function createVariant (params, { templateUrl, templateManifest, formats, layers, fileName: baseName, deadline }) {
   const shownFormat = formats.find(format => VARIANT_OUTPUTS[format].displayable)
-  const [files, preview] = await Promise.all([
+  const [files, preview, measureCopy] = await Promise.all([
     Promise.all(formats.map(format => createStorageUrls('variants', `${baseName}.${VARIANT_OUTPUTS[format].extension}`))),
-    shownFormat ? null : createStorageUrls('variants', `${baseName}-preview.jpg`)
+    shownFormat ? null : createStorageUrls('variants', `${baseName}-preview.jpg`),
+    formats.includes('psd') ? null : createStorageUrls('measures', `${baseName}.psd`)
   ])
 
-  await runPhotoshopJob(params, '/create-composite', {
+  await beforeDeadline(runPhotoshopJob(params, '/create-composite', {
     image: { source: { url: templateUrl } },
     edits: { layers: layers.map(toLayerEdit) },
     outputs: [
       ...formats.map((format, i) => ({ destination: { url: files[i].uploadUrl }, ...VARIANT_OUTPUTS[format].output })),
-      ...(preview ? [{ destination: { url: preview.uploadUrl }, ...PREVIEW_OUTPUT }] : [])
+      ...(preview ? [{ destination: { url: preview.uploadUrl }, ...PREVIEW_OUTPUT }] : []),
+      ...(measureCopy ? [{ destination: { url: measureCopy.uploadUrl }, ...VARIANT_OUTPUTS.psd.output }] : [])
     ]
-  })
+  }), deadline, tooLate('The rendering'))
+  const psdUrl = measureCopy ? measureCopy.readUrl : files[formats.indexOf('psd')].readUrl
+  // Shown in the view: the first displayable file, or the preview
+  const imageUrl = preview ? preview.readUrl : files[formats.indexOf(shownFormat)].readUrl
   return {
     fileName: baseName,
-    // Shown in the view: the first displayable file, or the preview
-    imageUrl: preview ? preview.readUrl : files[formats.indexOf(shownFormat)].readUrl,
-    files: formats.map((format, i) => ({ format, fileName: `${baseName}.${VARIANT_OUTPUTS[format].extension}`, url: files[i].readUrl }))
+    imageUrl,
+    files: formats.map((format, i) => ({ format, fileName: `${baseName}.${VARIANT_OUTPUTS[format].extension}`, url: files[i].readUrl })),
+    // For the view, which marks the text problems on the image
+    canvas: boundsSize(templateManifest.document.bounds),
+    ...await beforeDeadline(measureRenderedTexts(params, psdUrl, imageUrl, templateManifest, layers, deadline)
+      .then(({ issues, unchecked }) => ({ textIssues: issues, ...(unchecked ? { textsUnchecked: unchecked } : {}) })),
+    deadline, () => ({ textIssues: null, textsUnchecked: 'not finished within the time limit' }))
   }
 }
 
-// Small JPEG of the template with the texts of a variant, to check that they fit the layout: its URL for the texts widget,
-// and its content as base64 for the model unless withData is false. Without support of maxWidth by the Photoshop API,
-// renders it at full size in low quality instead.
-async function renderTextPreview (params, templateUrl, texts, withData = true) {
-  const { uploadUrl, readUrl } = await createStorageUrls('text-previews', 'preview.jpg')
-  const job = output => runPhotoshopJob(params, '/create-composite', {
-    image: { source: { url: templateUrl } },
-    edits: { layers: texts.map(t => toLayerEdit({ id: t.layerId, type: 'text_layer', text: t.text })) },
-    outputs: [{ destination: { url: uploadUrl }, mediaType: 'image/jpeg', ...output }]
-  })
-  await job({ quality: 'medium', maxWidth: PREVIEW_MAX_WIDTH }).catch(error => {
-    console.warn(`Text preview with maxWidth failed, retrying at full size: ${error.message}`)
-    return job({ quality: 'low' })
-  })
-  if (!withData) return { url: readUrl }
-  const response = await fetch(readUrl)
-  if (!response.ok) throw new Error(`preview download failed (${response.status})`)
-  return { url: readUrl, data: Buffer.from(await response.arrayBuffer()).toString('base64') }
+// A text is reported past an edge of the canvas beyond this margin
+const EDGE_TOLERANCE_PX = 2
+// A text overlaps another element when their common area grows beyond this share of the text area compared to the template
+const OVERLAP_TOLERANCE = 0.05
+// A text that lies mostly on an element in the template (this share of its area at least) is placed on it by design
+const DESIGNED_OVERLAP_SHARE = 0.5
+// Layers covering more of the canvas than this share are backgrounds, under the texts by design
+const BACKGROUND_SHARE = 0.8
+
+// Smallest font scale proposed as a fix, as advised to the model: below it, a text is better shortened
+const MIN_FONT_SCALE = 0.8
+
+// The OCR gives up this long before the deadline of the measure, so that the other checks are returned in time
+const OCR_DEADLINE_MARGIN_MS = 1000
+
+// Margin around a text area read by the OCR, as a share of its height: glyphs may go past the box of the layer
+const OCR_MARGIN = 0.15
+// A text is in place when its words read lie in its area of the template with OCR_MARGIN; to see whether they do, the area of
+// the template is read with this wider margin
+const IN_PLACE_READ_MARGIN = 0.4
+
+// Image bytes of a rendered visual, for the OCR.
+async function downloadImage (url) {
+  const response = await fetchWithRetry(url)
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  return Buffer.from(await response.arrayBuffer())
 }
 
+// Area read by the OCR: the text area with a margin (share of its height), inside the canvas.
+function ocrRect (area, canvas, marginShare = OCR_MARGIN) {
+  const margin = area.height * marginShare
+  const left = Math.max(0, area.left - margin)
+  const top = Math.max(0, area.top - margin)
+  return {
+    left,
+    top,
+    width: Math.min(canvas.width, area.left + area.width + margin) - left,
+    height: Math.min(canvas.height, area.top + area.height + margin) - top
+  }
+}
+
+// Visible layers of a manifest that are drawn, nested or not (groups and adjustment layers are not).
+function drawnLayers (layers = []) {
+  return layers.flatMap(layer => {
+    if (layer.visible === false) return []
+    const children = layer.children || layer.layers
+    if (children?.length) return drawnLayers(children)
+    return /group|section|adjustment/.test(layer.type || '') ? [] : [layer]
+  })
+}
+
+// Common rectangle of two layer areas, null if none.
+function intersection (a, b) {
+  const left = Math.max(a.left, b.left)
+  const top = Math.max(a.top, b.top)
+  const width = Math.min(a.left + a.width, b.left + b.width) - left
+  const height = Math.min(a.top + a.height, b.top + b.height) - top
+  return width > 0 && height > 0 ? { left, top, width, height } : null
+}
+
+const surface = rect => rect ? rect.width * rect.height : 0
+
+// Elements of the template that a rendered text overlaps more than in the template: other texts, images, shapes, logos...
+// Layers are compared by their bounding boxes (a round logo counts as its box): only overlaps that appear or grow are
+// reported, and not with the elements the text lies on in the template (a photo, a band), as they are by design. Returns [{ name, factor, area }], factor being the
+// font scale that removes the overlap, the text shrinking along the axis that needs the least, and area the common rectangle.
+function findOverlaps (textArea, textBefore, edited, original, templateManifest, rendered, canvas) {
+  const canvasSurface = canvas.width * canvas.height
+  return drawnLayers(templateManifest.layers).flatMap(other => {
+    if (other.id === edited || other === original) return []
+    const otherBefore = layerArea(other)
+    if (!otherBefore || surface(otherBefore) > canvasSurface * BACKGROUND_SHARE) return []
+    // Where the element is in the render (another edited text may have moved or grown)
+    const otherAfter = layerArea(findLayer(rendered.layers, other.id) || other) || otherBefore
+    const after = intersection(textArea, otherAfter)
+    const before = textBefore ? surface(intersection(textBefore, otherBefore)) : 0
+    if (textBefore && before >= surface(textBefore) * DESIGNED_OVERLAP_SHARE) return []
+    const grown = surface(after) - before
+    if (!after || grown <= surface(textArea) * OVERLAP_TOLERANCE) return []
+    return [{
+      name: other.name || String(other.id),
+      factor: Math.max((textArea.width - after.width) / textArea.width, (textArea.height - after.height) / textArea.height),
+      area: after
+    }]
+  })
+}
+
+// Whether the OCR read a whole text inside its area of the template (with OCR_MARGIN): it then has not grown, so it cannot
+// pass an edge of the canvas or overlap an element more than in the template.
+function isInPlace (check, before) {
+  if (!check || check.missing.length || check.broken.length || !check.box || !before) return false
+  const margin = before.height * OCR_MARGIN
+  return check.box.left >= before.left - margin && check.box.top >= before.top - margin &&
+    check.box.left + check.box.width <= before.left + before.width + margin &&
+    check.box.top + check.box.height <= before.top + before.height + margin
+}
+
+// Problems of the edited texts of a rendered variant, one check per cause: text past the edges of the canvas or overlapping
+// other elements more than in the template, measured on the manifest of the rendered PSD against the template; words not
+// found in the visual by the OCR otherwise (a text cut by its box, hidden or unreadable), as words cut by an edge or hidden by
+// an element are only a consequence of these. A text that only grows is not a problem: what it may cause is checked.
+// The visual is read first, on the areas of the texts in the template: when every text is read whole in its area, the texts
+// fit and the rendered PSD is not read (a Photoshop job less). One entry per text with problems, with the font scale that
+// brings it back in its bounds (rounded down to 5%, not below MIN_FONT_SCALE, then marked as not enough), its area and the
+// rectangles of its overlaps. Best effort: returns { issues, unchecked }, issues being null when the texts could not be
+// measured, and unchecked what could not be checked and why (e.g. the OCR, not ready by the deadline: the edges and overlaps
+// are still returned).
+async function measureRenderedTexts (params, psdUrl, imageUrl, templateManifest, layers, deadline) {
+  const textLayers = layers.filter(layer => layer.type === 'text_layer')
+  if (!textLayers.length) return { issues: [], unchecked: null }
+  try {
+    const canvas = boundsSize(templateManifest.document.bounds)
+    const image = downloadImage(imageUrl).catch(error => { console.warn(`Visual not read: ${error.message}`); return null })
+    const texts = textLayers.map(edit => {
+      const original = findLayer(templateManifest.layers, edit.id)
+      return { edit, original, before: original && layerArea(original) }
+    })
+    let unchecked = null
+    const notRead = reason => { unchecked = `words not read: ${reason}`; return null }
+    // Reads texts in their areas, before the deadline of the measure so that the other checks are returned
+    const read = areas => beforeDeadline(
+      image.then(visual => visual ? checkTexts(visual, areas) : notRead('the visual could not be downloaded'))
+        .catch(error => notRead(error.message)),
+      deadline - OCR_DEADLINE_MARGIN_MS, () => notRead('not finished within the time limit'))
+
+    const placed = texts.every(t => t.before)
+      ? await read(texts.map(t => ({ text: t.edit.text, rect: ocrRect(t.before, canvas, IN_PLACE_READ_MARGIN) })))
+      : null
+    if (placed && texts.every((t, i) => isInPlace(placed[i], t.before))) return { issues: [], unchecked: null }
+    unchecked = null
+
+    const rendered = await generateManifest(params, psdUrl)
+    const measures = texts.map(({ edit, original, before }) => {
+      // By id, or by name in case the render gives new ids to the layers
+      const renderedLayer = findLayer(rendered.layers, edit.id) ||
+        (original && findLayer(rendered.layers, layer => layer.type === 'text_layer' && layer.name === original.name))
+      const area = layerArea(renderedLayer || {}) || before
+      const problems = []
+      // Factors by which the text must shrink to fix each problem
+      const factors = []
+      // Rectangles of the overlaps in the canvas, for the view
+      const marks = []
+      if (area && renderedLayer) {
+        const past = { left: -area.left, top: -area.top, right: area.left + area.width - canvas.width, bottom: area.top + area.height - canvas.height }
+        Object.entries(past).forEach(([edge, px]) => {
+          if (px <= EDGE_TOLERANCE_PX) return
+          problems.push(`goes ${Math.round(px)} px past the ${edge} edge of the canvas`)
+          const size = edge === 'left' || edge === 'right' ? area.width : area.height
+          factors.push((size - px) / size)
+        })
+        findOverlaps(area, before, edit.id, original, templateManifest, rendered, canvas).forEach(overlap => {
+          problems.push(`now overlaps "${overlap.name}"`)
+          factors.push(overlap.factor)
+          marks.push(overlap.area)
+        })
+      }
+      return { edit, original, area, problems, factors, marks }
+    })
+
+    // The words of the texts without other problems, read again in their rendered areas
+    const toRead = measures.filter(m => m.area && !m.problems.length)
+    const checks = toRead.length ? await read(toRead.map(m => ({ text: m.edit.text, rect: ocrRect(m.area, canvas) }))) || [] : []
+    toRead.forEach((m, i) => {
+      const check = checks[i]
+      if (!check) return
+      check.broken.forEach(({ word, fit }) => {
+        m.problems.push(`breaks "${word}" across two lines (its box is too narrow for this word)`)
+        m.factors.push(fit)
+      })
+      if (check.missing.length) {
+        m.problems.push(`words not found in the visual: "${check.missing.join(' ')}" (cut, hidden or hard to read)`)
+        // A smaller text shows the words cut by its box
+        m.factors.push(Math.sqrt(1 - check.share))
+      }
+    })
+
+    const issues = measures.filter(m => m.problems.length).map(({ edit, original, area, problems, factors, marks }) => {
+      const needed = Math.floor((edit.fontScale || 1) * Math.min(...factors) * 20) / 20
+      return {
+        layerId: edit.id,
+        layerName: original?.name || String(edit.id),
+        problems,
+        fontScale: Math.max(needed, MIN_FONT_SCALE),
+        // A smaller font is not enough: the text should be shortened
+        shorten: needed < MIN_FONT_SCALE,
+        area,
+        marks
+      }
+    })
+    return { issues, unchecked }
+  } catch (error) {
+    console.warn(`Text measure failed: ${error.message}`)
+    return { issues: null, unchecked: error.message }
+  }
+}
+
+// Text problems of one variant, for the model.
+function describeTextIssues (label, issues, unchecked) {
+  if (issues == null) return `${label}: texts could not be measured (${unchecked}): check the visual.`
+  const note = unchecked ? ` (${unchecked})` : ''
+  if (!issues.length) return `${label}: all texts fit${note}.`
+  return `${label}: ` + issues.map(issue => `"${issue.layerName}" ${issue.problems.join(', ')} (fix: fontScale ${issue.fontScale}` +
+    (issue.shorten ? ', and a shorter text' : '') + ')').join('; ') + note + '.'
+}
+
+// Character style attributes kept from the template when the font size of a text is scaled. The manifest describes the font
+// and color with more fields than an edit accepts (e.g. font.isAvailable): only these are passed again.
+const KEPT_STYLE_ATTRIBUTES = ['autoLeading', 'letterSpacing', 'syntheticBold', 'syntheticItalic', 'capsOption']
+const COLOR_MODELS = ['rgb', 'cmyk', 'lab', 'gray']
+
+const isScaled = layer => layer.type === 'text_layer' && layer.fontScale != null && layer.fontScale !== 1
+
+// The API cannot scale a text: text edits with a font scale get the character style of their layer in the template, with its
+// font size (and line height) scaled, for the whole text. The other attributes are passed again, as a partial style may
+// reset them. Takes and returns the layer edits of one variant.
+function applyFontScales (manifest, layers) {
+  return layers.map(layer => {
+    if (!isScaled(layer)) return layer
+    const first = findLayer(manifest.layers, layer.id)?.text?.characterStyles?.[0]
+    const style = first?.characterStyle || first
+    if (!style?.fontSize) throw new Error(`The font size of layer ${layer.id} is not known, it cannot be scaled.`)
+    const characterStyle = { fontSize: style.fontSize * layer.fontScale }
+    KEPT_STYLE_ATTRIBUTES.forEach(name => { if (style[name] != null) characterStyle[name] = style[name] })
+    if (style.font?.postScriptName) characterStyle.font = { postScriptName: style.font.postScriptName }
+    const colorModel = COLOR_MODELS.find(model => style.fontColor?.[model])
+    if (colorModel) characterStyle.fontColor = { [colorModel]: style.fontColor[colorModel] }
+    if (style.lineHeight && !style.autoLeading) characterStyle.lineHeight = style.lineHeight * layer.fontScale
+    return { ...layer, characterStyle }
+  })
+}
+
+// Edits of layers that are not in the template, or not of the same type, fail in the Photoshop API with a less clear error.
+function checkLayerEdits (manifest, layers) {
+  const seen = new Set()
+  layers.forEach(layer => {
+    const original = findLayer(manifest.layers, layer.id)
+    if (!original) throw new Error(`Layer ${layer.id} is not in the template: use the layer ids of get-psd-manifest.`)
+    if (original.type !== layer.type) throw new Error(`Layer ${layer.id} ("${original.name}") is a ${original.type}, not a ${layer.type}.`)
+    if (seen.has(layer.id)) throw new Error(`Layer ${layer.id} ("${original.name}") is edited twice.`)
+    seen.add(layer.id)
+  })
+}
+
+// Layer of a manifest, nested or not, by id or by a predicate.
 function findLayer (layers = [], id) {
+  const matches = typeof id === 'function' ? id : layer => layer.id === id
   for (const layer of layers) {
-    if (layer.id === id) return layer
-    const nested = findLayer(layer.children || layer.layers, id)
+    if (matches(layer)) return layer
+    const nested = findLayer(layer.children || layer.layers, matches)
     if (nested) return nested
   }
   return null
@@ -352,25 +724,19 @@ function closestAutoCropRatio (ratio) {
 }
 
 // Returns the box auto-crop suggests around the subject, in auto-crop coordinates (see toImageCoordinates).
-async function detectSubjectBox (params, imageUrl, ratio) {
-  const headers = await fireflyHeaders(params)
-  const submit = await fetchWithRateLimit(AUTO_CROP_API, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ image: { source: { url: imageUrl } }, mode: 'smartCrop', aspectRatio: closestAutoCropRatio(ratio) })
+function detectSubjectBox (params, imageUrl, ratio) {
+  return limitJob(async () => {
+    const { statusUrl } = await callFirefly(params, 'auto-crop', AUTO_CROP_API, {
+      method: 'POST',
+      body: JSON.stringify({ image: { source: { url: imageUrl } }, mode: 'smartCrop', aspectRatio: closestAutoCropRatio(ratio) })
+    })
+    if (!statusUrl) throw new Error('auto-crop: no status URL in the answer')
+    return pollJob(async () => {
+      const status = await callFirefly(params, 'auto-crop', statusUrl)
+      if (status.status === 'failed') throw new Error(`auto-crop failed: ${JSON.stringify(status)}`)
+      if (status.status === 'succeeded') return status.output?.crops?.[0]?.boundingBoxes?.[0] || null
+    }, 'auto-crop')
   })
-  const { statusUrl } = await submit.json()
-  if (!statusUrl) throw new Error(`auto-crop request failed (${submit.status})`)
-
-  const deadline = Date.now() + POLL_TIMEOUT_MS
-  while (Date.now() < deadline) {
-    await wait(POLL_INTERVAL_MS)
-    const status = await (await fetchWithRateLimit(statusUrl, { headers })).json()
-    if (status.status === 'failed') throw new Error(`auto-crop failed: ${JSON.stringify(status)}`)
-    if (status.status !== 'succeeded') continue
-    return status.output?.crops?.[0]?.boundingBoxes?.[0] || null
-  }
-  throw new Error('auto-crop did not finish in time')
 }
 
 function toImageCoordinates (box, image) {
@@ -395,12 +761,12 @@ function cropBounds (image, ratio, subject) {
   return { left, top, right: left + Math.round(width), bottom: top + Math.round(height) }
 }
 
-// Suggested crop of an image for a frame ratio, framed on the subject detected by auto-crop (centered if none).
-async function suggestCrop (params, imageUrl, ratio) {
+// Suggested crop of an image for a frame ratio, framed on the subject detected by auto-crop (centered if none, or if the
+// detection does not finish by the deadline).
+async function suggestCrop (params, imageUrl, ratio, deadline) {
   const [manifest, subject] = await Promise.all([
-    generateManifest(params, imageUrl),
-    // Subject detection is best effort: fall back to a centered crop
-    detectSubjectBox(params, imageUrl, ratio).catch(() => null)
+    beforeDeadline(getManifest(params, imageUrl), deadline, tooLate('Reading the image')),
+    beforeDeadline(detectSubjectBox(params, imageUrl, ratio).catch(() => null), deadline, () => null)
   ])
   const image = boundsSize(manifest.document.bounds)
   return { image, crop: cropBounds(image, ratio, subject && toImageCoordinates(subject, image)), subjectDetected: Boolean(subject) }
@@ -421,51 +787,118 @@ async function cropImage (params, imageUrl, bounds) {
 // Centered crop of an image to the ratio of a frame, for images without a crop chosen in upload-variant-images.
 async function cropToFrameCenter (params, imageUrl, frame) {
   const ratio = frame.width / frame.height
-  const image = boundsSize((await generateManifest(params, imageUrl)).document.bounds)
+  const image = boundsSize((await getManifest(params, imageUrl)).document.bounds)
   if (Math.abs(image.width / image.height - ratio) < 0.01) return imageUrl
   return cropImage(params, imageUrl, cropBounds(image, ratio, null))
 }
 
-// Crops every smart object image so that Photoshop's default "fit" placement fills its frame exactly: with the
-// crop chosen by the user when given, otherwise centered (unless fit is "fit"). Each distinct crop is done once.
-async function cropVariantImages (params, templateUrl, variants) {
-  const needsCrop = layer => layer.type === 'smart_object_layer' && (layer.crop || layer.fit !== 'fit')
-  const cropKey = layer => `${layer.id}|${layer.imageUrl}|${JSON.stringify(layer.crop || null)}`
-  const toCrop = variants.flatMap(v => v.layers).filter(needsCrop)
-  if (!toCrop.length) return variants
-
-  // The template manifest gives the frames, only needed for images without a chosen crop
-  const manifest = toCrop.some(layer => !layer.crop) ? await generateManifest(params, templateUrl) : null
-  const crops = new Map()
-  for (const layer of toCrop) {
-    if (crops.has(cropKey(layer))) continue
-    const frame = layer.crop ? null : findLayer(manifest.layers, layer.id)?.referenceFrame
-    crops.set(cropKey(layer), layer.crop
-      ? cropImage(params, layer.imageUrl, layer.crop)
-      : frame ? cropToFrameCenter(params, layer.imageUrl, boundsSize(frame)) : Promise.resolve(layer.imageUrl))
-  }
-
-  return Promise.all(variants.map(async variant => ({
-    ...variant,
-    layers: await Promise.all(variant.layers.map(async layer => needsCrop(layer)
-      ? { ...layer, imageUrl: await crops.get(cropKey(layer)) }
-      : layer))
-  })))
+// Crops a smart object image so that Photoshop's default "fit" placement fills its frame exactly: with the crop chosen by the
+// user when given, otherwise centered (unless fit is "fit"). Crops are cached: one done for several variants, or in an earlier
+// call, is not done again.
+function cropLayerImage (params, manifest, layer) {
+  if (layer.type !== 'smart_object_layer' || !(layer.crop || layer.fit !== 'fit')) return layer
+  const frame = layer.crop ? null : findLayer(manifest.layers, layer.id)?.referenceFrame
+  if (!layer.crop && !frame) return layer
+  const key = `${layer.imageUrl}|${JSON.stringify(layer.crop || boundsSize(frame))}`
+  return cropCache(key, () => layer.crop
+    ? cropImage(params, layer.imageUrl, layer.crop)
+    : cropToFrameCenter(params, layer.imageUrl, boundsSize(frame)))
+    .then(imageUrl => ({ ...layer, imageUrl }))
 }
 
-// Runs all variant jobs in parallel, each in its own formats or the formats of the call; a failed variant does not
-// prevent the others from being returned.
-async function createVariants (params, { templateUrl, formats, variants }) {
-  const prepared = await cropVariantImages(params, templateUrl, variants)
-  const results = await Promise.allSettled(prepared.map((variant, index) => createVariant(params, {
-    templateUrl,
-    formats: variant.formats ? [...new Set(variant.formats)] : formats,
-    layers: variant.layers,
-    fileName: variant.fileName || `variant-${index + 1}`
-  })))
-  return results.map((result, index) => result.status === 'fulfilled'
-    ? result.value
-    : { fileName: variants[index].fileName || `variant-${index + 1}`, error: result.reason.message })
+// Layer edits of a variant ready for the render: checked against the template, with font scales applied and images cropped.
+async function prepareLayers (params, manifest, layers) {
+  checkLayerEdits(manifest, layers)
+  const wrapped = layers.map(layer => wrapText(manifest, layer))
+  return Promise.all(applyFontScales(manifest, wrapped).map(layer => cropLayerImage(params, manifest, layer)))
+}
+
+const linesOf = text => String(text || '').split(/\r\n|\r|\n/)
+
+// A text written without line breaks for a template text on several lines is spread over as many lines, so that it keeps the
+// layout: a point text only breaks lines where its text does. Texts with line breaks are kept as written.
+function wrapText (manifest, layer) {
+  if (layer.type !== 'text_layer' || linesOf(layer.text).length > 1) return layer
+  const count = linesOf(findLayer(manifest.layers, layer.id)?.text?.content).length
+  return count > 1 ? { ...layer, text: balanceLines(layer.text, count) } : layer
+}
+
+// Words of a text, with the signs written apart kept with their word: "50 %", "Vite !", "« Bonjour »"
+function wordsWithSigns (text) {
+  const isSign = token => !/[\p{L}\p{N}]/u.test(token)
+  return text.trim().split(/\s+/).reduce((words, token, i, tokens) => {
+    const previous = tokens[i - 1]
+    if (previous && isSign(previous) && /[«“‘(¿¡]$/.test(previous)) words[words.length - 1] += ' ' + token
+    else if (words.length && isSign(token) && !/^[«“‘(¿¡]/.test(token)) words[words.length - 1] += ' ' + token
+    else words.push(token)
+    return words
+  }, [])
+}
+
+// Words of a text spread over count lines (fewer for fewer words) with the shortest longest line, without breaking words.
+function balanceLines (text, count) {
+  const words = wordsWithSigns(text)
+  const lines = Math.min(count, words.length)
+  if (lines < 2) return text
+  const lineLength = (from, to) => words.slice(from, to).join(' ').length
+  // best[k][i]: { longest, start } for the first i words on k lines, start being the first word of the last line
+  const best = [[{ longest: 0 }]]
+  for (let k = 1; k <= lines; k++) {
+    best[k] = []
+    for (let i = k; i <= words.length; i++) {
+      for (let start = k - 1; start < i; start++) {
+        const before = best[k - 1][start]
+        if (!before) continue
+        const longest = Math.max(before.longest, lineLength(start, i))
+        if (!best[k][i] || longest < best[k][i].longest) best[k][i] = { longest, start }
+      }
+    }
+  }
+  const result = []
+  for (let k = lines, end = words.length; k > 0; k--) {
+    const { start } = best[k][end]
+    result.unshift(words.slice(start, end).join(' '))
+    end = start
+  }
+  return result.join('\n')
+}
+
+// File names of the variants without extension, made unique (a second "summer" becomes "summer-2"): the files of a variant
+// replace the earlier ones of the same name in the view.
+function uniqueFileNames (variants) {
+  const used = new Set()
+  return variants.map((variant, index) => {
+    const base = String(variant.fileName || '').replace(/\.(png|jpe?g|psd)$/i, '').trim() || `variant-${index + 1}`
+    let name = base
+    for (let n = 2; used.has(name); n++) name = `${base}-${n}`
+    used.add(name)
+    return name
+  })
+}
+
+// Runs each variant on its own, in parallel: its crops, then its render as soon as they are done, in its own formats or the
+// formats of the call. A failed or late variant does not prevent the others from being returned.
+async function createVariants (params, { templateUrl, formats, variants, deadline }) {
+  const fileNames = uniqueFileNames(variants)
+  // The OCR engine loads during the renders
+  if (variants.some(variant => variant.layers.some(layer => layer.type === 'text_layer'))) warmUpOcr()
+  const templateManifest = beforeDeadline(getManifest(params, templateUrl), deadline, tooLate('Reading the template'))
+  return Promise.all(variants.map(async (variant, index) => {
+    try {
+      const manifest = await templateManifest
+      const layers = await beforeDeadline(prepareLayers(params, manifest, variant.layers), deadline, tooLate('Cropping the images'))
+      return await createVariant(params, {
+        templateUrl,
+        templateManifest: manifest,
+        deadline,
+        formats: variant.formats ? [...new Set(variant.formats)] : formats,
+        layers,
+        fileName: fileNames[index]
+      })
+    } catch (error) {
+      return { fileName: fileNames[index], error: error.message }
+    }
+  }))
 }
 
 // Smart object layers that get the same image in several variants: usually a mix-up in the image mapping.
@@ -491,10 +924,53 @@ function currentUserId (params) {
   return getUnverifiedClaims(getTokenFromRequest(params)).user_id
 }
 
+const shortHash = value => crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 16)
+
+// Variants generated from a template, kept 24 hours per user and template (like their download links): when only some
+// variants are generated again, the widget shows them in place of their earlier version, next to the others.
+function generationKey (userId, templateUrl) {
+  return `generation-${shortHash(userId)}-${shortHash(templateUrl)}`
+}
+
+async function readEarlierVariants (params, templateUrl) {
+  const state = await initState()
+  return (await state.get(generationKey(currentUserId(params), templateUrl)))?.value?.variants || []
+}
+
+// Merges new results into the variants generated earlier from the same template (same file name: replaced in place, others
+// added at the end) and stores the merged list. Without earlier variants, or when fresh, only the new results are shown.
+// Returns the variants to show. Best effort: on a storage error, only the new results are shown.
+async function mergeWithEarlierVariants (params, templateUrl, results, fresh) {
+  const updated = results.map(variant => ({ ...variant, updated: true }))
+  try {
+    const earlier = fresh ? [] : (await readEarlierVariants(params, templateUrl)).map(({ updated, layers, ...variant }) => variant)
+    const byName = new Map(updated.map(variant => [variant.fileName, variant]))
+    const merged = earlier.map(variant => byName.get(variant.fileName) || variant)
+    updated.forEach(variant => { if (!earlier.some(e => e.fileName === variant.fileName)) merged.push(variant) })
+    // Failed variants are not kept for the next generation
+    const state = await initState()
+    await state.put(generationKey(currentUserId(params), templateUrl), { variants: merged.filter(v => !v.error) }, { ttl: WIDGET_RESULT_TTL_SECONDS })
+    return merged
+  } catch (error) {
+    console.warn(`Earlier variants not available: ${error.message}`)
+    return updated
+  }
+}
+
+// Text problems of the generated variants, for the model: nothing when there are no text layers or all texts fit.
+function describeGeneratedTexts (results) {
+  const measured = results.filter(v => !v.error && v.textIssues !== undefined)
+  if (!measured.some(v => v.textIssues == null || v.textIssues.length || v.textsUnchecked)) {
+    return measured.length ? '\nTexts measured on the generated files: all texts fit.' : ''
+  }
+  return '\n\nTexts measured on the generated files:\n' + measured.map(v => describeTextIssues(v.fileName, v.textIssues, v.textsUnchecked)).join('\n') +
+    '\nThe widget marks these problems on the visuals with their fixes, and sends you the changes of the user: do not list them in chat.'
+}
+
 async function saveWidgetResult (params, text) {
   const ref = 'r' + Array.from({ length: 6 }, () => REF_ALPHABET[crypto.randomInt(REF_ALPHABET.length)]).join('')
   const userId = currentUserId(params)
-  const state = await stateLib.init()
+  const state = await initState()
   await state.put(widgetResultKey(userId, ref), { userId, text }, { ttl: WIDGET_RESULT_TTL_SECONDS })
   return ref
 }
@@ -502,7 +978,7 @@ async function saveWidgetResult (params, text) {
 async function readWidgetResult (params, ref) {
   if (!WIDGET_RESULT_REF.test(ref)) return null
   const userId = currentUserId(params)
-  const state = await stateLib.init()
+  const state = await initState()
   const stored = (await state.get(widgetResultKey(userId, ref)))?.value
   return stored && stored.userId === userId ? stored.text : null
 }
@@ -524,7 +1000,8 @@ const layerEditSchema = z.discriminatedUnion('type', [
   z.object({
     id: z.number().int().describe('Layer id from get-psd-manifest'),
     type: z.literal('text_layer'),
-    text: z.string().describe('New text content')
+    text: z.string().describe('New text content'),
+    fontScale: z.number().min(0.5).max(1.5).optional().describe('Font size relative to the template, e.g. 0.9 for 10% smaller (default 1)')
   }),
   z.object({
     id: z.number().int().describe('Layer id from get-psd-manifest'),
@@ -568,10 +1045,11 @@ function registerTools (server, params) {
     },
     async ({ url }) => {
       try {
+        const deadline = Date.now() + RESPONSE_BUDGET_MS
         const [manifest, previewUrl] = await Promise.all([
-          generateManifest(params, url),
+          beforeDeadline(getManifest(params, url), deadline, tooLate('Reading the template')),
           // The preview is best effort: without it, the view shows the list of layers only
-          renderPreview(params, url).catch(() => null)
+          beforeDeadline(renderPreview(params, url).catch(() => null), deadline, () => null)
         ])
         const data = {
           document: {
@@ -602,12 +1080,16 @@ function registerTools (server, params) {
     'create-variant',
     {
       title: 'Generate Variants',
-      description: 'Step 5 (last) of the variant workflow. Generates variants of a PSD template with the Photoshop API, in parallel: ' +
+      description: 'Step 5 of the variant workflow. Generates variants of a PSD template with the Photoshop API, in parallel: ' +
         'for each variant, replaces the text of text layers and the content of smart object layers (with image URLs from upload-variant-images), ' +
         'then saves it in the requested formats (PNG, JPEG and/or layered PSD, several at once if asked). Only call it once the layers are selected (get-psd-manifest) and all values are known. ' +
         'Pass all variants in a single call, even when their formats differ (set formats on those variants). The user sees a recap of the generated files with download buttons; do not print the image URLs. ' +
         'Use layer ids and types from get-psd-manifest. For each smart object image, pass the crop chosen in upload-variant-images; ' +
-        'without crop, the image is cropped centered to its frame (fit "fill", default). Do not crop or resize images with other tools.',
+        'without crop, the image is cropped centered to its frame (fit "fill", default). Do not crop or resize images with other tools. ' +
+        'Pass the fontScale of each text as confirmed in review-variant-texts or in the changes sent from the widget of the generated variants. The ' +
+        'widget marks the texts that do not fit on the visuals, with proposed fixes, and sends you the changes of the user (step 6). To change some variants, pass only those, with the same file names: ' +
+        'the widget shows them in place of their earlier version, with the other variants generated earlier from the same template ' +
+        '(not generated again). Set fresh to start a new set of variants from the same template.',
       inputSchema: {
         templateUrl: z.string().url().describe('HTTPS URL of the PSD template (same URL as given to get-psd-manifest)'),
         formats: z.array(z.enum(VARIANT_FORMATS)).min(1).optional()
@@ -624,25 +1106,30 @@ function registerTools (server, params) {
         })).min(1).max(MAX_VARIANTS).optional().describe(`Variants to generate (max ${MAX_VARIANTS} per call)`),
         // Single-variant format of earlier versions, still accepted for clients holding a cached tool schema
         layers: z.array(layerEditSchema).min(1).optional().describe('Deprecated: use variants'),
-        fileName: z.string().optional().describe('Deprecated: use variants')
+        fileName: z.string().optional().describe('Deprecated: use variants'),
+        fresh: z.boolean().optional().describe('true to show only these variants, not the ones generated earlier from the same template')
       },
       _meta: uiMeta(VIEWS.variant)
     },
-    async ({ templateUrl, formats, format, variants, layers, fileName }) => {
+    async ({ templateUrl, formats, format, variants, layers, fileName, fresh }) => {
       try {
         if (!variants && !layers) throw new Error('Missing "variants": pass a list of variants, each with its "layers".')
         const variantList = variants || [{ fileName, layers }]
         const outputFormats = [...new Set(formats || [format || 'jpeg'])]
-        const results = await createVariants(params, { templateUrl, formats: outputFormats, variants: variantList })
+        const deadline = Date.now() + RESPONSE_BUDGET_MS
+        const results = await createVariants(params, { templateUrl, formats: outputFormats, variants: variantList, deadline })
+        const shown = await mergeWithEarlierVariants(params, templateUrl, results, fresh)
+        const kept = shown.length - results.length
         const failed = results.filter(v => v.error)
-        const summary = `${results.length - failed.length}/${results.length} variant(s) generated and shown to the user with download buttons.` +
+        const summary = `${results.length - failed.length}/${results.length} variant(s) generated and shown to the user with download buttons` +
+          (kept ? `, with ${kept} variant(s) generated earlier from the same template, shown unchanged.` : '.') +
           failed.map(v => `\n- ${v.fileName} failed: ${v.error}`).join('') +
           findSharedImages(variantList).map(shared => `\nWarning: variants ${shared.variants.join(', ')} use the same image for layer ` +
             `${shared.layerId}. If the user chose different images in upload-variant-images, check the image of each variant in its ` +
             'confirmation (one line per variant and layer) and call create-variant again with the right URLs and crops.').join('')
         return {
-          content: [{ type: 'text', text: summary }],
-          structuredContent: { variants: results },
+          content: [{ type: 'text', text: summary + describeGeneratedTexts(results) }],
+          structuredContent: { templateUrl, variants: shown },
           isError: failed.length === results.length
         }
       } catch (error) {
@@ -688,54 +1175,6 @@ function registerTools (server, params) {
   )
 
   server.registerTool(
-    'preview-variant-texts',
-    {
-      title: 'Preview Variant Texts',
-      description: 'Step 3 of the variant workflow, before review-variant-texts. Renders the template with the texts of each variant ' +
-        'and returns a small preview of each one, for you to check that the texts fit the layout: not overflowing their area, cut off, ' +
-        'wrapped onto more lines than the original, overlapping other elements or hard to read. The user does not see these previews. ' +
-        'Fix the texts you wrote, or propose corrections for those given by the user, then call review-variant-texts.',
-      inputSchema: {
-        forView: z.boolean().optional().describe('Used by the texts widget: returns the preview URLs only'),
-        templateUrl: z.string().url().describe('HTTPS URL of the PSD template (same URL as given to get-psd-manifest)'),
-        variants: z.array(z.object({
-          label: z.string().min(1).describe('Short label of the variant'),
-          texts: z.array(z.object({
-            layerId: z.number().int().describe('Text layer id from get-psd-manifest'),
-            text: z.string().describe('Text of the layer for this variant')
-          })).min(1).describe('One text per selected text layer')
-        })).min(1).max(MAX_VARIANTS).describe('Variants to check, in order')
-      }
-    },
-    async ({ templateUrl, variants, forView }) => {
-      try {
-        const results = await Promise.allSettled(variants.map(v => renderTextPreview(params, templateUrl, v.texts, !forView)))
-        const previews = results.map((result, i) => result.status === 'fulfilled'
-          ? { label: variants[i].label, url: result.value.url }
-          : { label: variants[i].label, error: result.reason.message })
-        if (forView) return { ...jsonResult({ previews }), isError: results.every(r => r.status === 'rejected') }
-        // Previews are given while their total size fits in the response
-        let size = 0
-        const content = [{ type: 'text', text: 'Previews of the template with the texts of each variant, in order. Check that each text fits ' +
-          'its area like the original, then fix or propose corrections.' }]
-        results.forEach((result, i) => {
-          const label = variants[i].label
-          if (result.status === 'rejected') {
-            content.push({ type: 'text', text: `${label}: preview failed (${result.reason.message}).` })
-          } else if ((size += result.value.data.length) > PREVIEWS_MAX_BASE64) {
-            content.push({ type: 'text', text: `${label}: preview left out (response size limit), check it in a separate call.` })
-          } else {
-            content.push({ type: 'text', text: `${label}:` }, { type: 'image', data: result.value.data, mimeType: 'image/jpeg' })
-          }
-        })
-        return { content, isError: results.every(r => r.status === 'rejected') }
-      } catch (error) {
-        return errorResult(error)
-      }
-    }
-  )
-
-  server.registerTool(
     'review-variant-texts',
     {
       title: 'Review Variant Texts',
@@ -743,10 +1182,9 @@ function registerTools (server, params) {
         'so the user reviews and edits them. Call it ONCE with all variants, once their texts ' +
         'are known (given by the user or written by you); do not write the texts as a table in chat. When the user confirms, the final ' +
         'texts are added to your context and the user says to continue: use them exactly in create-variant. To let the user edit texts ' +
-        'again, call it again with the latest texts. Pass the original text of each layer: the table shows the length of each text ' +
-        'against it. Pass the template URL: the widget shows a preview of each variant with its texts, which the user updates after editing.',
+        'again, call it again with the latest texts. Pass the original text of each layer: the table shows it under the layer ' +
+        'name. Pass the fontScale of each text, if any: it is kept, without being shown.',
       inputSchema: {
-        templateUrl: z.string().url().optional().describe('HTTPS URL of the PSD template, to show a preview of each variant'),
         layers: z.array(z.object({
           id: z.number().int().describe('Layer id from get-psd-manifest'),
           name: z.string().describe('Layer name'),
@@ -756,7 +1194,8 @@ function registerTools (server, params) {
           label: z.string().min(1).describe('Short label of the variant'),
           texts: z.array(z.object({
             layerId: z.number().int().describe('Layer id'),
-            text: z.string().describe('Text of the layer for this variant')
+            text: z.string().describe('Text of the layer for this variant'),
+            fontScale: z.number().min(0.5).max(1.5).optional().describe('Font size relative to the template, e.g. 0.9 (default 1)')
           })).describe('One text per text layer')
         })).min(1).max(MAX_VARIANTS).describe('Variants, in order'),
         title: z.string().optional().describe('Heading shown in the widget')
@@ -840,7 +1279,7 @@ function registerTools (server, params) {
     },
     async ({ imageUrl, ratio }) => {
       try {
-        const suggestion = await suggestCrop(params, imageUrl, ratio)
+        const suggestion = await suggestCrop(params, imageUrl, ratio, Date.now() + RESPONSE_BUDGET_MS)
         return jsonResult(suggestion)
       } catch (error) {
         return errorResult(error)

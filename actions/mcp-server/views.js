@@ -628,8 +628,33 @@ ${AEM_SCRIPT}
   var library = [];
   var armed = -1;
 
-  // Size of the image and a crop at the frame ratio, framed on its subject.
-  function suggestCrop(imageUrl, ratio) { return callTool('suggest-crop', { imageUrl: imageUrl, ratio: ratio }); }
+  // Size of the image and a crop at the frame ratio, framed on its subject. Each call runs Photoshop jobs on the server: at
+  // most SUGGEST_CROP_CONCURRENCY at once, one per image and ratio (an image used in several slots is framed once), and
+  // tried again once on failure (e.g. a gateway error).
+  var SUGGEST_CROP_CONCURRENCY = 4;
+  var cropSuggestions = {};
+  var cropQueue = [];
+  var cropsRunning = 0;
+  function nextCropSuggestion() {
+    if (cropsRunning >= SUGGEST_CROP_CONCURRENCY || !cropQueue.length) return;
+    cropsRunning++;
+    var job = cropQueue.shift();
+    var args = { imageUrl: job.imageUrl, ratio: job.ratio };
+    callTool('suggest-crop', args)
+      .catch(function () { return callTool('suggest-crop', args); })
+      .then(job.resolve, job.reject)
+      .then(function () { cropsRunning--; nextCropSuggestion(); });
+  }
+  function suggestCrop(imageUrl, ratio) {
+    var key = imageUrl + '|' + ratio;
+    if (!cropSuggestions[key]) {
+      cropSuggestions[key] = new Promise(function (resolve, reject) {
+        cropQueue.push({ imageUrl: imageUrl, ratio: ratio, resolve: resolve, reject: reject });
+        nextCropSuggestion();
+      }).catch(function (error) { delete cropSuggestions[key]; throw error; });
+    }
+    return cropSuggestions[key];
+  }
 
   // Slots are stored row by row: index = variant * layers.length + layer.
   function layerOf(index) { return layers[index % layers.length]; }
@@ -1204,8 +1229,7 @@ function getLayersViewHtml (scriptUrl) {
     var context = 'Layers selected by the user for the variants: ' + JSON.stringify(chosen.map(function (l) {
       return { id: l.id, name: l.name, type: l.type };
     })) + '. Next: if text layers were selected, get the texts of each variant (from the user, or written from a brief), each as long as '
-      + 'the original text of its layer, give each variant a short label, check them with preview-variant-texts (fix the texts that '
-      + 'do not fit), then call review-variant-texts'
+      + 'the original text of its layer, give each variant a short label, then call review-variant-texts'
       + (images.length
         ? '; then call upload-variant-images ONCE with all variant labels and layers ' + JSON.stringify(images.map(function (l) { return { id: l.id, name: l.name, width: l.frame && l.frame.width, height: l.frame && l.frame.height }; }))
           + ' (one grid for all variants; never call upload-file per image)'
@@ -1263,31 +1287,12 @@ function getTextsViewHtml (scriptUrl) {
   }
   .text-input:hover { border-color: var(--spectrum-gray-400); }
   .text-input:focus { outline: none; border-color: var(--spectrum-accent-background-color-default); background: var(--spectrum-background-base-color); }
-  /* Original text of a layer under its name, and the length of each text against it */
+  /* Original text of a layer under its name */
   .original { font-weight: normal; color: var(--spectrum-neutral-subdued-content-color-default); white-space: pre-line; }
-  .length { margin-top: var(--spectrum-spacing-50); font-size: var(--spectrum-font-size-75); color: var(--spectrum-neutral-subdued-content-color-default); }
-  .length.off { color: var(--spectrum-negative-content-color-default); }
-  /* Preview of each variant with its texts, under the table */
-  .previews-header { display: flex; align-items: center; flex-wrap: wrap; gap: var(--spectrum-spacing-200); margin-top: var(--spectrum-spacing-300); }
-  .previews-header h3 { margin: 0; font-size: var(--spectrum-font-size-100); }
-  .previews { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: var(--spectrum-spacing-200); margin-top: var(--spectrum-spacing-200); }
-  .preview-card { display: flex; flex-direction: column; gap: var(--spectrum-spacing-100); min-width: 0; }
-  .preview-card .name { font-weight: var(--spectrum-bold-font-weight); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .preview-card img { width: 100%; border-radius: var(--spectrum-corner-radius-100); background: var(--spectrum-gray-200); }
-  .previews.stale img { opacity: 0.5; }
-  .preview-card .cell-error { color: var(--spectrum-negative-content-color-default); font-size: var(--spectrum-font-size-75); }
 `, `
 <h2 class="heading" id="title">Texts per variant</h2>
 <div class="subtle intro">Click a text to edit it, then confirm. Keep each text about as long as the original, so that it fits the layout.</div>
 <div class="table-wrap"><table class="texts" id="table"></table></div>
-<div id="previews-section" hidden>
-  <div class="previews-header">
-    <h3>Preview</h3>
-    <sp-button size="s" variant="secondary" treatment="outline" id="refresh" disabled>Update the preview</sp-button>
-    <span class="subtle" id="previews-hint"></span>
-  </div>
-  <div class="previews" id="previews"></div>
-</div>
 <div class="actions">
   <sp-button variant="accent" id="confirm" disabled>Use these texts</sp-button>
   <sp-help-text class="status" id="status"></sp-help-text>
@@ -1295,97 +1300,37 @@ function getTextsViewHtml (scriptUrl) {
 `, `
   var table = document.getElementById('table');
   var confirmBtn = document.getElementById('confirm');
-  var refreshBtn = document.getElementById('refresh');
-  var previewsEl = document.getElementById('previews');
-  var previewsHint = document.getElementById('previews-hint');
   var layers = [];
   var variants = [];
-  var templateUrl = null;
-  // The preview shows the texts as they were when it was last rendered; stale once they are edited
-  var previewStale = false;
-  var previewLoading = false;
 
   function textOf(variant, layer) {
     var entry = (variant.texts || []).find(function (t) { return t.layerId === layer.id; });
     return entry ? entry.text : '';
   }
 
+  function scaleOf(variant, layer) {
+    var entry = (variant.texts || []).find(function (t) { return t.layerId === layer.id; });
+    return entry && entry.fontScale ? entry.fontScale : 1;
+  }
+
   function inputs() { return Array.prototype.slice.call(table.querySelectorAll('.text-input')); }
 
-  // Length of a text against the original of its layer: off with another number of lines or more than 10% more or fewer characters.
-  var LENGTH_TOLERANCE = 0.1;
-  function lineCount(text) { return text.split(/\\r\\n|\\r|\\n/).length; }
-  function lengthCheck(text, original) {
-    if (original == null) return { label: text.length + ' characters', off: false };
-    var lines = lineCount(text);
-    var originalLines = lineCount(original);
-    var off = lines !== originalLines || Math.abs(text.length - original.length) > original.length * LENGTH_TOLERANCE;
-    return {
-      label: text.length + ' / ' + original.length + ' characters' + (lines !== originalLines ? ', ' + lines + ' / ' + originalLines + ' lines' : ''),
-      off: off
-    };
-  }
-  function showLength(field) {
-    var check = lengthCheck(field.value, layers[Number(field.getAttribute('data-layer'))].text);
-    var el = field.nextElementSibling;
-    el.textContent = check.label;
-    el.classList.toggle('off', check.off);
-  }
-  table.addEventListener('input', function (e) {
-    if (!e.target.classList.contains('text-input')) return;
-    showLength(e.target);
-    if (templateUrl && !previewStale) {
-      previewStale = true;
-      updatePreviewState();
-    }
-  });
-
   // Current texts of the table, one entry per variant with one text per layer.
+  // The font scale chosen by the model is kept as is: it is not shown in the table.
   function currentTexts() {
     var fields = inputs();
     return variants.map(function (v, r) {
       return {
         label: v.label,
-        texts: layers.map(function (l, c) { return { layerId: l.id, layerName: l.name, text: fields[r * layers.length + c].value }; })
+        texts: layers.map(function (l, c) {
+          var text = { layerId: l.id, layerName: l.name, text: fields[r * layers.length + c].value };
+          var scale = scaleOf(v, l);
+          if (scale !== 1) text.fontScale = scale;
+          return text;
+        })
       };
     });
   }
-
-  function updatePreviewState() {
-    refreshBtn.disabled = previewLoading || !previewStale;
-    previewsEl.classList.toggle('stale', previewStale);
-    previewsHint.textContent = previewLoading ? 'Rendering the variants...'
-      : previewStale ? 'Texts changed: update the preview to check them.' : 'Check that each text fits its area.';
-    reportSize();
-  }
-
-  // Renders the template with the current texts of each variant (preview-variant-texts) and shows the results.
-  function loadPreviews() {
-    previewLoading = true;
-    previewStale = false;
-    updatePreviewState();
-    var toRender = currentTexts().map(function (v) {
-      return { label: v.label, texts: v.texts.map(function (t) { return { layerId: t.layerId, text: t.text }; }) };
-    });
-    callTool('preview-variant-texts', { templateUrl: templateUrl, variants: toRender, forView: true })
-      .then(function (result) {
-        previewsEl.innerHTML = (result.previews || []).map(function (p) {
-          return '<div class="preview-card"><div class="name">' + escapeHtml(p.label) + '</div>'
-            + (p.url ? '<img src="' + escapeHtml(p.url) + '" alt="' + escapeHtml(p.label) + '">' : '<div class="cell-error">' + escapeHtml(p.error || 'Preview failed') + '</div>')
-            + '</div>';
-        }).join('');
-        previewsEl.querySelectorAll('img').forEach(function (img) { img.addEventListener('load', reportSize); });
-      })
-      .catch(function (error) {
-        previewsEl.innerHTML = '<div class="cell-error">' + escapeHtml((error && error.message) || String(error)) + '</div>';
-      })
-      .then(function () {
-        previewLoading = false;
-        updatePreviewState();
-      });
-  }
-
-  refreshBtn.addEventListener('click', loadPreviews);
 
   // Browsers without CSS field-sizing fit the heights in JS: once per frame at most, resetting all heights before
   // reading them so that the layout is computed once; again when the column widths change.
@@ -1423,11 +1368,10 @@ function getTextsViewHtml (scriptUrl) {
         return '<tr><td>' + escapeHtml(v.label) + '</td>'
           + layers.map(function (l, c) {
             return '<td><textarea class="text-input" rows="1" data-layer="' + c + '" aria-label="' + escapeHtml(v.label + ', ' + l.name) + '">'
-              + escapeHtml(textOf(v, l)) + '</textarea><div class="length"></div></td>';
+              + escapeHtml(textOf(v, l)) + '</textarea></td>';
           }).join('') + '</tr>';
       }).join('')
       + '</tbody>';
-    inputs().forEach(showLength);
     fitAll();
     confirmBtn.disabled = !variants.length;
   }
@@ -1435,29 +1379,15 @@ function getTextsViewHtml (scriptUrl) {
   onToolInput(function (args) {
     layers = args.layers || [];
     variants = args.variants || [];
-    templateUrl = args.templateUrl || null;
     if (args.title) document.getElementById('title').textContent = args.title;
     render();
-    document.getElementById('previews-section').hidden = !templateUrl;
-    if (templateUrl) loadPreviews();
   });
 
   confirmBtn.addEventListener('click', function () {
     confirmBtn.disabled = true;
     var confirmed = currentTexts();
-    // Texts whose length differs from the original, to check with preview-variant-texts before going on
-    var offLength = [];
-    confirmed.forEach(function (v) {
-      v.texts.forEach(function (t, c) {
-        var check = lengthCheck(t.text, layers[c].text);
-        if (check.off) offLength.push(v.label + ' / ' + t.layerName + ' (' + check.label + ')');
-      });
-    });
     var context = 'Texts confirmed by the user for each variant. Use them exactly, as text_layer edits '
-      + '{ id: layerId, type: "text_layer", text } in create-variant:\\n' + JSON.stringify({ variants: confirmed })
-      + (templateUrl && !previewStale ? '\\nThe user checked these texts on the preview of each variant.'
-        : '\\nThe user did not see a preview of these texts: check them with preview-variant-texts and propose corrections before going on.')
-      + (offLength.length ? '\\nTexts whose length differs from the original: ' + offLength.join('; ') : '');
+      + '{ id: layerId, type: "text_layer", text, fontScale } in create-variant (fontScale only where given):\\n' + JSON.stringify({ variants: confirmed });
     sendToModel(context, 'I confirmed the texts of the ' + confirmed.length + ' variant(s), continue.', 'Texts sent.')
       .catch(function (error) {
         confirmBtn.disabled = false;
@@ -1483,30 +1413,60 @@ function getVariantViewHtml (scriptUrl) {
     flex-direction: column;
     gap: var(--spectrum-spacing-200);
   }
-  .card img {
+  /* Visual of a variant, at the ratio of its canvas so that the marks of its text problems are placed over it */
+  .visual { position: relative; width: 100%; margin: 0 auto; }
+  .visual img {
+    display: block;
     width: 100%;
-    max-height: 320px;
+    height: 100%;
     object-fit: contain;
     border-radius: var(--spectrum-corner-radius-200);
     background: var(--spectrum-gray-100);
-    cursor: zoom-in;
   }
+  .card .visual img { max-height: 320px; cursor: zoom-in; }
+  .mark { position: absolute; box-sizing: border-box; pointer-events: none; }
+  .mark-text { border: 2px dashed var(--spectrum-notice-visual-color, #e68619); }
+  .mark-overlap { background: rgba(227, 72, 80, 0.35); border: 1px solid rgb(227, 72, 80); }
+  .mark-number, .issue-number {
+    display: inline-block;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 4px;
+    box-sizing: border-box;
+    border-radius: 9px;
+    background: var(--spectrum-notice-visual-color, #e68619);
+    color: #fff;
+    font-size: 11px;
+    font-weight: bold;
+    line-height: 18px;
+    text-align: center;
+  }
+  .mark-number { position: absolute; top: -9px; left: -9px; }
+  .issue-number { margin-right: 4px; }
   .card-name { word-break: break-all; }
+  .card-updated { align-self: flex-start; }
+  /* Changes of each variant, in free text, pre-filled with the proposed fixes of its texts */
+  .change-request {
+    width: 100%;
+    min-height: 48px;
+    padding: var(--spectrum-spacing-75) var(--spectrum-spacing-100);
+    font: inherit;
+    font-size: var(--spectrum-font-size-75);
+    color: var(--spectrum-neutral-content-color-default);
+    background: var(--spectrum-gray-100);
+    border: 1px solid transparent;
+    border-radius: var(--spectrum-corner-radius-100);
+    resize: vertical;
+  }
+  .change-request:focus { outline: none; border-color: var(--spectrum-accent-background-color-default); }
   .downloads { display: flex; flex-wrap: wrap; gap: var(--spectrum-spacing-100); }
   .card-error { color: var(--spectrum-negative-content-color-default); font-size: var(--spectrum-font-size-75); word-break: break-word; }
+  .card-warning { color: var(--spectrum-notice-content-color-default, var(--spectrum-negative-content-color-default)); font-size: var(--spectrum-font-size-75); word-break: break-word; }
   .preview { display: none; }
   .preview.open { display: block; }
   .preview-bar { display: flex; align-items: center; gap: var(--spectrum-spacing-200); margin-bottom: var(--spectrum-spacing-200); }
   .preview-name { flex: 1; min-width: 0; font-weight: var(--spectrum-bold-font-weight); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .preview img {
-    display: block;
-    width: 100%;
-    max-height: 640px;
-    object-fit: contain;
-    border-radius: var(--spectrum-corner-radius-200);
-    background: var(--spectrum-gray-100);
-    cursor: zoom-out;
-  }
+  .preview .visual img { max-height: 640px; cursor: zoom-out; }
 `, `
 <div class="preview" id="preview">
   <div class="preview-bar">
@@ -1516,16 +1476,23 @@ function getVariantViewHtml (scriptUrl) {
     <sp-button size="s" variant="secondary" treatment="outline" data-action="next">Next</sp-button>
     <span class="downloads" id="preview-downloads"></span>
   </div>
-  <img id="preview-image" alt="">
+  <div id="preview-visual"></div>
 </div>
 <div class="grid" id="grid"></div>
+<div class="actions" id="fix-actions" hidden>
+  <sp-button variant="accent" id="send-changes" disabled>Send changes</sp-button>
+</div>
 <sp-help-text class="status" id="status">Generating variants...</sp-help-text>
 `, `
   var grid = document.getElementById('grid');
   var preview = document.getElementById('preview');
-  var previewImage = document.getElementById('preview-image');
+  var previewVisual = document.getElementById('preview-visual');
   var variants = [];
   var current = -1;
+  // Changes of each variant, by file name: pre-filled with the proposed fixes, edited by the user
+  var requests = {};
+  var busy = false;
+  var sendBtn = document.getElementById('send-changes');
   var FORMAT_LABELS = { png: 'PNG', jpeg: 'JPEG', psd: 'PSD' };
   // Download icon (arrow into a tray), in the text color of the button
   var DOWNLOAD_ICON = '<svg slot="icon" viewBox="0 0 18 18" width="16" height="16" aria-hidden="true">'
@@ -1545,19 +1512,109 @@ function getVariantViewHtml (scriptUrl) {
     }).join('');
   }
 
+  // Rectangle of the canvas as a box over the visual, in % (kept inside the canvas: a text past an edge is marked up to it)
+  function markHtml(canvas, rect, className, number) {
+    var left = Math.max(0, rect.left);
+    var top = Math.max(0, rect.top);
+    var right = Math.min(canvas.width, rect.left + rect.width);
+    var bottom = Math.min(canvas.height, rect.top + rect.height);
+    if (right <= left || bottom <= top) return '';
+    return '<div class="mark ' + className + '" style="left:' + left / canvas.width * 100 + '%;top:' + top / canvas.height * 100
+      + '%;width:' + (right - left) / canvas.width * 100 + '%;height:' + (bottom - top) / canvas.height * 100 + '%">'
+      + (number ? '<span class="mark-number">' + number + '</span>' : '') + '</div>';
+  }
+
+  // Visual of a variant with its text problems marked over it: the box of each text with problems, numbered as in the list,
+  // and where it overlaps other elements. Without the canvas size (variants of earlier versions), the image only.
+  function visualHtml(v, index, maxHeight) {
+    var c = v.canvas;
+    var marks = c ? (v.textIssues || []).map(function (issue, k) {
+      return (issue.marks || []).map(function (rect) { return markHtml(c, rect, 'mark-overlap'); }).join('')
+        + (issue.area ? markHtml(c, issue.area, 'mark-text', k + 1) : '');
+    }).join('') : '';
+    var style = c ? ' style="aspect-ratio:' + c.width + '/' + c.height + ';max-width:' + Math.round(maxHeight * c.width / c.height) + 'px"' : '';
+    return '<div class="visual"' + style + '><img src="' + escapeHtml(v.imageUrl) + '" alt="' + escapeHtml(v.fileName) + '" data-index="' + index + '">'
+      + marks + '</div>';
+  }
+
   function render() {
+    var allUpdated = variants.every(function (v) { return v.updated; });
     grid.innerHTML = variants.map(function (v, i) {
       if (v.error) {
         return '<div class="card"><div class="subtle card-name">' + escapeHtml(v.fileName) + '</div>'
           + '<div class="card-error">' + escapeHtml(v.error) + '</div></div>';
       }
-      return '<div class="card"><img src="' + escapeHtml(v.imageUrl) + '" alt="' + escapeHtml(v.fileName) + '" data-index="' + i + '">'
+      // Text problems measured on the generated file, numbered as their marks on the visual
+      var problems = (v.textIssues || []).map(function (issue, k) {
+        return '<div class="card-warning"><span class="issue-number">' + (k + 1) + '</span>'
+          + escapeHtml('"' + issue.layerName + '" ' + issue.problems.join(', ')) + '</div>';
+      }).join('')
+        // Checks not done, and why: the user checks the visual
+        + (v.textsUnchecked ? '<div class="subtle">' + escapeHtml((v.textIssues ? 'Texts partly checked, ' : 'Texts not checked, check the visual: ')
+          + v.textsUnchecked) + '</div>' : '');
+      if (requests[v.fileName] == null) requests[v.fileName] = recommendationOf(v);
+      return '<div class="card">' + visualHtml(v, i, 320)
         + '<div class="subtle card-name">' + escapeHtml(v.fileName) + '</div>'
+        // With variants generated earlier shown again, the ones of this generation are marked
+        + (v.updated && !allUpdated ? '<sp-badge class="card-updated" size="s" variant="informative">Updated</sp-badge>' : '') + problems
+        + '<textarea class="change-request" data-index="' + i + '" placeholder="What should change?">' + escapeHtml(requests[v.fileName] || '') + '</textarea>'
         + '<div class="downloads">' + downloadButtons(i, 'secondary') + '</div></div>';
     }).join('');
     var ok = variants.filter(function (v) { return !v.error; }).length;
     setStatus(ok + '/' + variants.length + ' variant(s) generated — click a visual to enlarge it — links valid for 24 hours', ok === 0);
+    document.getElementById('fix-actions').hidden = !ok;
+    updateFixActions();
   }
+
+  // Proposed fixes of the texts of a variant (a smaller font size), as pre-filled in its changes
+  function recommendationOf(v) {
+    return (v.textIssues || []).map(function (issue) {
+      return 'Reduce the font size of "' + issue.layerName + '" to ' + Math.round(issue.fontScale * 100) + '%.'
+        + (issue.shorten ? ' A shorter text may be needed.' : '');
+    }).join('\\n');
+  }
+
+  // Changes of a variant, '' if none
+  function requestOf(v) { return (requests[v.fileName] || '').trim(); }
+
+  function updateFixActions() {
+    var count = variants.filter(function (v) { return !v.error && requestOf(v); }).length;
+    sendBtn.textContent = count ? 'Send changes (' + count + ')' : 'Send changes';
+    sendBtn.disabled = busy || !count;
+  }
+
+  // Sends the changes of the variants to the model, which generates them again with create-variant. With the measured
+  // problems of each text (layer id and proposed font scale), so that it can apply the proposed fixes the user kept.
+  function sendChanges() {
+    var toChange = variants.filter(function (v) { return !v.error && requestOf(v); });
+    var changes = toChange.map(function (v) {
+      return {
+        fileName: v.fileName,
+        change: requestOf(v),
+        textIssues: (v.textIssues || []).map(function (issue) {
+          return { layerId: issue.layerId, layerName: issue.layerName, problems: issue.problems, fontScale: issue.fontScale, shorten: issue.shorten };
+        })
+      };
+    });
+    var context = 'Changes requested by the user in the create-variant widget (they may include proposed font size fixes, kept or '
+      + 'edited: textIssues gives the layer id of each text). Make each change, then call create-variant ONCE with these variants only, '
+      + 'with the same file names and the same edits as before except the changes (a font size of N% is fontScale N/100). If a change '
+      + 'is unclear, ask the user first.\\n' + JSON.stringify(changes);
+    busy = true;
+    updateFixActions();
+    sendToModel(context, 'Please apply my changes to ' + changes.length + ' variant(s).', 'Changes sent.')
+      .then(function () { toChange.forEach(function (v) { requests[v.fileName] = ''; }); render(); })
+      .catch(function (error) { setStatus((error && error.message) || String(error), true); })
+      .then(function () { busy = false; updateFixActions(); });
+  }
+
+  sendBtn.addEventListener('click', sendChanges);
+
+  grid.addEventListener('input', function (e) {
+    if (!e.target.classList.contains('change-request')) return;
+    requests[variants[Number(e.target.getAttribute('data-index'))].fileName] = e.target.value;
+    updateFixActions();
+  });
 
   function generated() {
     return variants.map(function (v, i) { return i; }).filter(function (i) { return !variants[i].error; });
@@ -1570,8 +1627,7 @@ function getVariantViewHtml (scriptUrl) {
     preview.classList.toggle('open', open);
     grid.style.display = open ? 'none' : '';
     if (open) {
-      previewImage.src = variants[index].imageUrl;
-      previewImage.alt = variants[index].fileName;
+      previewVisual.innerHTML = visualHtml(variants[index], index, 640);
       var list = generated();
       document.getElementById('preview-name').textContent = variants[index].fileName + ' (' + (list.indexOf(index) + 1) + '/' + list.length + ')';
       document.getElementById('preview-downloads').innerHTML = downloadButtons(index, 'accent');
@@ -1593,14 +1649,14 @@ function getVariantViewHtml (scriptUrl) {
 
   grid.addEventListener('click', function (e) {
     var target = e.target.closest('img, sp-button');
-    if (!target) return;
+    if (!target || !target.hasAttribute('data-index')) return;
     var index = Number(target.getAttribute('data-index'));
     if (target.tagName === 'IMG') showPreview(index);
     else download(target);
   });
 
   preview.addEventListener('click', function (e) {
-    if (e.target === previewImage) return showPreview(-1);
+    if (e.target.closest('.visual')) return showPreview(-1);
     var button = e.target.closest('sp-button');
     if (!button) return;
     var action = button.getAttribute('data-action');
@@ -1610,7 +1666,8 @@ function getVariantViewHtml (scriptUrl) {
     else if (action === 'download') download(button);
   });
 
-  previewImage.addEventListener('load', reportSize);
+  // load does not bubble: listened to in the capture phase
+  preview.addEventListener('load', reportSize, true);
   document.addEventListener('keydown', function (e) {
     if (current < 0) return;
     if (e.key === 'Escape') showPreview(-1);

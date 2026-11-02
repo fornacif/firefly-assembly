@@ -26,7 +26,7 @@ application:
             limits:
               # 5 minutes, for long Photoshop API jobs
               timeout: 300000
-              memory: 512
+              memory: 1024
             inputs:
               # debug, info, warn or error
               LOG_LEVEL: debug
