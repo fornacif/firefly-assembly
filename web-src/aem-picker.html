@@ -22,20 +22,8 @@
 <div id="message"></div>
 <script>
 (function () {
-  var LOGIN_KEY = 'aem-picker-login';
-  // Popup of the IMS sign-in, back with the token: the IMS library, started with the same client, passes it to the page
-  // that opened the popup and closes it
-  if (window.opener && /imslibmodal|access_token=|error=/.test(location.href)) {
-    try {
-      var popupLogin = JSON.parse(localStorage.getItem(LOGIN_KEY));
-      PureJSSelectors.registerAssetsSelectorsAuthService({
-        imsClientId: popupLogin.clientId, imsScope: popupLogin.scope, redirectUrl: popupLogin.redirectUri, modalMode: true
-      });
-    } catch (e) {
-      console.log('[AEM picker] sign-in popup: ' + e.message);
-    }
-    return;
-  }
+  // Popup of the IMS sign-in, back with the token in the fragment: the sign-in in the opener reads it
+  if (window.opener && /(^#|&)(access_token|error)=/.test(location.hash)) return;
   var params = new URLSearchParams(location.hash.slice(1));
   var sessionId = params.get('session');
   var api = params.get('api') || '';
@@ -92,71 +80,30 @@
     };
   }
 
-  // Client, scopes and expiry of a token, for diagnosis in the console (never the token)
-  function logToken(token) {
-    try {
-      var claims = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
-      console.log('[AEM picker] token of client ' + claims.client_id + ', scopes ' + claims.scope
-        + ', expires in ' + Math.round((Number(claims.created_at) + Number(claims.expires_in) - Date.now()) / 60000) + ' min');
-    } catch (e) {
-      console.log('[AEM picker] no token');
-    }
-  }
-
-  // Sign-in button, as a popup opened without a click is blocked
-  function showSignIn(auth) {
-    showMessage('Sign in with Adobe to choose the AEM folder.');
-    var button = document.createElement('button');
-    button.textContent = 'Sign in';
-    button.style.cssText = 'display: block; margin: 16px auto 0; padding: 6px 18px; font: inherit; border-radius: 16px; border: none; background: #3b63fb; color: #fff; cursor: pointer;';
-    button.addEventListener('click', function () { auth.signIn(); });
-    document.getElementById('message').appendChild(button);
-  }
-
-  // Destination Selector on the author tier, with a token of the client of the session (config.login): from the Adobe
-  // session of the browser, or from a sign-in in a popup
+  // Destination Selector with the sign-in of the client of the session (config.login), on the author tier
   function renderFolderSelector(config) {
-    var shown = false;
-    var auth;
-    function show(token) {
-      if (shown || !token) return;
-      shown = true;
-      logToken(token);
-      document.getElementById('message').style.display = 'none';
-      document.getElementById('selector').style.display = '';
-      PureJSSelectors.renderDestinationSelector(document.getElementById('selector'), {
-        repositoryId: config.repositoryId || undefined,
-        imsOrg: config.imsOrg,
-        imsToken: token,
-        apiKey: config.login.clientId,
-        aemTierType: ['author'],
-        dialogSize: 'fullscreen',
-        colorScheme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
-        titleLabel: 'Send the variants to AEM',
-        confirmLabel: 'Send here',
-        onConfirm: function (destination) {
-          var folder = folderOf(destination, config);
-          var first = Array.isArray(destination) ? destination[0] : destination;
-          finish(folder ? 'select' : 'cancel', folder ? [folder] : [], first && typeof first === 'object' ? Object.keys(first).join(',') : typeof first,
-            folder ? auth.getImsToken() || token : undefined);
-        },
-        onClose: function () { finish('cancel'); }
-      });
-    }
-    console.log('[AEM picker] sign-in with client ' + config.login.clientId + ', scopes ' + config.login.scope);
-    // The client of the sign-in, for the popup (not a secret)
-    localStorage.setItem(LOGIN_KEY, JSON.stringify(config.login));
-    auth = PureJSSelectors.registerAssetsSelectorsAuthService({
+    var auth = PureJSSelectors.registerAssetsSelectorsAuthService({
       imsClientId: config.login.clientId,
       imsScope: config.login.scope,
       redirectUrl: config.login.redirectUri,
-      modalMode: true,
-      onImsServiceInitialized: function (service) {
-        if (service.isSignedInUser()) show(service.getImsToken());
-        else showSignIn(service);
+      modalMode: true
+    });
+    PureJSSelectors.renderDestinationSelectorWithAuthFlow(document.getElementById('selector'), {
+      repositoryId: config.repositoryId || undefined,
+      imsOrg: config.imsOrg,
+      apiKey: config.login.clientId,
+      aemTierType: ['author'],
+      dialogSize: 'fullscreen',
+      colorScheme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
+      titleLabel: 'Send the variants to AEM',
+      confirmLabel: 'Send here',
+      onConfirm: function (destination) {
+        var folder = folderOf(destination, config);
+        var first = Array.isArray(destination) ? destination[0] : destination;
+        finish(folder ? 'select' : 'cancel', folder ? [folder] : [], first && typeof first === 'object' ? Object.keys(first).join(',') : typeof first,
+          folder ? auth.getImsToken() : undefined);
       },
-      onAccessTokenReceived: function (token) { show(typeof token === 'string' ? token : token && token.token); },
-      onErrorReceived: function (type, message) { console.log('[AEM picker] sign-in error: ' + type + ' ' + (message || '')); }
+      onClose: function () { finish('cancel'); }
     });
   }
 
