@@ -40,8 +40,8 @@ const WORKFLOW = `Variant creation workflow. When the user asks to create varian
 3. Texts: right after the layer selection, if text layers were selected, get the texts of each variant: the user provides them, or you write them from a brief (subject, tone, language). Each text must have the same length as the original text of its layer (given by get-psd-manifest): the same number of lines and about the same number of characters per line (within 10%), so that it fits the layout. Write the line breaks yourself (\\n), where the original text has them: a point text layer does not wrap its lines by itself (a text without any line break is spread over the lines of the original text, by length). Give each variant a short label (e.g. its title), then call review-variant-texts with the texts and the original text of each layer. Then wait.
 4. Images: if smart object layers were selected, call upload-variant-images ONCE with the variant labels and the selected smart object layers (id, name and frame width and height from get-psd-manifest), so the user drops (or picks from AEM Assets) one image per variant and layer in a grid and adjusts how each one is cropped to its frame. When the user confirms, the widget gives you the URL, size and crop of each image the same way. Never ask for image URLs in chat. Then wait.
 5. Generation: as soon as the images are confirmed (or the texts, without smart object layers), call create-variant ONCE with all variants, passing for each image the crop chosen in the grid; do not recap the variants or ask for another approval. The widget shows the generated files with download buttons.
-6. Review: create-variant measures the texts of the generated files (past the edges of the canvas, overlapping other elements more than in the template, or, read by an OCR, words broken across two lines by a text box too narrow for them, or not found in the visual: cut by a text box that is too small, hidden or hard to read) and the widget marks each problem on the visual, with a proposed fix (a smaller font size). Each variant has a field of changes, pre-filled with its proposed fixes, that the user edits, then sends to you: nothing is generated again before. Do not list the problems in chat: briefly say that the widget shows them and takes the changes. When the user sends changes, call create-variant again with the variants to change only, with the same file names and the same edits except the changes (a font size of N% is fontScale N/100; keep the fontScale of the other texts): the widget shows all variants, the changed ones in place of their earlier version, without generating the others again. For texts too long even with a smaller font, propose a shorter text.
-Changes after generation: to re-crop or swap images, call upload-variant-images again with images pre-filled from the previous confirmation (never ask to upload again the images you already have, unless their URLs expired); to change texts, call create-variant again with the variants to change only (same file names; the others are shown again unchanged). To start a new set of variants from the same template, pass fresh: true.
+6. Review: create-variant measures the texts of the generated files (past the edges of the canvas, overlapping other elements more than in the template, or, read by an OCR, words broken across two lines by a text box too narrow for them, or not found in the visual: cut by a text box that is too small, hidden or hard to read) and the widget marks each problem on the visual, with a proposed fix (a smaller font size). Each variant has a field of changes, pre-filled with its proposed fixes, that the user edits, then sends to you: nothing is generated again before. Do not list the problems in chat: briefly say that the widget shows them and takes the changes. When the user sends changes, call create-variant again with the variants to change only, with the same file names and the same edits except the changes (a font size of N% is fontScale N/100; keep the fontScale of the other texts): the new widget shows only these variants, the others stay in the earlier widgets. For texts too long even with a smaller font, propose a shorter text.
+Changes after generation: to re-crop or swap images, call upload-variant-images again with images pre-filled from the previous confirmation (never ask to upload again the images you already have, unless their URLs expired); to change texts, call create-variant again with the variants to change only (same file names).
 Widgets send their result (template URL, layers, texts, images) in your context and end the user's message with a reference in parentheses like "(r7k2p9)": if you do not have that result in your context, call get-widget-result with this ref before going on; never ask the user to redo a step because a result seems missing.
 The URLs from the widgets are temporary presigned URLs: use them in tool calls, but never show them to the user. Reply in the user's language.`
 
@@ -868,8 +868,7 @@ function balanceLines (text, count) {
   return result.join('\n')
 }
 
-// File names of the variants without extension, made unique (a second "summer" becomes "summer-2"): the files of a variant
-// replace the earlier ones of the same name in the view.
+// File names of the variants without extension, made unique (a second "summer" becomes "summer-2").
 function uniqueFileNames (variants) {
   const used = new Set()
   return variants.map((variant, index) => {
@@ -939,42 +938,6 @@ function currentUserId (params) {
 }
 
 const shortHash = value => crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 16)
-
-// Variants generated from a template, kept 24 hours per user and template (like their download links): when only some
-// variants are generated again, the widget shows them in place of their earlier version, next to the others.
-function generationKey (userId, templateUrl) {
-  return `generation-${shortHash(userId)}-${shortHash(templateUrl)}`
-}
-
-async function readEarlierVariants (userId, templateUrl) {
-  const state = await initState()
-  return (await state.get(generationKey(userId, templateUrl)))?.value?.variants || []
-}
-
-// Variants to show: the earlier ones, with those of the same file name replaced in place, and the others added at the end.
-function mergeVariants (earlier, current) {
-  const byName = new Map(current.map(variant => [variant.fileName, variant]))
-  const merged = earlier.map(variant => byName.get(variant.fileName) || variant)
-  current.forEach(variant => { if (!earlier.some(e => e.fileName === variant.fileName)) merged.push(variant) })
-  return merged
-}
-
-// Merges new results into the variants generated earlier from the same template (see mergeVariants) and stores the merged list.
-// Without earlier variants, or when fresh, only the new results are shown. Returns the variants to show. Best effort: on a
-// storage error, only the new results are shown.
-async function mergeWithEarlierVariants (userId, templateUrl, results, earlier) {
-  const updated = results.map(variant => ({ ...variant, updated: true }))
-  try {
-    const merged = mergeVariants(earlier, updated)
-    // Failed variants are not kept for the next generation
-    const state = await initState()
-    await state.put(generationKey(userId, templateUrl), { variants: merged.filter(v => !v.error) }, { ttl: WIDGET_RESULT_TTL_SECONDS })
-    return merged
-  } catch (error) {
-    console.warn(`Earlier variants not stored: ${error.message}`)
-    return updated
-  }
-}
 
 // Text problems of the generated variants, for the model: nothing when there are no text layers or all texts fit.
 function describeGeneratedTexts (results) {
@@ -1064,10 +1027,9 @@ function templateData (manifest) {
 }
 
 // Text of the result of a generation, for the model: failures, warnings and text problems.
-function describeGeneration (results, kept, warnings) {
+function describeGeneration (results, warnings) {
   const failed = results.filter(v => v.error)
-  return `${results.length - failed.length}/${results.length} variant(s) generated and shown to the user with download buttons` +
-    (kept ? `, with ${kept} variant(s) generated earlier from the same template, shown unchanged.` : '.') +
+  return `${results.length - failed.length}/${results.length} variant(s) generated and shown to the user with download buttons.` +
     failed.map(v => `\n- ${v.fileName} failed: ${v.error}`).join('') + warnings + describeGeneratedTexts(results)
 }
 
@@ -1088,19 +1050,16 @@ const TASKS = {
     return suggestCrop(params, args.imageUrl, args.ratio, deadline)
   },
 
-  // Variants, shown as they are rendered, with the variants generated earlier from the same template
-  async variants (params, { args, userId }, update, deadline) {
-    const earlier = args.fresh ? [] : await readEarlierVariants(userId, args.templateUrl).catch(() => [])
-    const kept = earlier.map(({ updated, layers, ...variant }) => variant)
-    const results = await createVariants(params, {
+  // Variants, shown as they are rendered
+  async variants (params, { args }, update, deadline) {
+    const variants = await createVariants(params, {
       templateUrl: args.templateUrl,
       formats: args.formats,
       variants: args.variants,
       deadline,
-      onProgress: list => update({ partial: { templateUrl: args.templateUrl, variants: mergeVariants(kept, list.map(v => ({ ...v, updated: true }))) } })
+      onProgress: list => update({ partial: { templateUrl: args.templateUrl, variants: list } })
     })
-    const variants = await mergeWithEarlierVariants(userId, args.templateUrl, results, kept)
-    return { templateUrl: args.templateUrl, variants, summary: describeGeneration(results, variants.length - results.length, args.warnings || '') }
+    return { templateUrl: args.templateUrl, variants, summary: describeGeneration(variants, args.warnings || '') }
   }
 }
 
@@ -1251,8 +1210,7 @@ function registerTools (server, params) {
         'without crop, the image is cropped centered to its frame (fit "fill", default). Do not crop or resize images with other tools. ' +
         'Pass the fontScale of each text as confirmed in review-variant-texts or in the changes sent from the widget of the generated variants. The ' +
         'widget marks the texts that do not fit on the visuals, with proposed fixes, and sends you the changes of the user (step 6). To change some variants, pass only those, with the same file names: ' +
-        'the widget shows them in place of their earlier version, with the other variants generated earlier from the same template ' +
-        '(not generated again). Set fresh to start a new set of variants from the same template.',
+        'the new widget shows only the variants of this call, the others stay in the earlier widgets.',
       inputSchema: {
         templateUrl: z.string().url().describe('HTTPS URL of the PSD template (same URL as given to get-psd-manifest)'),
         formats: z.array(z.enum(VARIANT_FORMATS)).min(1).optional()
@@ -1269,12 +1227,11 @@ function registerTools (server, params) {
         })).min(1).max(MAX_VARIANTS).optional().describe(`Variants to generate (max ${MAX_VARIANTS} per call)`),
         // Single-variant format of earlier versions, still accepted for clients holding a cached tool schema
         layers: z.array(layerEditSchema).min(1).optional().describe('Deprecated: use variants'),
-        fileName: z.string().optional().describe('Deprecated: use variants'),
-        fresh: z.boolean().optional().describe('true to show only these variants, not the ones generated earlier from the same template')
+        fileName: z.string().optional().describe('Deprecated: use variants')
       },
       _meta: uiMeta(VIEWS.variant)
     },
-    async ({ templateUrl, formats, format, variants, layers, fileName, fresh }) => {
+    async ({ templateUrl, formats, format, variants, layers, fileName }) => {
       try {
         if (!variants && !layers) throw new Error('Missing "variants": pass a list of variants, each with its "layers".')
         const variantList = variants || [{ fileName, layers }]
@@ -1285,7 +1242,6 @@ function registerTools (server, params) {
           templateUrl,
           formats: [...new Set(formats || [format || 'jpeg'])],
           variants: variantList,
-          fresh: Boolean(fresh),
           warnings
         })
         return {

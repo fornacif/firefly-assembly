@@ -6,6 +6,8 @@ const zlib = require('zlib')
 
 const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@tesseract.js-data/eng/4.0.0_best_int/eng.traineddata.gz'
 const MODEL_DOWNLOAD_TIMEOUT_MS = 20000
+// Tesseract page segmentation mode 6: a single uniform block of text
+const SINGLE_BLOCK = '6'
 
 let engine = null
 
@@ -27,6 +29,9 @@ async function loadEngine () {
   tesseract.FS.writeFile('/eng.traineddata', zlib.gunzipSync(Buffer.from(await response.arrayBuffer())))
   const api = new tesseract.TessBaseAPI()
   if (api.Init('/', 'eng') !== 0) throw new Error('OCR model could not be loaded')
+  // Each area read is one text layer: read as one block of text. The default page layout analysis looks for blocks of text,
+  // and finds none in a text over a photo or a texture.
+  api.SetVariable('tessedit_pageseg_mode', SINGLE_BLOCK)
   return { tesseract, api }
 }
 

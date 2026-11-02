@@ -9,7 +9,7 @@ MCP server, deployed as an Adobe I/O Runtime (App Builder) action, that creates 
 3. **Texts** (`review-variant-texts`): an editable table with the texts of each variant.
 4. **Images** (`upload-variant-images`): a grid with one image per variant and smart object layer, from the computer or AEM, with crops framed on the subject.
 5. **Generation** (`create-variant`): the variants are rendered in parallel, as JPEG (default), PNG and/or layered PSD files.
-6. **Review**: the widget checks the texts of each variant (see below) and marks their problems on the visual, numbered, with a proposed fix (a smaller font size). Each variant has a "What should change?" field, pre-filled with the proposed fixes; the user edits it and sends the changes to the assistant, which generates again only these variants. The widget shows them in place of their earlier version, next to the other variants generated from the same template.
+6. **Review**: the widget checks the texts of each variant (see below) and marks their problems on the visual, numbered, with a proposed fix (a smaller font size). Each variant has a "What should change?" field, pre-filled with the proposed fixes; the user edits it and sends the changes to the assistant, which generates again only these variants. Each generation shows only its own variants.
 
 Widgets return what the user confirmed through a short reference that the assistant reads with `get-widget-result`. The other tools (`save-widget-result`, `suggest-crop`, `create-upload-url`, AEM picker tools…) are used by the widgets. `upload-file` uploads a single file outside the workflow.
 
@@ -25,7 +25,7 @@ Each edited text of a generated variant is checked once rendered, one check per 
 |---|---|---|
 | Edges | Bounds of the text in the manifest of the rendered PSD | A text past an edge of the canvas |
 | Overlaps | Bounds of the text and of the other visible layers, compared with the template | A text overlapping an element (logo, button, other text) more than in the template. Backgrounds and the elements the text lies on in the template are by design and not reported |
-| Words (OCR) | The text area of the rendered visual read with Tesseract (`actions/mcp-server/ocr.js`) and compared with the text sent | Words missing (cut, hidden, unreadable), or broken across two lines by a paragraph box too narrow for them |
+| Words (OCR) | The text area of the rendered visual read with Tesseract (`actions/mcp-server/ocr.js`) as one block of text, and compared with the text sent | Words missing (cut, hidden, unreadable), or broken across two lines by a paragraph box too narrow for them |
 
 The visual is read first, on the area of each text in the template: when every text is read whole inside its area, the texts have not grown, so they cannot pass an edge or overlap an element, and the rendered PSD is not read (one Photoshop job less per variant). Otherwise its manifest gives the exact cause, the area to mark and the font scale. The OCR is only reported for a text without an edge or overlap problem, as missing words are then a consequence of it. It reads the Latin script only (English model, accents and case ignored): texts in other scripts are not read. Its model is downloaded once per container from the jsDelivr CDN; if it cannot be, the variants are generated without this check.
 

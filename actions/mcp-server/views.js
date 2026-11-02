@@ -1583,7 +1583,6 @@ function getVariantViewHtml (scriptUrl) {
     border-radius: var(--spectrum-corner-radius-200);
     background: var(--spectrum-gray-100);
   }
-  .card-updated { align-self: flex-start; }
   /* Changes of each variant, in free text, pre-filled with the proposed fixes of its texts */
   .change-request {
     width: 100%;
@@ -1680,7 +1679,6 @@ function getVariantViewHtml (scriptUrl) {
   }
 
   function render() {
-    var allUpdated = variants.every(function (v) { return v.updated; });
     // The field being typed in keeps its focus and caret when the grid is drawn again (variants arrive while the user types)
     var active = document.activeElement && document.activeElement.classList.contains('change-request')
       ? { index: document.activeElement.getAttribute('data-index'), start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd }
@@ -1707,8 +1705,7 @@ function getVariantViewHtml (scriptUrl) {
       if (requests[v.fileName] == null && !v.checking) requests[v.fileName] = recommendationOf(v);
       return '<div class="card">' + visualHtml(v, i, 320)
         + '<div class="subtle card-name">' + escapeHtml(v.fileName) + '</div>'
-        // With variants generated earlier shown again, the ones of this generation are marked
-        + (v.updated && !allUpdated ? '<sp-badge class="card-updated" size="s" variant="informative">Updated</sp-badge>' : '') + problems
+        + problems
         + '<textarea class="change-request" data-index="' + i + '" placeholder="What should change?">' + escapeHtml(requests[v.fileName] || '') + '</textarea>'
         + '<div class="downloads">' + downloadButtons(i, 'secondary') + '</div></div>';
     }).join('');
