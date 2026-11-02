@@ -11,8 +11,8 @@ const spectrumAsset = require('./spectrum-asset.js')
 
 const IMS_TOKEN_URL = 'https://ims-na1.adobelogin.com/ims/token/v3'
 const PHOTOSHOP_API = 'https://photoshop-api.adobe.io/v2'
-const POLL_FIRST_DELAY_MS = 1000
-const POLL_MAX_DELAY_MS = 3000
+const POLL_FIRST_DELAY_MS = 500
+const POLL_MAX_DELAY_MS = 2000
 const POLL_TIMEOUT_MS = 240000
 const URL_EXPIRY_SECONDS = 24 * 3600
 const STORAGE_ORIGIN = 'https://firefly.azureedge.net'
@@ -927,7 +927,15 @@ async function createVariants (params, { templateUrl, formats, variants, deadlin
   const report = (index, variant) => { progress[index] = variant; onProgress?.([...progress]) }
   // The OCR engine loads during the renders
   const hasTexts = variants.some(variant => variant.layers.some(layer => layer.type === 'text_layer'))
-  if (hasTexts) warmUpOcr()
+  if (hasTexts) {
+    warmUpOcr()
+    // Needed to read the texts of the template (readableTexts), rendered during the reading of the template
+    renderPreview(params, templateUrl).catch(() => {})
+  }
+  // The crops chosen by the user do not need the template: started during its reading, prepareLayers then gets them cached
+  variants.forEach(variant => variant.layers
+    .filter(layer => layer.type === 'smart_object_layer' && layer.crop)
+    .forEach(layer => Promise.resolve(cropLayerImage(params, null, layer)).catch(() => {})))
   const templateManifest = beforeDeadline(getManifest(params, templateUrl), deadline, tooLate('Reading the template'))
   // Read once for all variants, during the renders
   const readable = hasTexts ? templateManifest.then(manifest => readableTexts(params, templateUrl, manifest), () => null) : null
