@@ -70,17 +70,19 @@ const READ_EXCERPT_LENGTH = 60
 function compareTexts (expected, read) {
   const lines = read.split('\n').map(wordsOf).filter(line => line.length)
   const lineLength = words => words.join(' ').length
-  const remaining = lines.flat()
-  const readJoined = remaining.join('')
+  // Words read, in reading order, and the expected word each one was used for
+  const readWords = lines.flat()
+  const usedFor = new Map()
+  const readJoined = readWords.join('')
+  const unused = test => readWords.findIndex((r, k) => !usedFor.has(k) && test(r))
   const missing = []
   const missingIndexes = []
   const broken = []
-  const use = index => { remaining.splice(index, 1); return true }
   const expectedWords = wordsOf(expected)
   expectedWords.forEach((word, wordIndex) => {
     // Read exactly, then broken across lines, then read with an error (a broken word is also one letter off on its first line)
-    const exact = remaining.indexOf(word)
-    if (exact >= 0 && use(exact)) return
+    const exact = unused(r => r === word)
+    if (exact >= 0) return usedFor.set(exact, wordIndex)
     const line = lines.findIndex((words, i) => i + 1 < lines.length && words[words.length - 1] !== word &&
       isClose(word, words[words.length - 1] + lines[i + 1][0]))
     // Slightly smaller when the line seems long enough: letters are not all as wide
@@ -88,8 +90,8 @@ function compareTexts (expected, read) {
       broken.push({ word, fit: Math.min(MAX_BROKEN_FIT, lineLength(lines[line]) / word.length) })
       return
     }
-    const close = remaining.findIndex(r => isClose(word, r))
-    if (close >= 0 && use(close)) return
+    const close = unused(r => isClose(word, r))
+    if (close >= 0) return usedFor.set(close, wordIndex)
     // Words read joined (e.g. "jointheclub"): a longer word in the text read, or a shorter one with a word next to it
     const neighbors = [expectedWords[wordIndex - 1], expectedWords[wordIndex + 1]]
     const joined = (word.length > 3 && readJoined.includes(word)) ||
@@ -99,6 +101,23 @@ function compareTexts (expected, read) {
       missingIndexes.push(wordIndex)
     }
   })
+  // A word misread (e.g. "là" read "Iq": short words allow no error): a word read of about its length, not used, right
+  // between the words read for the expected words around it
+  const readAt = new Map([...usedFor].map(([k, wordIndex]) => [wordIndex, k]))
+  const misread = wordIndex => {
+    const word = expectedWords[wordIndex]
+    const before = readAt.get(wordIndex - 1)
+    const after = readAt.get(wordIndex + 1)
+    const k = before !== undefined ? before + 1 : after !== undefined ? after - 1 : -1
+    return k >= 0 && k < readWords.length && !usedFor.has(k) && (after === undefined || after === k + 1) &&
+      Math.abs(readWords[k].length - word.length) <= 1 && usedFor.set(k, wordIndex)
+  }
+  for (let i = missing.length - 1; i >= 0; i--) {
+    if (misread(missingIndexes[i])) {
+      missing.splice(i, 1)
+      missingIndexes.splice(i, 1)
+    }
+  }
   // Where the missing words are: the last ones (a text cut at its end), the first ones, or elsewhere
   const missingAt = !missing.length ? null
     : missingIndexes.every((index, k) => index === expectedWords.length - missing.length + k) ? 'end'
