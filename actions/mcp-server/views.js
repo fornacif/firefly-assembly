@@ -25,6 +25,9 @@ const BASE_STYLE = `
   .subtle.intro { margin: var(--spectrum-spacing-75) 0 var(--spectrum-spacing-300); }
   .actions { margin-top: var(--spectrum-spacing-300); display: flex; align-items: center; gap: var(--spectrum-spacing-300); }
   .actions .status { margin-top: 0; }
+  /* Spinner shown before the status while something loads */
+  #status-loader { vertical-align: middle; margin-right: var(--spectrum-spacing-100); }
+  #status-loader:not([hidden]) + .status { display: inline-block; vertical-align: middle; }
 `
 
 // JSON-RPC bridge with the host: request(), notification(), onToolResult(), setStatus(), reportSize().
@@ -89,10 +92,21 @@ const BRIDGE_SCRIPT = `
     if (ctx && (ctx.theme === 'light' || ctx.theme === 'dark')) themeEl.setAttribute('color', ctx.theme);
   }
 
-  function setStatus(text, isError) {
+  // Status line of the view, with a spinner before it while loading.
+  function setStatus(text, isError, loading) {
     var el = document.getElementById('status');
     el.textContent = text;
     el.setAttribute('variant', isError ? 'negative' : 'neutral');
+    var loader = document.getElementById('status-loader');
+    if (!loader && loading) {
+      loader = document.createElement('sp-progress-circle');
+      loader.id = 'status-loader';
+      loader.setAttribute('size', 's');
+      loader.setAttribute('indeterminate', '');
+      loader.setAttribute('label', 'Loading');
+      el.parentNode.insertBefore(loader, el);
+    }
+    if (loader) loader.hidden = !loading;
     reportSize();
   }
 
@@ -341,7 +355,7 @@ ${UPLOAD_SCRIPT}
     progress.label = files.length > 1 ? files.length + ' files' : files[0].name;
     document.getElementById('files').innerHTML = files.length > 1
       ? files.map(function (f) { return '<li>' + escapeHtml(f.name) + '</li>'; }).join('') : '';
-    setStatus('Uploading...');
+    setStatus('Uploading...', false, true);
 
     Promise.all(files.map(function (file, i) {
       return uploadOne(file, function (bytes) {
@@ -793,7 +807,7 @@ ${AEM_SCRIPT}
     var busy = slots.some(function (s) { return BUSY_LABELS[s.status]; });
     confirmBtn.disabled = done !== slots.length || !slots.length;
     confirmBtn.textContent = 'Confirm images (' + done + '/' + slots.length + ')';
-    setStatus(busy ? 'Uploading and framing...' : '');
+    setStatus(busy ? 'Uploading and framing...' : '', false, busy);
   }
 
   // Puts an image in the slot with transfer(slot), which resolves to { url } once it is in storage, then asks the
@@ -1111,6 +1125,21 @@ function getLayersViewHtml (scriptUrl) {
   @media (max-width: 420px) { .preview { max-width: 100%; } }
   .stage { position: relative; display: inline-block; max-width: 100%; }
   .stage img { display: block; max-width: 100%; max-height: 460px; border-radius: var(--spectrum-corner-radius-100); }
+  /* In place of the preview while it renders */
+  .preview-loader {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--spectrum-spacing-200);
+    width: 240px;
+    max-width: 100%;
+    height: 240px;
+    line-height: normal;
+    border-radius: var(--spectrum-corner-radius-100);
+    background: var(--spectrum-gray-100);
+  }
+  .preview-loader[hidden], .stage[hidden] { display: none; }
   /* Zones are outlined only, so that what they cover stays visible */
   .zone {
     position: absolute;
@@ -1148,15 +1177,19 @@ function getLayersViewHtml (scriptUrl) {
 <h2 class="heading" id="title">Editable layers</h2>
 <div class="subtle intro" id="intro">Pick the layers to use for the variants.</div>
 <div class="picker">
-  <div class="preview" id="preview" hidden><div class="stage"><img id="preview-img" alt="Template preview"><div id="zones"></div></div></div>
+  <div class="preview" id="preview" hidden>
+    <div class="preview-loader" id="preview-loader" hidden><sp-progress-circle size="l" indeterminate label="Rendering the preview"></sp-progress-circle><span class="subtle">Rendering the preview...</span></div>
+    <div class="stage" id="stage"><img id="preview-img" alt="Template preview"><div id="zones"></div></div>
+  </div>
   <div class="list" id="list">
     <div class="row head"><sp-checkbox id="select-all">Select all</sp-checkbox></div>
     <div id="layers"></div>
   </div>
 </div>
 <div class="actions"><sp-button variant="accent" id="confirm" disabled>Use these layers</sp-button></div>
-<sp-help-text class="status" id="status">Loading the manifest...</sp-help-text>
+<sp-help-text class="status" id="status"></sp-help-text>
 `, `
+  setStatus('Reading the template...', false, true);
   var layers = [];
   // Number of each layer shown on the preview (1, 2...), in the order of the list; none for layers without a zone
   var numbers = [];
@@ -1210,6 +1243,17 @@ function getLayersViewHtml (scriptUrl) {
     setStatus(layers.length + ' editable layer(s).');
   }
 
+  // Spinner in place of the preview while it renders; hidePreviewLoader when it cannot be shown.
+  function showPreviewLoader() {
+    document.getElementById('stage').hidden = true;
+    document.getElementById('preview-loader').hidden = false;
+    document.getElementById('preview').hidden = false;
+  }
+  function hidePreviewLoader() {
+    if (!document.getElementById('stage').hidden) return;
+    document.getElementById('preview').hidden = true;
+  }
+
   // Shows the preview rendered after the list, with the numbers of the layers, without changing the boxes already ticked.
   function showLatePreview(previewUrl, doc) {
     if (!doc.width || !doc.height || !layers.some(function (l) { return l.area; })) return;
@@ -1237,6 +1281,8 @@ function getLayersViewHtml (scriptUrl) {
     var img = document.getElementById('preview-img');
     img.onload = function () { reportSize(); };
     img.src = previewUrl;
+    document.getElementById('preview-loader').hidden = true;
+    document.getElementById('stage').hidden = false;
     document.getElementById('preview').hidden = false;
     document.getElementById('intro').textContent = 'Click the numbered zones of the template, or the list, to pick the layers to use for the variants.';
   }
@@ -1282,19 +1328,23 @@ function getLayersViewHtml (scriptUrl) {
     var data = result.structuredContent || {};
     if (data.layers) render(data);
     if (!data.taskId || data.previewUrl) return;
-    setStatus(layers.length ? layers.length + ' editable layer(s). Rendering the preview of the template...' : 'Reading the template...');
+    setStatus(layers.length ? layers.length + ' editable layer(s). Rendering the preview of the template...' : 'Reading the template...', false, true);
+    showPreviewLoader();
     waitForTask(data.taskId, function (partial) {
       if (layers.length || !partial.layers) return;
       render(partial);
-      setStatus(layers.length + ' editable layer(s). Rendering the preview of the template...');
+      setStatus(layers.length + ' editable layer(s). Rendering the preview of the template...', false, true);
+      showPreviewLoader();
     })
       .then(function (template) {
         if (!layers.length) render(template);
         else if (template.previewUrl) showLatePreview(template.previewUrl, template.document || {});
+        if (!template.previewUrl) hidePreviewLoader();
         setStatus(layers.length + ' editable layer(s).' + (template.previewUrl ? '' : ' Preview not available: ' + (template.previewError || 'no preview')));
       })
       .catch(function (error) {
         var reason = (error && error.message) || String(error);
+        hidePreviewLoader();
         setStatus(layers.length ? layers.length + ' editable layer(s). Preview not available: ' + reason : reason, !layers.length);
       });
   });
@@ -1522,6 +1572,17 @@ function getVariantViewHtml (scriptUrl) {
   .mark-number { position: absolute; top: -9px; left: -9px; }
   .issue-number { margin-right: 4px; }
   .card-name { word-break: break-all; }
+  /* In place of the visual of a variant being rendered */
+  .rendering {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--spectrum-spacing-200);
+    height: 200px;
+    border-radius: var(--spectrum-corner-radius-200);
+    background: var(--spectrum-gray-100);
+  }
   .card-updated { align-self: flex-start; }
   /* Changes of each variant, in free text, pre-filled with the proposed fixes of its texts */
   .change-request {
@@ -1560,8 +1621,9 @@ function getVariantViewHtml (scriptUrl) {
 <div class="actions" id="fix-actions" hidden>
   <sp-button variant="accent" id="send-changes" disabled>Send changes</sp-button>
 </div>
-<sp-help-text class="status" id="status">Generating variants...</sp-help-text>
+<sp-help-text class="status" id="status"></sp-help-text>
 `, `
+  setStatus('Generating variants...', false, true);
   var grid = document.getElementById('grid');
   var preview = document.getElementById('preview');
   var previewVisual = document.getElementById('preview-visual');
@@ -1625,8 +1687,8 @@ function getVariantViewHtml (scriptUrl) {
       : null;
     grid.innerHTML = variants.map(function (v, i) {
       if (v.pending) {
-        return '<div class="card"><div class="subtle card-name">' + escapeHtml(v.fileName) + '</div>'
-          + '<sp-progress-bar size="s" label="Rendering" indeterminate></sp-progress-bar></div>';
+        return '<div class="card"><div class="rendering"><sp-progress-circle size="m" indeterminate label="Rendering"></sp-progress-circle>'
+          + '<span class="subtle">Rendering...</span></div><div class="subtle card-name">' + escapeHtml(v.fileName) + '</div></div>';
       }
       if (v.error) {
         return '<div class="card"><div class="subtle card-name">' + escapeHtml(v.fileName) + '</div>'
@@ -1656,7 +1718,7 @@ function getVariantViewHtml (scriptUrl) {
     }
     var ok = variants.filter(function (v) { return !v.error && !v.pending; }).length;
     var rendering = variants.filter(function (v) { return v.pending; }).length;
-    if (generating) setStatus('Generating: ' + ok + ' variant(s) ready, ' + rendering + ' rendering...');
+    if (generating) setStatus('Generating: ' + ok + ' variant(s) ready, ' + rendering + ' rendering...', false, true);
     else setStatus(ok + '/' + variants.length + ' variant(s) generated — click a visual to enlarge it — links valid for 24 hours', ok === 0);
     document.getElementById('fix-actions').hidden = !ok;
     updateFixActions();

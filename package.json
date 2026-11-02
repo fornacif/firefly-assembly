@@ -28,6 +28,7 @@
     "@spectrum-web-components/help-text": "^1.12.5",
     "@spectrum-web-components/illustrated-message": "^1.12.5",
     "@spectrum-web-components/progress-bar": "^1.12.5",
+    "@spectrum-web-components/progress-circle": "^1.12.5",
     "@spectrum-web-components/theme": "^1.12.5",
     "esbuild": "^0.25.12"
   }
