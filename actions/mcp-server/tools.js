@@ -354,6 +354,19 @@ const aemHost = (tier, environment) => `${tier}-${environment}.adobeaemcloud.com
 // API key sent to AEM with the token of the user: AEM_API_KEY, or the client of the token
 const aemApiKey = (params, token) => params.AEM_API_KEY || getUnverifiedClientId(token)
 
+// Sign-in of the user in the Destination Selector, with the IMS client of the AEM Assets frontend, allowed on AEM author
+// (the client of the assistant may not be): AEM_IMS_CLIENT_ID and AEM_IMS_SCOPES to change it
+const AEM_IMS_CLIENT_ID = 'aem-assets-frontend-1'
+const AEM_IMS_SCOPES = 'additional_info.projectedProductContext,openid'
+
+function getAemLogin (params) {
+  return {
+    clientId: String(params.AEM_IMS_CLIENT_ID || AEM_IMS_CLIENT_ID).trim(),
+    scope: String(params.AEM_IMS_SCOPES || AEM_IMS_SCOPES).trim(),
+    redirectUri: `${getStaticOrigin(params)}/${AEM_PICKER_PAGE}`
+  }
+}
+
 // AEM Assets repositories browsed with the Asset Selector; null when AEM_REPOSITORY_ID is not set.
 // AEM_REPOSITORY_ID: one repository (shown directly in the selector), several comma-separated, or '*' for any AEM as a
 // Cloud Service repository of the user (both chosen in the selector). AEM_IMS_ORG: empty to let the user pick the
@@ -1347,7 +1360,8 @@ const AEM_UPLOAD_CONCURRENCY = 3
 async function sendGenerationToAem (params, userId, { variantsTaskId, repositoryId, path, token }) {
   const folderUrl = getAemFolderUrl(requireAemConfig(params), { repositoryId, path })
   const files = await generationFiles(userId, variantsTaskId)
-  const headers = { Authorization: `Bearer ${token}`, 'X-Api-Key': aemApiKey(params, token) }
+  // The token is of the sign-in of the Destination Selector, its API key
+  const headers = { Authorization: `Bearer ${token}`, 'X-Api-Key': getUnverifiedClientId(token) }
   const sent = []
   const failed = []
   const queue = [...files]
@@ -1628,7 +1642,7 @@ function registerTools (server, params) {
       title: 'Send to AEM',
       description: 'Used by the create-variant widget: starts a task (see get-task) that uploads all the files of a generation to ' +
         'the AEM folder chosen in the Destination Selector of a picker session (create-aem-picker-session with folder), as ' +
-        'assets or new versions, with the token of the user.',
+        'assets or new versions, with the token of the sign-in of that session.',
       inputSchema: {
         taskId: z.string().describe('Task id of the generation, returned by create-variant'),
         sessionId: z.string().describe('Id of the picker session where the folder was chosen')
@@ -1643,7 +1657,7 @@ function registerTools (server, params) {
         const folder = await takeAemFolder(sessionId, currentUserId(params))
         if (!folder) throw new Error('The AEM folder choice has expired, choose the folder again.')
         const folderUrl = getAemFolderUrl(aem, folder)
-        // The task uploads with the token of the user, passed in its signed invocation
+        // The task uploads with the token of the sign-in in the Destination Selector, passed in its signed invocation
         const args = { variantsTaskId: taskId, repositoryId: folder.repositoryId, path: folderUrl.pathname, token: folder.token }
         return jsonResult({ taskId: await startTask(params, 'aem', args) })
       } catch (error) {
@@ -1859,9 +1873,10 @@ function registerTools (server, params) {
           repositoryId: folder && aem.pinnedRepository ? aemHost('author', aemEnvironment(aem.pinnedRepository)) : aem.pinnedRepository,
           aemTierType: folder ? 'author' : aem.tier,
           imsOrg: aem.imsOrg,
-          apiKey: aemApiKey(params, token),
-          imsToken: token
-        }, { multiple, folder, userId: currentUserId(params) })
+          // A folder session gets the token of the sign-in of the Destination Selector
+          apiKey: folder ? null : aemApiKey(params, token),
+          imsToken: folder ? null : token
+        }, { multiple, folder, login: folder ? getAemLogin(params) : null, userId: currentUserId(params) })
         const pickerUrl = `${getStaticOrigin(params)}/${AEM_PICKER_PAGE}#session=${sessionId}&api=${encodeURIComponent(getPickerApiPath())}`
         const session = { sessionId, pickerUrl }
         return { content: [{ type: 'text', text: 'AEM picker session created.' }], structuredContent: session }
