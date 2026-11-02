@@ -6,9 +6,7 @@
 <meta name="referrer" content="no-referrer">
 <title>Choose from AEM</title>
 <!-- AEM Asset Selector opened in a tab by the MCP App views (see actions/mcp-server/aem-picker.js): the URL fragment
-     carries the session id and the path of the picker endpoint, which gives the selector config and takes the selection.
-     A folder session shows the Destination Selector with its own Adobe IMS sign-in (in a popup, which comes back to this
-     page), with the client allowed on AEM author; the token is sent with the chosen folder, for the upload. -->
+     carries the session id and the path of the picker endpoint, which gives the selector config and takes the selection. -->
 <script src="https://experience.adobe.com/solutions/CQ-assets-selectors/static-assets/resources/assets-selectors.js"></script>
 <style>
   html, body { margin: 0; height: 100%; font-family: adobe-clean, "Source Sans Pro", -apple-system, system-ui, sans-serif; background: #f8f8f8; color: #222; }
@@ -22,20 +20,6 @@
 <div id="message"></div>
 <script>
 (function () {
-  var LOGIN_KEY = 'aem-picker-login';
-  // Popup of the IMS sign-in, back with the token: the IMS library, started with the same client, passes it to the page
-  // that opened the popup and closes it
-  if (window.opener && /imslibmodal|access_token=|error=/.test(location.href)) {
-    try {
-      var popupLogin = JSON.parse(localStorage.getItem(LOGIN_KEY));
-      PureJSSelectors.registerAssetsSelectorsAuthService({
-        imsClientId: popupLogin.clientId, imsScope: popupLogin.scope, redirectUrl: popupLogin.redirectUri, modalMode: true
-      });
-    } catch (e) {
-      console.log('[AEM picker] sign-in popup: ' + e.message);
-    }
-    return;
-  }
   var params = new URLSearchParams(location.hash.slice(1));
   var sessionId = params.get('session');
   var api = params.get('api') || '';
@@ -61,10 +45,10 @@
       });
   }
 
-  function finish(action, assets, fields, imsToken) {
+  function finish(action, assets) {
     if (done) return;
     done = true;
-    call({ action: action, assets: assets, fields: fields, imsToken: imsToken })
+    call({ action: action, assets: assets })
       .then(function () {
         showMessage(action === 'select'
           ? 'Selection sent. You can close this tab and go back to Claude.'
@@ -80,102 +64,8 @@
     return;
   }
 
-  // Folder chosen in the Destination Selector, with the fields of an asset of the Asset Selector
-  function folderOf(destination, config) {
-    var folder = Array.isArray(destination) ? destination[0] : destination;
-    if (!folder) return null;
-    var path = folder['repo:path'] || folder.path || '';
-    return {
-      'repo:repositoryId': folder['repo:repositoryId'] || folder.repositoryId || config.repositoryId || '',
-      'repo:path': path,
-      'repo:name': folder['repo:name'] || folder.name || path.split('/').pop()
-    };
-  }
-
-  // Client, scopes and expiry of a token, for diagnosis in the console (never the token)
-  function logToken(token) {
-    try {
-      var claims = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
-      console.log('[AEM picker] token of client ' + claims.client_id + ', scopes ' + claims.scope
-        + ', expires in ' + Math.round((Number(claims.created_at) + Number(claims.expires_in) - Date.now()) / 60000) + ' min');
-    } catch (e) {
-      console.log('[AEM picker] no token');
-    }
-  }
-
-  // Sign-in button, as a popup opened without a click is blocked
-  function showSignIn(auth) {
-    showMessage('Sign in with Adobe to choose the AEM folder.');
-    var button = document.createElement('button');
-    button.textContent = 'Sign in';
-    button.style.cssText = 'display: block; margin: 16px auto 0; padding: 6px 18px; font: inherit; border-radius: 16px; border: none; background: #3b63fb; color: #fff; cursor: pointer;';
-    button.addEventListener('click', function () { auth.signIn(); });
-    document.getElementById('message').appendChild(button);
-  }
-
-  // Destination Selector on the author tier, with a token of the client of the session (config.login): from the Adobe
-  // session of the browser, or from a sign-in in a popup
-  function renderFolderSelector(config) {
-    var probed = {};
-    var shown = false;
-    var auth;
-    function show(token) {
-      if (shown || !token) return;
-      shown = true;
-      logToken(token);
-      document.getElementById('message').style.display = 'none';
-      document.getElementById('selector').style.display = '';
-      PureJSSelectors.renderDestinationSelector(document.getElementById('selector'), {
-        repositoryId: config.repositoryId || undefined,
-        imsOrg: config.imsOrg,
-        imsToken: token,
-        apiKey: config.login.clientId,
-        aemTierType: ['author'],
-        // Diagnosis: the status of the folder listing of each author repository, requested from the server
-        filterRepoList: function (repositories) {
-          (repositories || []).forEach(function (repository) {
-            var id = repository && (repository.repo || repository['repo:repositoryId'] || repository.repositoryId || repository.id);
-            if (!id || probed[id]) return;
-            probed[id] = true;
-            call({ action: 'probe', repositoryId: id, imsToken: auth.getImsToken() || token })
-              .then(function (result) { console.log('[AEM picker] ' + id + ': ' + JSON.stringify(result)); })
-              .catch(function (error) { console.log('[AEM picker] ' + id + ': ' + error.message); });
-          });
-          return repositories;
-        },
-        dialogSize: 'fullscreen',
-        colorScheme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
-        titleLabel: 'Send the variants to AEM',
-        confirmLabel: 'Send here',
-        onConfirm: function (destination) {
-          var folder = folderOf(destination, config);
-          var first = Array.isArray(destination) ? destination[0] : destination;
-          finish(folder ? 'select' : 'cancel', folder ? [folder] : [], first && typeof first === 'object' ? Object.keys(first).join(',') : typeof first,
-            folder ? auth.getImsToken() || token : undefined);
-        },
-        onClose: function () { finish('cancel'); }
-      });
-    }
-    console.log('[AEM picker] sign-in with client ' + config.login.clientId + ', scopes ' + config.login.scope);
-    // The client of the sign-in, for the popup (not a secret)
-    localStorage.setItem(LOGIN_KEY, JSON.stringify(config.login));
-    auth = PureJSSelectors.registerAssetsSelectorsAuthService({
-      imsClientId: config.login.clientId,
-      imsScope: config.login.scope,
-      redirectUrl: config.login.redirectUri,
-      modalMode: true,
-      onImsServiceInitialized: function (service) {
-        if (service.isSignedInUser()) show(service.getImsToken());
-        else showSignIn(service);
-      },
-      onAccessTokenReceived: function (token) { show(typeof token === 'string' ? token : token && token.token); },
-      onErrorReceived: function (type, message) { console.log('[AEM picker] sign-in error: ' + type + ' ' + (message || '')); }
-    });
-  }
-
   call({ action: 'config' })
     .then(function (config) {
-      if (config.folder) return renderFolderSelector(config);
       var selectionType = config.multiple ? 'multiple' : 'single';
       PureJSSelectors.renderAssetSelector(document.getElementById('selector'), {
         repositoryId: config.repositoryId || undefined,
