@@ -362,6 +362,7 @@ function getAemLogin (params) {
   const clientId = String(params.AEM_CLIENT_ID || '').trim()
   if (!clientId) return null
   return {
+    imsHost: (params.IMS_HOST && String(params.IMS_HOST).trim()) || 'https://ims-na1.adobelogin.com',
     clientId,
     scope: String(params.AEM_IMS_SCOPES || AEM_IMS_SCOPES).trim(),
     redirectUri: `${getStaticOrigin(params)}/${AEM_PICKER_PAGE}`
@@ -1877,7 +1878,7 @@ function registerTools (server, params) {
           repositoryId: folder && aem.pinnedRepository ? aemHost('author', aemEnvironment(aem.pinnedRepository)) : aem.pinnedRepository,
           aemTierType: folder ? 'author' : aem.tier,
           imsOrg: aem.imsOrg,
-          // A folder session gets the token of the sign-in of the Destination Selector
+          // A folder session gets the token of the sign-in on the page
           apiKey: folder ? login.clientId : aemApiKey(params, token),
           imsToken: folder ? null : token
         }, { multiple, folder, login, userId: currentUserId(params) })
