@@ -349,6 +349,11 @@ function aemEnvironment (host) {
   return AEM_HOST.exec(host)?.[2] || null
 }
 
+const aemHost = (tier, environment) => `${tier}-${environment}.adobeaemcloud.com`
+
+// API key sent to AEM with the token of the user: AEM_API_KEY, or the client of the token
+const aemApiKey = (params, token) => params.AEM_API_KEY || getUnverifiedClientId(token)
+
 // AEM Assets repositories browsed with the Asset Selector; null when AEM_REPOSITORY_ID is not set.
 // AEM_REPOSITORY_ID: one repository (shown directly in the selector), several comma-separated, or '*' for any AEM as a
 // Cloud Service repository of the user (both chosen in the selector). AEM_IMS_ORG: empty to let the user pick the
@@ -361,7 +366,7 @@ function getAemConfig (params) {
   return {
     tier,
     environments: repositories.includes('*') ? '*' : repositories.map(aemEnvironment).filter(Boolean),
-    pinnedRepository: pinned ? `${tier}-${pinned}.adobeaemcloud.com` : null,
+    pinnedRepository: pinned ? aemHost(tier, pinned) : null,
     imsOrg: String(params.AEM_IMS_ORG || '').trim() || null
   }
 }
@@ -404,7 +409,7 @@ async function importAemAsset (params, aem, asset) {
   if (response.status === 401 || response.status === 403) {
     await response.body?.cancel().catch(() => {})
     const token = getTokenFromRequest(params)
-    response = await fetchWithRetry(url, { headers: { Authorization: `Bearer ${token}`, 'X-Api-Key': params.AEM_API_KEY || getUnverifiedClientId(token) } }, RESPONSE_BUDGET_MS)
+    response = await fetchWithRetry(url, { headers: { Authorization: `Bearer ${token}`, 'X-Api-Key': aemApiKey(params, token) } }, RESPONSE_BUDGET_MS)
   }
   const fileName = asset.fileName
   if (!response.ok) throw new Error(`AEM download of ${fileName} failed (HTTP ${response.status})`)
@@ -413,6 +418,52 @@ async function importAemAsset (params, aem, asset) {
   const path = newStoragePath('aem', fileName)
   await files.write(path, Readable.fromWeb(response.body))
   return { fileName, url: await files.generatePresignURL(path, { expiryInSeconds: URL_EXPIRY_SECONDS, permissions: 'r' }) }
+}
+
+// Folder of an allowed AEM repository, on its author tier: its URL. Only hosts of allowed repositories are built, so the
+// user's token is never sent to another host.
+function getAemFolderUrl (aem, { repositoryId, path }) {
+  const origin = `https://${aemHost('author', getAemEnvironment(aem, repositoryId))}`
+  const url = new URL(String(path || '').replace(/\/$/, ''), origin)
+  if (url.origin !== origin || !/^\/content\/dam(\/|$)/.test(url.pathname)) throw new Error(`Not a folder of the AEM repository: ${path}`)
+  return url
+}
+
+const AEM_MIME_TYPES = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', psd: 'image/vnd.adobe.photoshop', zip: 'application/zip' }
+
+// Uploads a file to an AEM folder with the direct binary upload of AEM as a Cloud Service: initiateUpload gives the URLs of
+// the parts of the binary (cloud storage, without the token), then completeUpload creates the asset, or a new version of an
+// asset of the same name.
+async function uploadToAem (folderUrl, { fileName, data }, headers) {
+  const post = (url, form) => fetchWithRetry(url, {
+    method: 'POST',
+    headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(form)
+  }, RESPONSE_BUDGET_MS)
+  const initiated = await post(`${folderUrl.href}.initiateUpload.json`, { fileName, fileSize: String(data.length) })
+  if (!initiated.ok) throw new Error(`AEM refused the upload (HTTP ${initiated.status})`)
+  const upload = await initiated.json()
+  const file = upload.files?.[0]
+  if (!file?.uploadURIs?.length || !upload.completeURI) throw new Error('AEM did not give upload URLs')
+  // Parts as large as needed for the URLs given, within the sizes allowed
+  const partSize = Math.max(file.minPartSize || 0, Math.ceil(data.length / file.uploadURIs.length))
+  if (file.maxPartSize && partSize > file.maxPartSize) throw new Error('The file is too large for AEM')
+  for (let start = 0, i = 0; start < data.length || i === 0; start += partSize, i++) {
+    const response = await fetchWithRetry(file.uploadURIs[i], { method: 'PUT', body: data.subarray(start, start + partSize) }, RESPONSE_BUDGET_MS)
+    await response.body?.cancel().catch(() => {})
+    if (!response.ok) throw new Error(`Upload to AEM failed (HTTP ${response.status})`)
+  }
+  const completeUrl = new URL(upload.completeURI, folderUrl.origin)
+  if (completeUrl.origin !== folderUrl.origin) throw new Error('AEM gave an unexpected completion URL')
+  const extension = fileName.split('.').pop().toLowerCase()
+  const completed = await post(completeUrl, {
+    fileName,
+    mimeType: file.mimeType || AEM_MIME_TYPES[extension] || 'application/octet-stream',
+    uploadToken: file.uploadToken,
+    createVersion: 'true'
+  })
+  await completed.body?.cancel().catch(() => {})
+  if (!completed.ok) throw new Error(`AEM did not create the asset (HTTP ${completed.status})`)
 }
 
 function toLayerEdit (layer) {
@@ -1263,23 +1314,63 @@ const TASKS = {
   // ZIP archive of the files of a generation
   async zip (params, { args, userId }) {
     return zipGeneration(userId, args.variantsTaskId)
+  },
+
+  // Files of a generation sent to an AEM folder
+  async aem (params, { args, userId }) {
+    return sendGenerationToAem(params, userId, args)
   }
 }
 
 // Files of a generation zipped together: at most this many bytes, held in memory
 const MAX_ZIP_BYTES = 400 * 1024 * 1024
 
-// ZIP archive of the files of a done generation (task variants) of the user of the task: { fileName, url, count }.
-async function zipGeneration (userId, variantsTaskId) {
+// Files of a done generation (task variants) of a user: [{ format, fileName, url }].
+async function generationFiles (userId, variantsTaskId) {
   const generation = (await (await initState()).get(taskKey(userId, variantsTaskId)))?.value
   if (generation?.status !== 'done') throw new Error('The generation is not done, or expired (24 hours).')
   const files = (generation.result?.variants || []).filter(v => !v.error).flatMap(v => v.files || [])
-  if (!files.length) throw new Error('No file to download.')
+  if (!files.length) throw new Error('No file generated.')
+  return files
+}
+
+async function downloadFile (file) {
+  const response = await fetchWithRetry(file.url)
+  if (!response.ok) throw new Error(`${file.fileName} could not be downloaded (HTTP ${response.status})`)
+  return Buffer.from(await response.arrayBuffer())
+}
+
+// Files of a generation sent to AEM at a time
+const AEM_UPLOAD_CONCURRENCY = 3
+
+// Sends the files of a generation to an AEM folder: { folder, sent: [file names], failed: [{ fileName, error }] }.
+async function sendGenerationToAem (params, userId, { variantsTaskId, repositoryId, path, token }) {
+  const folderUrl = getAemFolderUrl(requireAemConfig(params), { repositoryId, path })
+  const files = await generationFiles(userId, variantsTaskId)
+  const headers = { Authorization: `Bearer ${token}`, 'X-Api-Key': aemApiKey(params, token) }
+  const sent = []
+  const failed = []
+  const queue = [...files]
+  await Promise.all(Array.from({ length: AEM_UPLOAD_CONCURRENCY }, async () => {
+    for (let file = queue.shift(); file; file = queue.shift()) {
+      try {
+        await uploadToAem(folderUrl, { fileName: file.fileName, data: await downloadFile(file) }, headers)
+        sent.push(file.fileName)
+      } catch (error) {
+        failed.push({ fileName: file.fileName, error: error.message })
+      }
+    }
+  }))
+  console.log(`Sent to AEM ${folderUrl.pathname}: ${sent.length} file(s), ${failed.length} failed${failed.length ? ` (${failed[0].error})` : ''}`)
+  return { folder: decodeURIComponent(folderUrl.pathname), sent, failed }
+}
+
+// ZIP archive of the files of a done generation (task variants) of the user of the task: { fileName, url, count }.
+async function zipGeneration (userId, variantsTaskId) {
+  const files = await generationFiles(userId, variantsTaskId)
   let total = 0
   const entries = await Promise.all(files.map(async file => {
-    const response = await fetchWithRetry(file.url)
-    if (!response.ok) throw new Error(`${file.fileName} could not be downloaded (HTTP ${response.status})`)
-    const data = Buffer.from(await response.arrayBuffer())
+    const data = await downloadFile(file)
     total += data.length
     if (total > MAX_ZIP_BYTES) throw new Error('The files are too large to be zipped together: download them one by one.')
     return { name: file.fileName, data }
@@ -1532,6 +1623,33 @@ function registerTools (server, params) {
   )
 
   server.registerTool(
+    'send-to-aem',
+    {
+      title: 'Send to AEM',
+      description: 'Used by the create-variant widget: starts a task (see get-task) that uploads all the files of a generation to ' +
+        'an AEM folder chosen in the Destination Selector (create-aem-picker-session with folder), as assets or new versions.',
+      inputSchema: {
+        taskId: z.string().describe('Task id of the generation, returned by create-variant'),
+        repositoryId: z.string().describe('repo:repositoryId of the folder, e.g. author-p12345-e67890.adobeaemcloud.com'),
+        path: z.string().describe('repo:path of the folder, e.g. /content/dam/campaign')
+      },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    async ({ taskId, repositoryId, path }) => {
+      try {
+        const folderUrl = getAemFolderUrl(requireAemConfig(params), { repositoryId, path })
+        const generation = await readTask(params, taskId)
+        if (generation?.status !== 'done') throw new Error('The generation is not done, or expired (24 hours).')
+        // The task uploads with the token of the user, passed in its signed invocation
+        const args = { variantsTaskId: taskId, repositoryId, path: folderUrl.pathname, token: getTokenFromRequest(params) }
+        return jsonResult({ taskId: await startTask(params, 'aem', args) })
+      } catch (error) {
+        return errorResult(error)
+      }
+    }
+  )
+
+  server.registerTool(
     'get-widget-result',
     {
       title: 'Get Widget Result',
@@ -1716,12 +1834,15 @@ function registerTools (server, params) {
     'create-aem-picker-session',
     {
       title: 'Create AEM Picker Session',
-      description: 'Used by the start and upload-variant-images widgets: creates a session of the AEM Asset Selector page, ' +
-        'to open in a browser tab, and returns its URL and id (see get-aem-picker-result).',
-      inputSchema: { multiple: z.boolean().default(false).describe('Allow selecting several assets') },
+      description: 'Used by the start, upload-variant-images and create-variant widgets: creates a session of the AEM Asset ' +
+        'Selector page, to open in a browser tab, and returns its URL and id (see get-aem-picker-result).',
+      inputSchema: {
+        multiple: z.boolean().default(false).describe('Allow selecting several assets'),
+        folder: z.boolean().default(false).describe('Choose a destination folder (author tier) instead of assets')
+      },
       _meta: { ui: { visibility: ['app'] } }
     },
-    async ({ multiple }) => {
+    async ({ multiple, folder }) => {
       try {
         const aem = requireAemConfig(params)
         const token = getTokenFromRequest(params)
@@ -1731,12 +1852,13 @@ function registerTools (server, params) {
           console.log(`AEM picker session: token client ${claims.client_id}, scopes ${claims.scope}`)
         } catch (_) {}
         const sessionId = await createPickerSession({
-          repositoryId: aem.pinnedRepository,
-          aemTierType: aem.tier,
+          // Folders are on the author tier
+          repositoryId: folder && aem.pinnedRepository ? aemHost('author', aemEnvironment(aem.pinnedRepository)) : aem.pinnedRepository,
+          aemTierType: folder ? 'author' : aem.tier,
           imsOrg: aem.imsOrg,
-          apiKey: params.AEM_API_KEY || getUnverifiedClientId(token),
+          apiKey: aemApiKey(params, token),
           imsToken: token
-        }, { multiple })
+        }, { multiple, folder })
         const pickerUrl = `${getStaticOrigin(params)}/${AEM_PICKER_PAGE}#session=${sessionId}&api=${encodeURIComponent(getPickerApiPath())}`
         const session = { sessionId, pickerUrl }
         return { content: [{ type: 'text', text: 'AEM picker session created.' }], structuredContent: session }

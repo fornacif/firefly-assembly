@@ -227,8 +227,8 @@ const UPLOAD_SCRIPT = `
 
 // AEM Asset Selector (Content Advisor), opened in a browser tab: Claude does not let views frame experience.adobe.com.
 // loadAemConfig() resolves to the config, or null when AEM is not configured; pickAemAssets() opens the selector page
-// (aem-picker.html) and resolves to the assets selected there ([] if cancelled); importAemAsset() copies one to
-// storage: { name, url }.
+// (aem-picker.html) and resolves to the assets selected there ([] if cancelled); pickAemFolder() opens it to choose a
+// destination folder and resolves to it (null if cancelled); importAemAsset() copies an asset to storage: { name, url }.
 const AEM_SCRIPT = `
   var AEM_POLL_INTERVAL_MS = 3000;
   var AEM_PICK_TIMEOUT_MS = 15 * 60 * 1000;
@@ -256,13 +256,14 @@ const AEM_SCRIPT = `
       });
   }
 
-  function pickAemAssets(multiple) {
+  // Opens the selector page of a new session, and resolves to what is selected there; what names it in the status.
+  function pickInAem(options, what) {
     var pickId = ++aemPickId;
-    return callTool('create-aem-picker-session', { multiple: multiple })
+    return callTool('create-aem-picker-session', options)
       .then(function (session) {
         return request('ui/open-link', { url: session.pickerUrl }).then(function (result) {
           if (result && result.isError) throw new Error('The AEM selector tab could not be opened.');
-          setStatus('Choose ' + (multiple ? 'the images' : 'the PSD template') + ' in the AEM tab that opened, then come back here.');
+          setStatus('Choose ' + what + ' in the AEM tab that opened, then come back here.');
           return waitForAemSelection(session.sessionId, pickId, Date.now() + AEM_PICK_TIMEOUT_MS);
         });
       })
@@ -270,6 +271,14 @@ const AEM_SCRIPT = `
         if (pickId === aemPickId) setStatus('');
         return assets;
       });
+  }
+
+  function pickAemAssets(multiple) {
+    return pickInAem({ multiple: multiple }, multiple ? 'the images' : 'the PSD template');
+  }
+
+  function pickAemFolder() {
+    return pickInAem({ folder: true }, 'the destination folder').then(function (folders) { return folders[0] || null; });
   }
 
   function importAemAsset(asset) {
@@ -1620,9 +1629,11 @@ function getVariantViewHtml (scriptUrl) {
 <div class="actions" id="fix-actions" hidden>
   <sp-button variant="accent" id="send-changes" disabled>Send changes</sp-button>
   <sp-button variant="secondary" treatment="outline" id="download-all" hidden disabled>Download all</sp-button>
+  <sp-button variant="secondary" treatment="outline" id="send-aem" hidden disabled>${ADOBE_ICON}Send to AEM</sp-button>
 </div>
 <sp-help-text class="status" id="status"></sp-help-text>
 `, `
+${AEM_SCRIPT}
   setStatus('Generating variants...', false, true);
   var grid = document.getElementById('grid');
   var preview = document.getElementById('preview');
@@ -1636,9 +1647,11 @@ function getVariantViewHtml (scriptUrl) {
   var generating = false;
   var sendBtn = document.getElementById('send-changes');
   var downloadAllBtn = document.getElementById('download-all');
-  // Task of the generation, whose files are zipped by Download all
+  var sendAemBtn = document.getElementById('send-aem');
+  // Task of the generation, whose files are zipped by Download all and sent by Send to AEM
   var generationTaskId = null;
   var zipping = false;
+  var sendingToAem = false;
   var FORMAT_LABELS = { png: 'PNG', jpeg: 'JPEG', psd: 'PSD' };
   // Download icon (arrow into a tray), in the text color of the button
   var DOWNLOAD_ICON = '<svg slot="icon" viewBox="0 0 18 18" width="16" height="16" aria-hidden="true">'
@@ -1746,6 +1759,8 @@ function getVariantViewHtml (scriptUrl) {
     var files = generated().reduce(function (total, i) { return total + filesOf(variants[i]).length; }, 0);
     downloadAllBtn.hidden = !generationTaskId || files < 2;
     downloadAllBtn.disabled = generating || zipping;
+    sendAemBtn.hidden = !generationTaskId || !aemConfig || !files;
+    sendAemBtn.disabled = generating || sendingToAem;
   }
 
   function downloadAll() {
@@ -1763,6 +1778,31 @@ function getVariantViewHtml (scriptUrl) {
   }
 
   downloadAllBtn.addEventListener('click', downloadAll);
+
+  // All the files of the generation uploaded to a folder chosen in AEM (Destination Selector, in a tab)
+  function sendToAem() {
+    sendingToAem = true;
+    updateFixActions();
+    pickAemFolder()
+      .then(function (folder) {
+        if (!folder) return null;
+        setStatus('Sending the files to AEM...', false, true);
+        return callTool('send-to-aem', { taskId: generationTaskId, repositoryId: folder['repo:repositoryId'], path: folder['repo:path'] })
+          .then(function (started) { return waitForTask(started.taskId); });
+      })
+      .then(function (result) {
+        render();
+        if (!result) return;
+        var failed = result.failed || [];
+        setStatus(result.sent.length + ' file(s) sent to AEM, in ' + result.folder
+          + (failed.length ? '. Not sent: ' + failed.map(function (f) { return f.fileName + ' (' + f.error + ')'; }).join(', ') : ''), failed.length > 0);
+      })
+      .catch(function (error) { setStatus((error && error.message) || String(error), true); })
+      .then(function () { sendingToAem = false; updateFixActions(); });
+  }
+
+  sendAemBtn.addEventListener('click', sendToAem);
+  loadAemConfig().then(function () { updateFixActions(); reportSize(); });
 
   // Sends the changes of the variants to the model, which generates them again with create-variant. With the measured
   // problems of each text (layer id and proposed font scale), so that it can apply the proposed fixes the user kept.

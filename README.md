@@ -9,7 +9,7 @@ MCP server, deployed as an Adobe I/O Runtime (App Builder) action, that creates 
 3. **Texts** (`review-variant-texts`): an editable table with the texts of each variant.
 4. **Images** (`upload-variant-images`): a grid with one image per variant and smart object layer, from the computer or AEM, with crops framed on the subject.
 5. **Generation** (`create-variant`): the variants are rendered in parallel, as JPEG (default), PNG and/or layered PSD files.
-6. **Review**: the widget checks the texts of each variant (see below) and marks their problems on the visual, numbered, with a proposed fix (a smaller font size). Each variant has a "What should change?" field, pre-filled with the proposed fixes; the user edits it and sends the changes to the assistant, which generates again only these variants. Each generation shows only its own variants, with a download button per file and a Download all button (a ZIP archive of all the files of the generation, built by a task: `create-variants-zip`).
+6. **Review**: the widget checks the texts of each variant (see below) and marks their problems on the visual, numbered, with a proposed fix (a smaller font size). Each variant has a "What should change?" field, pre-filled with the proposed fixes; the user edits it and sends the changes to the assistant, which generates again only these variants. Each generation shows only its own variants, with a download button per file a Download all button (a ZIP archive of all the files of the generation, built by a task: `create-variants-zip`) and, when AEM is configured, a Send to AEM button: the user chooses a folder in the AEM Destination Selector (opened in a tab, like the Asset Selector), then a task (`send-to-aem`) uploads all the files there with the direct binary upload of AEM as a Cloud Service, with the user's token, as new assets or new versions of assets of the same name.
 
 Widgets return what the user confirmed through a short reference that the assistant reads with `get-widget-result`. The other tools (`save-widget-result`, `suggest-crop`, `create-upload-url`, AEM picker tools…) are used by the widgets. `upload-file` uploads a single file outside the workflow.
 
@@ -80,7 +80,7 @@ FIREFLY_SERVICES_API_SCOPES=
 # One repository (e.g. author-p12345-e67890.adobeaemcloud.com), several comma-separated,
 # or '*' for any AEM as a Cloud Service repository of the user. Empty: local uploads only.
 AEM_REPOSITORY_ID=
-# delivery (default, approved assets) or author
+# delivery (default, approved assets) or author. Send to AEM always uses the author tier of the repository.
 AEM_TIER=
 ```
 

@@ -45,10 +45,10 @@
       });
   }
 
-  function finish(action, assets) {
+  function finish(action, assets, fields) {
     if (done) return;
     done = true;
-    call({ action: action, assets: assets })
+    call({ action: action, assets: assets, fields: fields })
       .then(function () {
         showMessage(action === 'select'
           ? 'Selection sent. You can close this tab and go back to Claude.'
@@ -64,8 +64,40 @@
     return;
   }
 
+  // Folder chosen in the Destination Selector, with the fields of an asset of the Asset Selector
+  function folderOf(destination, config) {
+    var folder = Array.isArray(destination) ? destination[0] : destination;
+    if (!folder) return null;
+    var path = folder['repo:path'] || folder.path || '';
+    return {
+      'repo:repositoryId': folder['repo:repositoryId'] || folder.repositoryId || config.repositoryId || '',
+      'repo:path': path,
+      'repo:name': folder['repo:name'] || folder.name || path.split('/').pop()
+    };
+  }
+
+  function renderFolderSelector(config) {
+    PureJSSelectors.renderDestinationSelector(document.getElementById('selector'), {
+      repositoryId: config.repositoryId || undefined,
+      imsOrg: config.imsOrg,
+      imsToken: config.imsToken,
+      apiKey: config.apiKey,
+      dialogSize: 'fullscreen',
+      colorScheme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
+      titleLabel: 'Send the variants to AEM',
+      confirmLabel: 'Send here',
+      onConfirm: function (destination) {
+        var folder = folderOf(destination, config);
+        var first = Array.isArray(destination) ? destination[0] : destination;
+        finish(folder ? 'select' : 'cancel', folder ? [folder] : [], first && typeof first === 'object' ? Object.keys(first).join(',') : typeof first);
+      },
+      onClose: function () { finish('cancel'); }
+    });
+  }
+
   call({ action: 'config' })
     .then(function (config) {
+      if (config.folder) return renderFolderSelector(config);
       var selectionType = config.multiple ? 'multiple' : 'single';
       PureJSSelectors.renderAssetSelector(document.getElementById('selector'), {
         repositoryId: config.repositoryId || undefined,
