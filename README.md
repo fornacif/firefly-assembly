@@ -19,11 +19,11 @@ Adobe I/O Runtime ends a web request after about 60 seconds, and Photoshop jobs 
 
 ## Text checks
 
-Each edited text of a generated variant is checked on the rendered visual, with an OCR (Tesseract, `actions/mcp-server/ocr.js`). The text must stay within its bounds: the smallest element it lies within in the template (a panel, a band), or the canvas. The OCR reads the area of the text in the template, wider by the growth expected from the length of the new text, within these bounds (a photo next to a panel is not read with the text) and not into the other texts on the same lines (the OCR would mix them). It gives the words read and where they are. A text read whole inside its area of the template fits. Otherwise, one problem per cause:
+Each edited text of a generated variant is checked on the rendered visual, with an OCR (Tesseract, `actions/mcp-server/ocr.js`). The text must stay within its bounds: the smallest element it lies within in the template (a panel, a band), or the canvas. The OCR reads the area of the text in the template, wider by the growth expected from the length of the new text, within these bounds but for 2.5 line heights past their sides (little of a photo next to a panel is read with the text, and the letters past the side of a panel are read), and not into the other texts on the same lines (the OCR would mix them). It gives the words read and where they are. A text read whole inside its area of the template fits. Otherwise, one problem per cause:
 
 | Check | How | Finds |
 |---|---|---|
-| Bounds | Words missing at the end (or start) of the text, read up to a side of its bounds: the text goes on past it, by an estimate line by line from the letters not read | A text running out of its panel or band, or past an edge of the visual |
+| Bounds | Words read past a side of its bounds (measured), or words missing at the end (or start) of the text, read up to a side of its bounds: the text goes on past it, by an estimate line by line from the letters not read | A text running out of its panel or band, or past an edge of the visual |
 | Overlaps | Rectangle of the words read, against the other visible layers of the template, compared with the template | A text overlapping an element (logo, button, other text) more than in the template. Backgrounds and the elements the text lies on in the template are by design and not reported |
 | Words | Words read against the text sent | Words missing (cut, hidden, low contrast), or broken across two lines by a paragraph box too narrow for them; only when no other cause explains them |
 
