@@ -422,7 +422,7 @@ const PREVIEW_OUTPUT = { mediaType: 'image/jpeg', quality: 'high' }
 
 // Renders one variant in all the requested formats with a single Photoshop job, then measures its texts against the template
 // manifest on the PSD output (rendered for that purpose when PSD is not a requested format).
-async function createVariant (params, { templateUrl, templateManifest, formats, layers, fileName: baseName, deadline, onRendered }) {
+async function createVariant (params, { templateUrl, templateManifest, formats, layers, fileName: baseName, deadline, onRendered, readable }) {
   const shownFormat = formats.find(format => VARIANT_OUTPUTS[format].displayable)
   const [files, preview, measureCopy] = await Promise.all([
     Promise.all(formats.map(format => createStorageUrls('variants', `${baseName}.${VARIANT_OUTPUTS[format].extension}`))),
@@ -453,7 +453,7 @@ async function createVariant (params, { templateUrl, templateManifest, formats, 
   onRendered?.(rendered)
   return {
     ...rendered,
-    ...await beforeDeadline(measureRenderedTexts(params, psdUrl, imageUrl, templateManifest, layers, deadline)
+    ...await beforeDeadline(measureRenderedTexts(params, psdUrl, imageUrl, templateManifest, layers, deadline, readable)
       .then(({ issues, unchecked }) => ({ textIssues: issues, ...(unchecked ? { textsUnchecked: unchecked } : {}) })),
     deadline, () => ({ textIssues: null, textsUnchecked: 'not finished within the time limit' }))
   }
@@ -476,6 +476,8 @@ const OCR_DEADLINE_MARGIN_MS = 1000
 
 // Margin around a text area read by the OCR, as a share of its height: glyphs may go past the box of the layer
 const OCR_MARGIN = 0.15
+// ...and at least this many pixels: the box of a small text may cut its last letter
+const OCR_MIN_MARGIN_PX = 8
 // A text is in place when its words read lie in its area of the template with OCR_MARGIN; to see whether they do, the area of
 // the template is read with this wider margin
 const IN_PLACE_READ_MARGIN = 0.4
@@ -487,9 +489,11 @@ async function downloadImage (url) {
   return Buffer.from(await response.arrayBuffer())
 }
 
+const ocrMargin = (area, share) => Math.max(area.height * share, OCR_MIN_MARGIN_PX * share / OCR_MARGIN)
+
 // Area read by the OCR: the text area with a margin (share of its height), inside the canvas.
 function ocrRect (area, canvas, marginShare = OCR_MARGIN) {
-  const margin = area.height * marginShare
+  const margin = ocrMargin(area, marginShare)
   const left = Math.max(0, area.left - margin)
   const top = Math.max(0, area.top - margin)
   return {
@@ -546,11 +550,28 @@ function findOverlaps (textArea, textBefore, edited, original, templateManifest,
   })
 }
 
+// Text layers of a template that the OCR reads whole on its preview. For the others (e.g. a text over a photo, which the OCR
+// cannot tell from it), words not read in a variant say nothing: they are not checked. Cached per template; null when the
+// preview cannot be read, all texts are then checked.
+const readableCache = createCache(20)
+function readableTexts (params, templateUrl, manifest) {
+  return readableCache(templateUrl, async () => {
+    const canvas = boundsSize(manifest.document.bounds)
+    const texts = getEditableLayers(manifest.layers).filter(layer => layer.type === 'text_layer' && layer.area)
+    const preview = await downloadImage(await renderPreview(params, templateUrl))
+    const checks = await checkTexts(preview, texts.map(layer => ({ text: layer.text, rect: ocrRect(layer.area, canvas) })), canvas)
+    return new Set(texts.filter((layer, i) => checks[i] && !checks[i].missing.length && !checks[i].broken.length).map(layer => layer.id))
+  }).catch(error => {
+    console.warn(`Template texts not read: ${error.message}`)
+    return null
+  })
+}
+
 // Whether the OCR read a whole text inside its area of the template (with OCR_MARGIN): it then has not grown, so it cannot
 // pass an edge of the canvas or overlap an element more than in the template.
 function isInPlace (check, before) {
   if (!check || check.missing.length || check.broken.length || !check.box || !before) return false
-  const margin = before.height * OCR_MARGIN
+  const margin = ocrMargin(before, OCR_MARGIN)
   return check.box.left >= before.left - margin && check.box.top >= before.top - margin &&
     check.box.left + check.box.width <= before.left + before.width + margin &&
     check.box.top + check.box.height <= before.top + before.height + margin
@@ -566,7 +587,7 @@ function isInPlace (check, before) {
 // rectangles of its overlaps. Best effort: returns { issues, unchecked }, issues being null when the texts could not be
 // measured, and unchecked what could not be checked and why (e.g. the OCR, not ready by the deadline: the edges and overlaps
 // are still returned).
-async function measureRenderedTexts (params, psdUrl, imageUrl, templateManifest, layers, deadline) {
+async function measureRenderedTexts (params, psdUrl, imageUrl, templateManifest, layers, deadline, readable) {
   const textLayers = layers.filter(layer => layer.type === 'text_layer')
   if (!textLayers.length) return { issues: [], unchecked: null }
   try {
@@ -578,13 +599,16 @@ async function measureRenderedTexts (params, psdUrl, imageUrl, templateManifest,
     })
     let unchecked = null
     const notRead = reason => { unchecked = `words not read: ${reason}`; return null }
+    // Texts that the OCR can read (see readableTexts)
+    const readableIds = await beforeDeadline(readable || Promise.resolve(null), deadline - OCR_DEADLINE_MARGIN_MS, () => null)
+    const isReadable = t => !readableIds || readableIds.has(t.edit.id)
     // Reads texts in their areas, before the deadline of the measure so that the other checks are returned
     const read = areas => beforeDeadline(
       image.then(visual => visual ? checkTexts(visual, areas, canvas) : notRead('the visual could not be downloaded'))
         .catch(error => notRead(error.message)),
       deadline - OCR_DEADLINE_MARGIN_MS, () => notRead('not finished within the time limit'))
 
-    const placed = texts.every(t => t.before)
+    const placed = texts.every(t => t.before && isReadable(t))
       ? await read(texts.map(t => ({ text: t.edit.text, rect: ocrRect(t.before, canvas, IN_PLACE_READ_MARGIN) })))
       : null
     if (placed && texts.every((t, i) => isInPlace(placed[i], t.before))) return { issues: [], unchecked: null }
@@ -619,7 +643,8 @@ async function measureRenderedTexts (params, psdUrl, imageUrl, templateManifest,
     })
 
     // The words of the texts without other problems, read again in their rendered areas
-    const toRead = measures.filter(m => m.area && !m.problems.length)
+    const toRead = measures.filter(m => m.area && !m.problems.length && isReadable(m))
+    const unreadable = measures.filter(m => !isReadable(m)).map(m => `"${m.original?.name || m.edit.id}"`)
     const checks = toRead.length ? await read(toRead.map(m => ({ text: m.edit.text, rect: ocrRect(m.area, canvas) }))) || [] : []
     toRead.forEach((m, i) => {
       const check = checks[i]
@@ -648,6 +673,10 @@ async function measureRenderedTexts (params, psdUrl, imageUrl, templateManifest,
         marks
       }
     })
+    if (unreadable.length) {
+      unchecked = [unchecked, `words of ${unreadable.join(', ')} not read: the OCR cannot read them in the template either (e.g. over a photo)`]
+        .filter(Boolean).join('; ')
+    }
     return { issues, unchecked }
   } catch (error) {
     console.warn(`Text measure failed: ${error.message}`)
@@ -889,8 +918,11 @@ async function createVariants (params, { templateUrl, formats, variants, deadlin
   const progress = fileNames.map(fileName => ({ fileName, pending: true }))
   const report = (index, variant) => { progress[index] = variant; onProgress?.([...progress]) }
   // The OCR engine loads during the renders
-  if (variants.some(variant => variant.layers.some(layer => layer.type === 'text_layer'))) warmUpOcr()
+  const hasTexts = variants.some(variant => variant.layers.some(layer => layer.type === 'text_layer'))
+  if (hasTexts) warmUpOcr()
   const templateManifest = beforeDeadline(getManifest(params, templateUrl), deadline, tooLate('Reading the template'))
+  // Read once for all variants, during the renders
+  const readable = hasTexts ? templateManifest.then(manifest => readableTexts(params, templateUrl, manifest), () => null) : null
   return Promise.all(variants.map(async (variant, index) => {
     try {
       const manifest = await templateManifest
@@ -902,7 +934,8 @@ async function createVariants (params, { templateUrl, formats, variants, deadlin
         formats: variant.formats ? [...new Set(variant.formats)] : formats,
         layers,
         fileName: fileNames[index],
-        onRendered: rendered => report(index, { ...rendered, checking: true })
+        onRendered: rendered => report(index, { ...rendered, checking: true }),
+        readable
       })
       report(index, result)
       return result
