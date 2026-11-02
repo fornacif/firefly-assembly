@@ -49,6 +49,27 @@ async function getPickerResult (id) {
   return { status: session.status, assets: session.assets || [] }
 }
 
+// Author repositories the token of a folder session may be sent to
+const AEM_AUTHOR_HOST = /^author-p\d+-e\d+\.adobeaemcloud\.com$/
+
+// Folder listing of /content/dam requested from the server with the token of the session, as the Destination Selector
+// does: the browser hides the status of the answers without CORS headers. For diagnosis: { status, type, body }.
+async function probeRepository (session, repositoryId) {
+  if (!session.folder || !AEM_AUTHOR_HOST.test(String(repositoryId))) return { error: 'Not an author repository' }
+  try {
+    const response = await fetch(`https://${repositoryId}/adobe/repository/content/dam?path=%2Fcontent%2Fdam&limit=1`, {
+      headers: { Authorization: `Bearer ${session.selectorConfig.imsToken}`, 'X-Api-Key': session.selectorConfig.apiKey },
+      redirect: 'manual'
+    })
+    const text = await response.text()
+    const result = { status: response.status, type: response.headers.get('content-type'), location: response.headers.get('location'), body: text.slice(0, 300) }
+    console.log(`AEM probe ${repositoryId}: HTTP ${result.status} ${result.type || ''} ${result.body.slice(0, 120).replace(/\s+/g, ' ')}`)
+    return result
+  } catch (error) {
+    return { error: error.message }
+  }
+}
+
 function json (statusCode, body) {
   return { statusCode, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }, body: JSON.stringify(body) }
 }
@@ -62,6 +83,7 @@ async function handlePickerRequest (body) {
   if (!session || session.status !== 'pending') return json(404, { error: 'This AEM selection has expired or is already done. Start it again from Claude.' })
 
   if (body.action === 'config') return json(200, { ...session.selectorConfig, multiple: session.multiple, folder: session.folder })
+  if (body.action === 'probe') return json(200, await probeRepository(session, body.repositoryId))
   if (body.action !== 'select' && body.action !== 'cancel') return json(400, { error: 'Unknown action' })
 
   const assets = body.action === 'select' && Array.isArray(body.assets)

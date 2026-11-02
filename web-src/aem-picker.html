@@ -76,6 +76,8 @@
     };
   }
 
+  var probed = {};
+
   function renderFolderSelector(config) {
     PureJSSelectors.renderDestinationSelector(document.getElementById('selector'), {
       repositoryId: config.repositoryId || undefined,
@@ -84,6 +86,19 @@
       apiKey: config.apiKey,
       // Folders are listed on the author tier
       aemTierType: ['author'],
+      // Diagnosis: the status of the folder listing of each author repository, requested from the server
+      filterRepoList: function (repositories) {
+        (repositories || []).forEach(function (repository) {
+          var id = repository && (repository.repo || repository['repo:repositoryId'] || repository.repositoryId || repository.id);
+          if (!id || probed[id]) return;
+          probed[id] = true;
+          call({ action: 'probe', repositoryId: id })
+            .then(function (result) { console.log('[AEM picker] ' + id + ': ' + JSON.stringify(result)); })
+            .catch(function (error) { console.log('[AEM picker] ' + id + ': ' + error.message); });
+        });
+        console.log('[AEM picker] repositories: ' + JSON.stringify(repositories).slice(0, 500));
+        return repositories;
+      },
       dialogSize: 'fullscreen',
       colorScheme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
       titleLabel: 'Send the variants to AEM',
