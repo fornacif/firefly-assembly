@@ -29,7 +29,7 @@ Each edited text of a generated variant is checked on the rendered visual, with 
 
 The card marks the whole text as estimated, and in red the part out of its bounds or over another element.
 
-Only the texts that the OCR reads whole in the preview of the template are checked: a text over a photo, which it cannot tell from the photo, is not (the card says so). The OCR reads the Latin script only (English model, accents and case ignored): texts in other scripts are not checked. Its model is downloaded once per container from the jsDelivr CDN; if it cannot be, the variants are shown without checks. The checks of a variant are given up after 60 seconds: it is shown, its texts not checked.
+Only the texts that the OCR reads whole in the preview of the template are checked: a text over a photo, which it cannot tell from the photo, is not (the card says so). The OCR reads the Latin script only, with the model of the language of the text: English, French, German, Spanish or Italian, given per variant by the assistant (`language`) or guessed from the text; the English model for the other languages. Accents and case are ignored in the comparison. Texts in other scripts are not checked. Areas whose lines are less than 40 px high in the visual are enlarged (up to 3 times) before they are read. The models are downloaded once per container from the jsDelivr CDN; if they cannot be, the variants are shown without checks. The checks of a variant are given up after 60 seconds: it is shown, its texts not checked.
 
 ## Best practices for templates
 

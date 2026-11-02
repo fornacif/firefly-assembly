@@ -2,7 +2,7 @@ const crypto = require('crypto')
 const { Readable } = require('stream')
 const { z } = require('zod')
 const filesLib = require('@adobe/aio-lib-files')
-const { checkTexts, warmUp: warmUpOcr } = require('./ocr.js')
+const { checkTexts, guessLanguage, warmUp: warmUpOcr } = require('./ocr.js')
 const { getStartViewHtml, getUploadViewHtml, getVariantImagesViewHtml, getLayersViewHtml, getTextsViewHtml, getVariantViewHtml } = require('./views.js')
 const stateLib = require('@adobe/aio-lib-state')
 const { getTokenFromRequest, getUnverifiedClaims, getUnverifiedClientId } = require('./validator.js')
@@ -436,7 +436,7 @@ const VARIANT_FORMATS = Object.keys(VARIANT_OUTPUTS)
 const PREVIEW_OUTPUT = { mediaType: 'image/jpeg', quality: 'high' }
 
 // Renders one variant in all the requested formats with a single Photoshop job, then checks its texts on the visual.
-async function createVariant (params, { templateUrl, templateManifest, formats, layers, fileName: baseName, deadline, onRendered, readable }) {
+async function createVariant (params, { templateUrl, templateManifest, formats, layers, language, fileName: baseName, deadline, onRendered, readable }) {
   const shownFormat = formats.find(format => VARIANT_OUTPUTS[format].displayable)
   const [files, preview] = await Promise.all([
     Promise.all(formats.map(format => createStorageUrls('variants', `${baseName}.${VARIANT_OUTPUTS[format].extension}`))),
@@ -465,7 +465,7 @@ async function createVariant (params, { templateUrl, templateManifest, formats, 
   const checkDeadline = Math.min(deadline, Date.now() + TEXT_CHECK_BUDGET_MS)
   return {
     ...rendered,
-    ...await beforeDeadline(measureRenderedTexts(imageUrl, templateManifest, layers, checkDeadline, readable)
+    ...await beforeDeadline(measureRenderedTexts(imageUrl, templateManifest, layers, language, checkDeadline, readable)
       .then(({ issues, unchecked }) => ({ textIssues: issues, ...(unchecked ? { textsUnchecked: unchecked } : {}) })),
     checkDeadline, () => ({ textIssues: null, textsUnchecked: 'not finished within the time limit' }))
   }
@@ -578,7 +578,11 @@ function readableTexts (params, templateUrl, manifest) {
     const canvas = boundsSize(manifest.document.bounds)
     const texts = getEditableLayers(manifest.layers).filter(layer => layer.type === 'text_layer' && layer.area)
     const preview = await downloadImage(await renderPreview(params, templateUrl))
-    const checks = await checkTexts(preview, texts.map(layer => ({ text: layer.text, rect: ocrRect(layer.area, canvas) })), canvas)
+    const checks = await checkTexts(preview, texts.map(layer => ({
+      text: layer.text,
+      rect: ocrRect(layer.area, canvas),
+      lineHeight: layer.area.height / linesOf(layer.text).length
+    })), canvas)
     const readable = new Set(texts.filter((layer, i) => checks[i] && !checks[i].missing.length && !checks[i].broken.length).map(layer => layer.id))
     console.log(`Template texts read in ${(Date.now() - started) / 1000}s: ${texts.map(layer => `"${layer.name}" ${readable.has(layer.id) ? 'readable' : 'not readable'}`).join(', ')}`)
     return readable
@@ -678,7 +682,7 @@ const quoteWords = words => `"${words.join(' ')}"`
 // its bounds (rounded down to 5%, not below MIN_FONT_SCALE, then marked as not enough), its area and the rectangles of its
 // overlaps. Best effort: returns { issues, unchecked }, issues being null when the texts could not be checked, and unchecked
 // what could not be checked and why.
-async function measureRenderedTexts (imageUrl, templateManifest, layers, deadline, readable) {
+async function measureRenderedTexts (imageUrl, templateManifest, layers, language, deadline, readable) {
   const textLayers = layers.filter(layer => layer.type === 'text_layer')
   if (!textLayers.length) return { issues: [], unchecked: null }
   try {
@@ -706,7 +710,9 @@ async function measureRenderedTexts (imageUrl, templateManifest, layers, deadlin
         image.then(visual => checkTexts(visual, measured.map(t => ({
           text: t.edit.text,
           rect: growthRect(t, t.bounds.rect, allTexts.filter(layer => layer.id !== t.edit.id).map(layerArea).filter(Boolean)),
-          near: { x: t.before.left + t.before.width / 2, y: t.before.top + t.before.height / 2 }
+          near: { x: t.before.left + t.before.width / 2, y: t.before.top + t.before.height / 2 },
+          language,
+          lineHeight: t.before.height / linesOf(t.original.text?.content).length * (t.edit.fontScale || 1)
         })), canvas)).catch(error => { notes.push(`words not read: ${error.message}`); return [] }),
         deadline - OCR_DEADLINE_MARGIN_MS, () => { notes.push('words not read: not finished within the time limit'); return [] })
       : []
@@ -1010,8 +1016,11 @@ async function createVariants (params, { templateUrl, formats, variants, deadlin
   const report = (index, variant) => { progress[index] = variant; onProgress?.([...progress]) }
   // The OCR engine loads during the renders
   const hasTexts = variants.some(variant => variant.layers.some(layer => layer.type === 'text_layer'))
+  // Language of the texts of each variant, as given or guessed from them
+  const languages = variants.map(variant => variant.language ||
+    guessLanguage(variant.layers.filter(layer => layer.type === 'text_layer').map(layer => layer.text).join('\n')))
   if (hasTexts) {
-    warmUpOcr()
+    warmUpOcr(languages)
     // Needed to read the texts of the template (readableTexts), rendered during the reading of the template
     renderPreview(params, templateUrl).catch(() => {})
   }
@@ -1038,6 +1047,7 @@ async function createVariants (params, { templateUrl, formats, variants, deadlin
         deadline,
         formats: variant.formats ? [...new Set(variant.formats)] : formats,
         layers,
+        language: languages[index],
         fileName: fileNames[index],
         onRendered: rendered => { mark(index, 'render'); report(index, { ...rendered, checking: true }) },
         readable
@@ -1366,6 +1376,7 @@ function registerTools (server, params) {
         variants: z.array(z.object({
           fileName: z.string().optional().describe('Output file name without extension, e.g. "variant-summer"'),
           layers: z.array(layerEditSchema).min(1).describe('Edits to apply, one per layer'),
+          language: z.string().optional().describe('Language of the texts of this variant, as an ISO 639-1 code (e.g. "fr"), used to check them'),
           formats: z.array(z.enum(VARIANT_FORMATS)).min(1).optional()
             .describe('Formats of this variant only, when they differ between variants (e.g. ["png", "psd"] for one of them); ' +
               'otherwise the formats of the call')
