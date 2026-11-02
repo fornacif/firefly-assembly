@@ -178,34 +178,50 @@ const MAX_CONCURRENT_JOBS = 10
 const limitJob = createLimiter(MAX_CONCURRENT_JOBS)
 
 // Polls check() until it returns a value (undefined: not finished), more often at first, as most jobs take a few seconds.
-async function pollJob (check, label) {
-  const deadline = Date.now() + POLL_TIMEOUT_MS
+async function pollJob (check, label, timeoutMs = POLL_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs
   for (let delay = POLL_FIRST_DELAY_MS; Date.now() < deadline; delay = Math.min(delay * 1.5, POLL_MAX_DELAY_MS)) {
     await wait(delay)
     const result = await check()
     if (result !== undefined) return result
   }
-  throw new Error(`${label} did not finish within ${POLL_TIMEOUT_MS / 1000}s`)
+  throw new Error(`${label} did not finish within ${Math.round(timeoutMs / 1000)}s`)
 }
 
-// Submits an asynchronous Photoshop job and polls it until it finishes; returns the job result.
-function runPhotoshopJob (params, path, body) {
-  return limitJob(async () => {
+// A job of the Photoshop API may stall (still pending minutes later, when it usually takes seconds): a job not finished after
+// this long is submitted again, and the first result kept
+const JOB_RESUBMIT_AFTER_MS = 60000
+
+// Submits an asynchronous Photoshop job and polls it until it finishes, within timeoutMs; returns the job result. A job longer
+// than JOB_RESUBMIT_AFTER_MS is submitted once more (the same outputs: either job writes them).
+function runPhotoshopJob (params, path, body, { timeoutMs = POLL_TIMEOUT_MS } = {}) {
+  const run = limit => limitJob(async () => {
     const { jobId } = await callPhotoshop(params, path, { method: 'POST', body: JSON.stringify(body) })
     if (!jobId) throw new Error(`Photoshop API ${path}: no job id in the answer`)
     return pollJob(async () => {
       const status = await callPhotoshop(params, `/status/${jobId}`)
       if (status.status === 'succeeded') return status.result
       if (status.status === 'failed') throw new Error(`Photoshop job failed: ${JSON.stringify(status.errorDetails)}`)
-    }, `Photoshop job ${jobId}`)
+    }, `Photoshop job ${jobId}`, limit)
   })
+  const first = run(timeoutMs)
+  if (timeoutMs <= JOB_RESUBMIT_AFTER_MS) return first
+  let settled = false
+  first.then(() => { settled = true }, () => { settled = true })
+  const second = wait(JOB_RESUBMIT_AFTER_MS).then(() => {
+    if (settled) return first
+    console.warn(`Photoshop ${path} not finished after ${JOB_RESUBMIT_AFTER_MS / 1000}s: submitted again`)
+    return run(timeoutMs - JOB_RESUBMIT_AFTER_MS)
+  })
+  // The first job to succeed; the error of the first one when both fail
+  return Promise.any([first, second]).catch(() => first)
 }
 
-async function generateManifest (params, url) {
+async function generateManifest (params, url, options) {
   const result = await runPhotoshopJob(params, '/generate-manifest', {
     image: { source: { url } },
     outputs: [{ destination: { embedded: 'json' }, mediaType: 'application/json' }]
-  })
+  }, options)
   const manifest = result?.outputs?.[0]?.destination?.content ?? result
   if (!manifest?.document?.bounds) throw new Error('The Photoshop API returned no document in the manifest of the file.')
   return manifest
@@ -451,11 +467,12 @@ async function createVariant (params, { templateUrl, templateManifest, formats, 
   }
   // Shown while its texts are checked
   onRendered?.(rendered)
+  const checkDeadline = Math.min(deadline, Date.now() + TEXT_CHECK_BUDGET_MS)
   return {
     ...rendered,
-    ...await beforeDeadline(measureRenderedTexts(params, psdUrl, imageUrl, templateManifest, layers, deadline, readable)
+    ...await beforeDeadline(measureRenderedTexts(params, psdUrl, imageUrl, templateManifest, layers, checkDeadline, readable)
       .then(({ issues, unchecked }) => ({ textIssues: issues, ...(unchecked ? { textsUnchecked: unchecked } : {}) })),
-    deadline, () => ({ textIssues: null, textsUnchecked: 'not finished within the time limit' }))
+    checkDeadline, () => ({ textIssues: null, textsUnchecked: 'not finished within the time limit' }))
   }
 }
 
@@ -470,6 +487,11 @@ const BACKGROUND_SHARE = 0.8
 
 // Smallest font scale proposed as a fix, as advised to the model: below it, a text is better shortened
 const MIN_FONT_SCALE = 0.8
+
+// The text checks are optional: their Photoshop job (reading the rendered PSD) is given up after this long, and the checks of a
+// variant after TEXT_CHECK_BUDGET_MS, so that a stalled job does not hold the variant (it is shown, its texts not checked)
+const CHECK_JOB_TIMEOUT_MS = 45000
+const TEXT_CHECK_BUDGET_MS = 60000
 
 // The OCR gives up this long before the deadline of the measure, so that the other checks are returned in time
 const OCR_DEADLINE_MARGIN_MS = 1000
@@ -622,7 +644,7 @@ async function measureRenderedTexts (params, psdUrl, imageUrl, templateManifest,
     unchecked = null
 
     if (toMeasure.length) console.log(`Text checks: rendered PSD read for ${toMeasure.map(t => `"${t.original?.name || t.edit.id}"`).join(', ')}`)
-    const rendered = toMeasure.length ? await generateManifest(params, psdUrl) : null
+    const rendered = toMeasure.length ? await generateManifest(params, psdUrl, { timeoutMs: CHECK_JOB_TIMEOUT_MS }) : null
     const measures = toMeasure.map(({ edit, original, before }) => {
       // By id, or by name in case the render gives new ids to the layers
       const renderedLayer = findLayer(rendered.layers, edit.id) ||
