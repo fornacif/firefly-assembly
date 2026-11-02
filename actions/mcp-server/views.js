@@ -1747,15 +1747,15 @@ function getVariantViewHtml (scriptUrl) {
       return {
         fileName: v.fileName,
         change: requestOf(v),
-        textIssues: (v.textIssues || []).map(function (issue) {
-          return { layerId: issue.layerId, layerName: issue.layerName, problems: issue.problems, fontScale: issue.fontScale, shorten: issue.shorten };
-        })
+        // To find the layer of each text named in the change; the fixes proposed are in the change only if the user kept them
+        texts: (v.textIssues || []).map(function (issue) { return { layerId: issue.layerId, layerName: issue.layerName, problems: issue.problems }; })
       };
     });
-    var context = 'Changes requested by the user in the create-variant widget (they may include proposed font size fixes, kept or '
-      + 'edited: textIssues gives the layer id of each text). Make each change, then call create-variant ONCE with these variants only, '
-      + 'with the same file names and the same edits as before except the changes (a font size of N% is fontScale N/100). If a change '
-      + 'is unclear, ask the user first.\\n' + JSON.stringify(changes);
+    var context = 'Changes requested by the user in the create-variant widget, one per variant. Make exactly the changes written in '
+      + '"change", nothing else: change the font size of a text only when the change asks for it ("Reduce the font size of X to N%" is '
+      + 'fontScale N/100); to change the words of a text (shorter, longer, other words), rewrite it as asked and keep its fontScale as '
+      + 'before. "texts" gives the layer id of the texts by name. Then call create-variant ONCE with these variants only, with the same '
+      + 'file names and the same edits as before except the changes. If a change is unclear, ask the user first.\\n' + JSON.stringify(changes);
     busy = true;
     updateFixActions();
     sendToModel(context, 'Please apply my changes to ' + changes.length + ' variant(s).', 'Changes sent.')
