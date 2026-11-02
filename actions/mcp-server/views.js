@@ -501,7 +501,36 @@ function getVariantImagesViewHtml (scriptUrl) {
   return page(scriptUrl, 'Variant Images', `
   /* With several layers, one group per variant; one card per slot (variant and smart object layer), as many per row as fit */
   .grid { display: flex; flex-direction: column; gap: var(--spectrum-spacing-300); }
-  .variant-name { margin: 0 0 var(--spectrum-spacing-100); font-size: var(--spectrum-font-size-100); font-weight: var(--spectrum-bold-font-weight); }
+  /* Group of a variant: a panel headed by its number and name, above the cards of its layers */
+  .variant-group {
+    padding: var(--spectrum-spacing-200) var(--spectrum-spacing-300) var(--spectrum-spacing-300);
+    background: var(--spectrum-background-layer-2-color);
+    border: 1px solid var(--spectrum-gray-200);
+    border-left: 4px solid var(--spectrum-accent-background-color-default);
+    border-radius: var(--spectrum-corner-radius-200);
+  }
+  .variant-name {
+    display: flex;
+    align-items: center;
+    gap: var(--spectrum-spacing-100);
+    margin: 0 0 var(--spectrum-spacing-200);
+    font-size: var(--spectrum-font-size-300);
+    font-weight: var(--spectrum-extra-bold-font-weight, 800);
+  }
+  .variant-number {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 24px;
+    height: 24px;
+    padding: 0 6px;
+    box-sizing: border-box;
+    border-radius: 12px;
+    background: var(--spectrum-accent-background-color-default);
+    color: #fff;
+    font-size: var(--spectrum-font-size-75);
+  }
+  .variant-group .slot-label { font-weight: normal; color: var(--spectrum-neutral-subdued-content-color-default); font-size: var(--spectrum-font-size-75); }
   .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: var(--spectrum-spacing-200); align-items: stretch; }
   .cards > * { min-width: 0; }
   .slot-label { width: 100%; font-weight: var(--spectrum-bold-font-weight); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -730,7 +759,8 @@ ${AEM_SCRIPT}
     if (layers.length > 1) {
       grid.innerHTML = variants.map(function (variant, v) {
         var start = v * layers.length;
-        return '<section><h3 class="variant-name">' + escapeHtml(variant) + '</h3><div class="cards">'
+        return '<section class="variant-group"><h3 class="variant-name"><span class="variant-number">' + (v + 1) + '</span>'
+          + escapeHtml(variant) + '</h3><div class="cards">'
           + slots.slice(start, start + layers.length).map(function (slot, l) { return cellHtml(slot, start + l); }).join('')
           + '</div></section>';
       }).join('');
