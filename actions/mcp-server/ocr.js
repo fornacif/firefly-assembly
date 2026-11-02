@@ -167,8 +167,8 @@ function textBox (expected, words, near) {
 // Checks texts in an image: [{ text, rect, near }] in pixels of the canvas (the image may be rendered at another size: the areas
 // are scaled to it, and the boxes back), near being the point where the text is expected (the center of rect by default)
 // → per text, null when it is not checked (not in Latin script), otherwise { missing: [words not found], share: of the letters,
-// broken: [{ word, fit }] and missingAt (see compareTexts), box: rectangle of the words of the text read, read: start of the text
-// read }.
+// broken: [{ word, fit }] and missingAt (see compareTexts), box: rectangle of the words of the text read, lines: [{ box, letters }]
+// of the lines read, read: start of the text read }.
 // Throws when the OCR is not available.
 async function checkTexts (image, texts, canvas) {
   const toCheck = texts.map(({ text }) => isLatin(text) && wordsOf(text).length > 0)
@@ -191,6 +191,11 @@ async function checkTexts (image, texts, canvas) {
       const read = words.reduce((lines, word, k) => lines + (k && word.line !== words[k - 1].line ? '\n' : k ? ' ' : '') + word.text, '')
       const { missing, broken, missingAt } = compareTexts(text, read)
       const center = near || { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+      // Each line read: its rectangle and its letters
+      const lines = [...new Set(words.map(word => word.line))].map(line => {
+        const lineWords = words.filter(word => word.line === line)
+        return { box: scaleRect(unionBox(lineWords.map(word => word.box)), 1 / sx, 1 / sy), letters: wordsOf(lineWords.map(word => word.text).join(' ')).join('').length }
+      })
       const box = textBox(text, words, { x: center.x * sx, y: center.y * sy })
       return {
         missing,
@@ -198,6 +203,7 @@ async function checkTexts (image, texts, canvas) {
         broken,
         missingAt,
         box: box && scaleRect(box, 1 / sx, 1 / sy),
+        lines,
         // What was read, on one line, to tell a misread from a missing text
         read: read.replace(/\s+/g, ' ').trim().slice(0, READ_EXCERPT_LENGTH)
       }

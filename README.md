@@ -19,13 +19,15 @@ Adobe I/O Runtime ends a web request after about 60 seconds, and Photoshop jobs 
 
 ## Text checks
 
-Each edited text of a generated variant is checked on the rendered visual, with an OCR (Tesseract, `actions/mcp-server/ocr.js`): the area of the text in the template is read, wider by the growth expected from the length of the new text (without going into the other texts on the same lines, which the OCR would mix with it). The OCR gives the words read and where they are. A text read whole inside its area of the template fits. Otherwise, one problem per cause:
+Each edited text of a generated variant is checked on the rendered visual, with an OCR (Tesseract, `actions/mcp-server/ocr.js`). The text must stay within its bounds: the smallest element it lies within in the template (a panel, a band), or the canvas. The OCR reads the area of the text in the template, wider by the growth expected from the length of the new text, within these bounds (a photo next to a panel is not read with the text) and not into the other texts on the same lines (the OCR would mix them). It gives the words read and where they are. A text read whole inside its area of the template fits. Otherwise, one problem per cause:
 
 | Check | How | Finds |
 |---|---|---|
-| Edges | Where the text would end, from the words read and the share of letters not read (missing at its end or start) | A text past an edge of the canvas |
-| Overlaps | Rectangle of the words read, against the other visible layers of the template, compared with the template | A text overlapping an element (logo, button, other text) more than in the template, or going out of an element it lies within in the template (a panel, a band). Backgrounds are not taken into account |
-| Words | Words read against the text sent | Words missing (cut, hidden, unreadable), or broken across two lines by a paragraph box too narrow for them; only when no edge or overlap explains them |
+| Bounds | Words missing at the end (or start) of the text, read up to a side of its bounds: the text goes on past it, by an estimate line by line from the letters not read | A text running out of its panel or band, or past an edge of the visual |
+| Overlaps | Rectangle of the words read, against the other visible layers of the template, compared with the template | A text overlapping an element (logo, button, other text) more than in the template. Backgrounds and the elements the text lies on in the template are by design and not reported |
+| Words | Words read against the text sent | Words missing (cut, hidden, low contrast), or broken across two lines by a paragraph box too narrow for them; only when no other cause explains them |
+
+The card marks the whole text as estimated, and in red the part out of its bounds or over another element.
 
 Only the texts that the OCR reads whole in the preview of the template are checked: a text over a photo, which it cannot tell from the photo, is not (the card says so). The OCR reads the Latin script only (English model, accents and case ignored): texts in other scripts are not checked. Its model is downloaded once per container from the jsDelivr CDN; if it cannot be, the variants are shown without checks. The checks of a variant are given up after 60 seconds: it is shown, its texts not checked.
 

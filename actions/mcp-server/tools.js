@@ -544,55 +544,24 @@ function intersection (a, b) {
 
 const surface = rect => rect ? rect.width * rect.height : 0
 
-// Part of a text area (box) out of an element it lay within in the template (textBefore inside it, give or take the margin of
-// the OCR): { overflow, factor, area } when it goes past by more than OCR_EDGE_PX, factor being the font scale at which it is
-// within again, area the part out of the element; null otherwise.
-function leftElement (box, textBefore, element) {
-  const margin = ocrMargin(textBefore, OCR_MARGIN)
-  const wasWithin = textBefore.left >= element.left - margin && textBefore.top >= element.top - margin &&
-    textBefore.left + textBefore.width <= element.left + element.width + margin &&
-    textBefore.top + textBefore.height <= element.top + element.height + margin
-  if (!wasWithin) return null
-  const right = box.left + box.width - (element.left + element.width)
-  const bottom = box.top + box.height - (element.top + element.height)
-  const left = element.left - box.left
-  const top = element.top - box.top
-  const overflow = Math.max(right, bottom, left, top)
-  if (overflow <= OCR_EDGE_PX) return null
-  // The share of the text within the element, along each axis it goes past
-  const factor = Math.min(
-    right > 0 || left > 0 ? (box.width - Math.max(right, 0) - Math.max(left, 0)) / box.width : 1,
-    bottom > 0 || top > 0 ? (box.height - Math.max(bottom, 0) - Math.max(top, 0)) / box.height : 1)
-  const area = right > 0 ? { left: element.left + element.width, top: box.top, width: right, height: box.height }
-    : left > 0 ? { left: box.left, top: box.top, width: left, height: box.height }
-      : bottom > 0 ? { left: box.left, top: element.top + element.height, width: box.width, height: bottom }
-        : { left: box.left, top: box.top, width: box.width, height: top }
-  return { overflow, factor, area }
-}
-
 // Elements of the template that a rendered text overlaps more than in the template: other texts, images, shapes, logos...
 // Layers are compared by their bounding boxes (a round logo counts as its box): only overlaps that appear or grow are
-// reported. A text that lies on an element in the template (a photo, a band, a panel) is there by design: it is only reported
-// when it goes out of it, if it lay within it. Returns [{ name, problem, factor, area }], factor being the font scale that
-// fixes it (for an overlap, the text shrinking along the axis that needs the least), and area the rectangle to mark.
+// reported, and not with the elements the text lies on in the template (a photo, a band, a panel), as they are by design (a
+// text going out of the element it lies within is found by outOfBounds). Returns [{ name, factor, area }], factor being the
+// font scale that removes the overlap, the text shrinking along the axis that needs the least, and area the common rectangle.
 function findOverlaps (textArea, textBefore, edited, templateManifest, canvas) {
   const canvasSurface = canvas.width * canvas.height
   return drawnLayers(templateManifest.layers).flatMap(other => {
     if (other.id === edited) return []
     const otherBefore = layerArea(other)
     if (!otherBefore || surface(otherBefore) > canvasSurface * BACKGROUND_SHARE) return []
-    const name = other.name || String(other.id)
     const after = intersection(textArea, otherBefore)
     const before = textBefore ? surface(intersection(textBefore, otherBefore)) : 0
-    if (textBefore && before >= surface(textBefore) * DESIGNED_OVERLAP_SHARE) {
-      const out = leftElement(textArea, textBefore, otherBefore)
-      return out ? [{ name, problem: `goes about ${Math.round(out.overflow)} px out of "${name}", which it lies within in the template`, factor: out.factor, area: out.area }] : []
-    }
+    if (textBefore && before >= surface(textBefore) * DESIGNED_OVERLAP_SHARE) return []
     const grown = surface(after) - before
     if (!after || grown <= surface(textArea) * OVERLAP_TOLERANCE) return []
     return [{
-      name,
-      problem: `now overlaps "${name}"`,
+      name: other.name || String(other.id),
       factor: Math.max((textArea.width - after.width) / textArea.width, (textArea.height - after.height) / textArea.height),
       area: after
     }]
@@ -628,18 +597,32 @@ function isInside (box, before) {
 
 const longestLine = text => Math.max(1, ...linesOf(text).map(line => line.trim().length))
 
+// Bounds a text must stay within: the smallest element of the template it lies within (a panel, a band), backgrounds left
+// out, or the canvas. Returns { name, rect }, name null for the canvas.
+function textBounds (before, templateManifest, canvas) {
+  const margin = ocrMargin(before, OCR_MARGIN)
+  const within = drawnLayers(templateManifest.layers)
+    .filter(layer => layer.type !== 'text_layer')
+    .map(layer => ({ name: layer.name, rect: layerArea(layer) }))
+    .filter(({ rect }) => rect && surface(rect) <= canvas.width * canvas.height * BACKGROUND_SHARE &&
+      before.left >= rect.left - margin && before.top >= rect.top - margin &&
+      before.left + before.width <= rect.left + rect.width + margin && before.top + before.height <= rect.top + rect.height + margin)
+    .sort((a, b) => surface(a.rect) - surface(b.rect))
+  return within[0] || { name: null, rect: { left: 0, top: 0, width: canvas.width, height: canvas.height } }
+}
+
 // Area where a text is read on the visual: its area in the template with a margin, wider by the growth expected from its
-// length and font scale, inside the canvas, and not into the other texts on the same lines (the OCR mixes the lines of texts
-// side by side).
-function growthRect (t, canvas, otherTexts) {
+// length and font scale, within its bounds (textBounds: what is out of them is not read, so that a photo next to a panel is
+// not read with the text), and not into the other texts on the same lines (the OCR mixes the lines of texts side by side).
+function growthRect (t, bounds, otherTexts) {
   const { before } = t
   const ratio = longestLine(t.edit.text) / longestLine(t.original?.text?.content) * (t.edit.fontScale || 1)
   const grow = before.width * Math.max(GROWTH_READ_MIN, ratio - 1 + GROWTH_READ_MIN)
   const margin = ocrMargin(before, IN_PLACE_READ_MARGIN)
-  const top = Math.max(0, before.top - margin)
-  const bottom = Math.min(canvas.height, before.top + before.height + margin)
-  let left = Math.max(0, before.left - grow)
-  let right = Math.min(canvas.width, before.left + before.width + grow)
+  const top = Math.max(bounds.top, before.top - margin)
+  const bottom = Math.min(bounds.top + bounds.height, before.top + before.height + margin)
+  let left = Math.max(bounds.left, before.left - grow)
+  let right = Math.min(bounds.left + bounds.width, before.left + before.width + grow)
   otherTexts.forEach(other => {
     if (other.top >= bottom || other.top + other.height <= top) return
     if (other.left >= before.left + before.width) right = Math.min(right, other.left)
@@ -648,29 +631,47 @@ function growthRect (t, canvas, otherTexts) {
   return { left, top, width: right - left, height: bottom - top }
 }
 
-// Where a text cut at an edge of the canvas would end, from its words read (box) and the share of its letters not read: a text
-// on one line missing its last words goes on to the right, its first words to the left; on several lines, missing its last
-// words, below. Returns { edge, overflow, factor } when it goes past that edge by more than OCR_EDGE_PX, factor being the font
-// scale at which it fits; null otherwise.
-function pastEdge (box, missingAt, share, lineCount, canvas) {
+// Where a text cut by its bounds (textBounds) would end, from its words read and the letters not read: words missing with the
+// text read up to a side of its bounds (a word cut there is not read: within CUT_WORD_LINES line heights) go on past it,
+// missing at the end of the text for the right side and the bottom, at its start for the left side. On several lines, each
+// line read is as much wider as letters of its line of the text (lines) are not read. Returns { side, overflow, factor, area }
+// when it goes past by more than OCR_EDGE_PX, factor being the font scale at which it fits, area the whole text as estimated;
+// null otherwise.
+function outOfBounds (check, text, bounds) {
+  const { box, missingAt, share } = check
   const shown = 1 - share
-  if (!shown || (missingAt !== 'end' && missingAt !== 'start')) return null
-  if (lineCount > 1) {
-    if (missingAt !== 'end') return null
-    // The lines not read, of about the height of the lines read
-    const height = box.height / shown
-    const overflow = box.top + height - canvas.height
-    return overflow > OCR_EDGE_PX ? { edge: 'bottom', overflow, factor: (canvas.height - box.top) / height } : null
-  }
-  const width = box.width / shown
-  const overflow = missingAt === 'end' ? box.left + width - canvas.width : width - box.left - box.width
-  const room = missingAt === 'end' ? canvas.width - box.left : box.left + box.width
-  return overflow > OCR_EDGE_PX ? { edge: missingAt === 'end' ? 'right' : 'left', overflow, factor: room / width } : null
+  if (!box || !shown || !missingAt) return null
+  const textLines = linesOf(text)
+  const near = Math.max(OCR_EDGE_PX, box.height / textLines.length * CUT_WORD_LINES)
+  const right = bounds.left + bounds.width
+  const bottom = bounds.top + bounds.height
+  const letters = line => line.normalize('NFKD').replace(/[^\p{L}\p{N}]/gu, '').length
+  // The right end of the text: line by line when its lines are read, otherwise from the share of its letters read
+  const end = textLines.length > 1 && check.lines.length === textLines.length
+    ? Math.max(...check.lines.map((line, i) => line.box.left + line.box.width * Math.max(1, letters(textLines[i]) / Math.max(1, line.letters))))
+    : box.left + box.width / shown
+  const width = end - box.left
+  const height = textLines.length > 1 ? box.height / shown : box.height
+  const sides = [
+    missingAt !== 'start' && box.left + box.width >= right - near &&
+      { side: 'right', overflow: end - right, factor: (right - box.left) / width, area: { ...box, width } },
+    missingAt !== 'end' && box.left <= bounds.left + near &&
+      { side: 'left', overflow: box.width / shown - (box.left + box.width - bounds.left), factor: (box.left + box.width - bounds.left) / (box.width / shown), area: { ...box, left: box.left + box.width - box.width / shown, width: box.width / shown } },
+    missingAt === 'end' && textLines.length > 1 && check.lines.length < textLines.length && box.top + box.height >= bottom - near &&
+      { side: 'bottom', overflow: box.top + height - bottom, factor: (bottom - box.top) / height, area: { ...box, height } }
+  ]
+  return sides.find(side => side && side.overflow > OCR_EDGE_PX) || null
 }
+
+// A word cut by a side of the bounds of a text is not read: the words read end up to about this many line heights from it
+const CUT_WORD_LINES = 3
+
+// Missing words, as shown to the user: "sellers", or "best sellers"
+const quoteWords = words => `"${words.join(' ')}"`
 
 // Problems of the edited texts of a rendered variant, one check per cause, on the visual. The OCR reads it around the area of
 // each text in the template (growthRect), which gives the words read and where they are: a text read whole in its area fits;
-// otherwise it goes past an edge of the canvas (pastEdge), overlaps other elements more than in the template (their areas in
+// otherwise it goes out of its bounds (outOfBounds: the element it lies within, or the canvas), overlaps other elements more than in the template (their areas in
 // the template), or has words broken across lines or missing (cut, hidden or unreadable; only when no edge or overlap explains
 // it). A text that only grows is not a problem: what it may cause is checked. The texts that the OCR cannot read in the
 // template (see readableTexts) are not checked. One entry per text with problems, with the font scale that brings it back in
@@ -694,7 +695,7 @@ async function measureRenderedTexts (imageUrl, templateManifest, layers, deadlin
     const readableIds = await beforeDeadline(readable || Promise.resolve(null), deadline - OCR_DEADLINE_MARGIN_MS, () => null)
     const isReadable = t => t.before && (!readableIds || readableIds.has(t.edit.id))
     const allTexts = drawnLayers(templateManifest.layers).filter(layer => layer.type === 'text_layer')
-    const measured = texts.filter(isReadable)
+    const measured = texts.filter(isReadable).map(t => ({ ...t, bounds: textBounds(t.before, templateManifest, canvas) }))
     const unreadable = texts.filter(t => !isReadable(t)).map(t => `"${t.original?.name || t.edit.id}"`)
     if (unreadable.length) {
       notes.push(`${unreadable.join(', ')} not checked: the OCR cannot read ${unreadable.length > 1 ? 'them' : 'it'} in the template either (e.g. over a photo)`)
@@ -704,7 +705,7 @@ async function measureRenderedTexts (imageUrl, templateManifest, layers, deadlin
       ? await beforeDeadline(
         image.then(visual => checkTexts(visual, measured.map(t => ({
           text: t.edit.text,
-          rect: growthRect(t, canvas, allTexts.filter(layer => layer.id !== t.edit.id).map(layerArea).filter(Boolean)),
+          rect: growthRect(t, t.bounds.rect, allTexts.filter(layer => layer.id !== t.edit.id).map(layerArea).filter(Boolean)),
           near: { x: t.before.left + t.before.width / 2, y: t.before.top + t.before.height / 2 }
         })), canvas)).catch(error => { notes.push(`words not read: ${error.message}`); return [] }),
         deadline - OCR_DEADLINE_MARGIN_MS, () => { notes.push('words not read: not finished within the time limit'); return [] })
@@ -718,15 +719,23 @@ async function measureRenderedTexts (imageUrl, templateManifest, layers, deadlin
       const factors = []
       // Rectangles of the overlaps in the canvas, for the view
       const marks = []
-      const box = check.box
+      let box = check.box
       if (box) {
-        const past = check.missing.length && pastEdge(box, check.missingAt, check.share, linesOf(t.edit.text).length, canvas)
-        if (past) {
-          problems.push(`goes about ${Math.round(past.overflow)} px past the ${past.edge} edge of the canvas ("${check.missing.join(' ')}" not visible)`)
-          factors.push(past.factor)
+        const out = check.missing.length && outOfBounds(check, t.edit.text, t.bounds.rect)
+        if (out) {
+          const where = t.bounds.name ? `out of "${t.bounds.name}" on the ${out.side}` : `past the ${out.side} edge of the visual`
+          problems.push(`runs about ${Math.round(out.overflow)} px ${where}: ${quoteWords(check.missing)} cut`)
+          factors.push(out.factor)
+          // The whole text as estimated, and the part out of its bounds
+          box = intersection(out.area, { left: 0, top: 0, width: canvas.width, height: canvas.height }) || box
+          const outside = { ...box }
+          if (out.side === 'right') { outside.left = t.bounds.rect.left + t.bounds.rect.width; outside.width = box.left + box.width - outside.left }
+          if (out.side === 'left') outside.width = t.bounds.rect.left - box.left
+          if (out.side === 'bottom') { outside.top = t.bounds.rect.top + t.bounds.rect.height; outside.height = box.top + box.height - outside.top }
+          if (outside.width > 0 && outside.height > 0) marks.push(outside)
         }
         findOverlaps(box, t.before, t.edit.id, templateManifest, canvas).forEach(overlap => {
-          problems.push(overlap.problem)
+          problems.push(`now overlaps "${overlap.name}"`)
           factors.push(overlap.factor)
           marks.push(overlap.area)
         })
@@ -734,11 +743,14 @@ async function measureRenderedTexts (imageUrl, templateManifest, layers, deadlin
       // Words broken or missing, when no edge or overlap explains them
       if (!problems.length) {
         check.broken.forEach(({ word, fit }) => {
-          problems.push(`breaks "${word}" across two lines (its box is too narrow for this word)`)
+          problems.push(`breaks "${word}" across two lines: its text box is too narrow for this word`)
           factors.push(fit)
         })
         if (check.missing.length) {
-          problems.push(`words not found in the visual: "${check.missing.join(' ')}" (cut, hidden or hard to read; read: "${check.read}")`)
+          console.log(`Text check: "${t.original?.name}" read "${check.read}"`)
+          problems.push(check.share === 1
+            ? 'cannot be read in the visual (cut, hidden or low contrast)'
+            : `${quoteWords(check.missing)} cannot be read in the visual (cut, hidden or low contrast)`)
           // A smaller text shows the words cut by its box
           factors.push(Math.sqrt(1 - check.share))
         }
