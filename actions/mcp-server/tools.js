@@ -354,21 +354,6 @@ const aemHost = (tier, environment) => `${tier}-${environment}.adobeaemcloud.com
 // API key sent to AEM with the token of the user: AEM_API_KEY, or the client of the token
 const aemApiKey = (params, token) => params.AEM_API_KEY || getUnverifiedClientId(token)
 
-// Scopes asked for AEM in the sign-in with AEM_CLIENT_ID (AEM_IMS_SCOPES)
-const AEM_IMS_SCOPES = 'AdobeID,openid,aem.folders,aem.assets.author'
-
-// Sign-in of the user for AEM author with AEM_CLIENT_ID, a client allowed in the AEM environments; null when not set.
-function getAemLogin (params) {
-  const clientId = String(params.AEM_CLIENT_ID || '').trim()
-  if (!clientId) return null
-  return {
-    imsHost: (params.IMS_HOST && String(params.IMS_HOST).trim()) || 'https://ims-na1.adobelogin.com',
-    clientId,
-    scope: String(params.AEM_IMS_SCOPES || AEM_IMS_SCOPES).trim(),
-    redirectUri: `${getStaticOrigin(params)}/${AEM_PICKER_PAGE}`
-  }
-}
-
 // AEM Assets repositories browsed with the Asset Selector; null when AEM_REPOSITORY_ID is not set.
 // AEM_REPOSITORY_ID: one repository (shown directly in the selector), several comma-separated, or '*' for any AEM as a
 // Cloud Service repository of the user (both chosen in the selector). AEM_IMS_ORG: empty to let the user pick the
@@ -1362,8 +1347,7 @@ const AEM_UPLOAD_CONCURRENCY = 3
 async function sendGenerationToAem (params, userId, { variantsTaskId, repositoryId, path, token }) {
   const folderUrl = getAemFolderUrl(requireAemConfig(params), { repositoryId, path })
   const files = await generationFiles(userId, variantsTaskId)
-  // The token is of the sign-in with AEM_CLIENT_ID, its API key
-  const headers = { Authorization: `Bearer ${token}`, 'X-Api-Key': getUnverifiedClientId(token) }
+  const headers = { Authorization: `Bearer ${token}`, 'X-Api-Key': aemApiKey(params, token) }
   const sent = []
   const failed = []
   const queue = [...files]
@@ -1644,7 +1628,7 @@ function registerTools (server, params) {
       title: 'Send to AEM',
       description: 'Used by the create-variant widget: starts a task (see get-task) that uploads all the files of a generation to ' +
         'the AEM folder chosen in the Destination Selector of a picker session (create-aem-picker-session with folder), as ' +
-        'assets or new versions, with the token of the sign-in of that session.',
+        'assets or new versions, with the token of the user.',
       inputSchema: {
         taskId: z.string().describe('Task id of the generation, returned by create-variant'),
         sessionId: z.string().describe('Id of the picker session where the folder was chosen')
@@ -1659,7 +1643,7 @@ function registerTools (server, params) {
         const folder = await takeAemFolder(sessionId, currentUserId(params))
         if (!folder) throw new Error('The AEM folder choice has expired, choose the folder again.')
         const folderUrl = getAemFolderUrl(aem, folder)
-        // The task uploads with the token of the sign-in for AEM, passed in its signed invocation
+        // The task uploads with the token of the user, passed in its signed invocation
         const args = { variantsTaskId: taskId, repositoryId: folder.repositoryId, path: folderUrl.pathname, token: folder.token }
         return jsonResult({ taskId: await startTask(params, 'aem', args) })
       } catch (error) {
@@ -1844,9 +1828,8 @@ function registerTools (server, params) {
       _meta: { ui: { visibility: ['app'] } }
     },
     async () => {
-      const enabled = Boolean(getAemConfig(params))
-      // Send to AEM needs a sign-in with a client allowed on AEM author
-      return jsonResult({ enabled, send: enabled && Boolean(getAemLogin(params)) })
+      const config = { enabled: Boolean(getAemConfig(params)) }
+      return jsonResult(config)
     }
   )
 
@@ -1865,8 +1848,6 @@ function registerTools (server, params) {
     async ({ multiple, folder }) => {
       try {
         const aem = requireAemConfig(params)
-        const login = folder ? getAemLogin(params) : null
-        if (folder && !login) throw new Error('Send to AEM is not configured on this server (AEM_CLIENT_ID).')
         const token = getTokenFromRequest(params)
         // The selector needs AEM entitlements in the token: log its client and scopes (never the token) for diagnosis
         try {
@@ -1878,10 +1859,9 @@ function registerTools (server, params) {
           repositoryId: folder && aem.pinnedRepository ? aemHost('author', aemEnvironment(aem.pinnedRepository)) : aem.pinnedRepository,
           aemTierType: folder ? 'author' : aem.tier,
           imsOrg: aem.imsOrg,
-          // A folder session gets the token of the sign-in on the page
-          apiKey: folder ? login.clientId : aemApiKey(params, token),
-          imsToken: folder ? null : token
-        }, { multiple, folder, login, userId: currentUserId(params) })
+          apiKey: aemApiKey(params, token),
+          imsToken: token
+        }, { multiple, folder, userId: currentUserId(params) })
         const pickerUrl = `${getStaticOrigin(params)}/${AEM_PICKER_PAGE}#session=${sessionId}&api=${encodeURIComponent(getPickerApiPath())}`
         const session = { sessionId, pickerUrl }
         return { content: [{ type: 'text', text: 'AEM picker session created.' }], structuredContent: session }

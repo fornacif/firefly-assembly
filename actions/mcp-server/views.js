@@ -1763,7 +1763,7 @@ ${AEM_SCRIPT}
     var files = generated().reduce(function (total, i) { return total + filesOf(variants[i]).length; }, 0);
     downloadAllBtn.hidden = !generationTaskId || files < 2;
     downloadAllBtn.disabled = generating || zipping;
-    sendAemBtn.hidden = !generationTaskId || !aemConfig || !aemConfig.send || !files;
+    sendAemBtn.hidden = !generationTaskId || !aemConfig || !files;
     sendAemBtn.disabled = generating || sendingToAem;
   }
 
