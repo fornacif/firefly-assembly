@@ -94,8 +94,11 @@ function isClose (word, read) {
 }
 
 const MAX_BROKEN_FIT = 0.95
-// A word read is at most this many times as wide as its letters at the median width of the letters read
+// A word read is at most this many times as wide as its letters at the median width of the letters read; a word misread (or
+// read joined with others) as its letters with a punctuation sign, PUNCTUATION_LETTERS wide
 const WORD_WIDTH_TOLERANCE = 1.4
+const MISREAD_WIDTH_TOLERANCE = 1.1
+const PUNCTUATION_LETTERS = 0.5
 const READ_EXCERPT_LENGTH = 60
 
 // Compares the expected text with the text read, line by line. Each word read is used once ("new" twice in the text needs it
@@ -208,21 +211,29 @@ function unionBox (boxes) {
 function textBox (expected, words, near) {
   const distance = box => Math.hypot(box.left + box.width / 2 - near.x, box.top + box.height / 2 - near.y)
   const candidates = words.map(word => ({ ...word, tokens: wordsOf(word.text) }))
-  const used = new Set()
+  // Word read → the expected word it is
+  const used = new Map()
   wordsOf(expected).forEach(word => {
     // The word, a piece of it (broken across lines), words read joined with it (at least 3 letters, to be specific), or the word
     // with a letter more (e.g. "da," read "day": a punctuation sign read as a letter)
     const matches = candidates.filter(c => !used.has(c) && c.tokens.some(token => isClose(word, token) ||
       (token.length > 1 && word.includes(token)) || ((word.length > 2 || token.length === word.length + 1) && token.includes(word))))
     matches.sort((a, b) => distance(a.box) - distance(b.box))
-    if (matches[0]) used.add(matches[0])
+    if (matches[0]) used.set(matches[0], word)
   })
   // A word read with what is next to it (e.g. "da," read "day" with the photo behind its comma) gets a box wider than its
-  // letters: each box is cut to its letters at the median width of the letters of the words read, on the side of the text
-  const letterWidths = [...used].map(c => c.box.width / Math.max(1, c.tokens.join('').length)).sort((a, b) => a - b)
+  // letters: each box is cut to its letters at the median width of the letters of the words read as they are, on the side of
+  // the text; a word misread to the letters of the word expected, with a punctuation sign
+  const isRead = (c, word) => c.tokens.length === 1 && isClose(word, c.tokens[0])
+  const letterWidths = [...used].filter(([c, word]) => isRead(c, word))
+    .map(([c]) => c.box.width / Math.max(1, c.tokens[0].length)).sort((a, b) => a - b)
+  if (!letterWidths.length) return unionBox([...used.keys()].map(c => c.box))
   const letterWidth = letterWidths[Math.floor(letterWidths.length / 2)]
-  return unionBox([...used].map(({ box, tokens }) => {
-    const width = tokens.join('').length * letterWidth * WORD_WIDTH_TOLERANCE
+  return unionBox([...used].map(([c, word]) => {
+    const { box } = c
+    const width = isRead(c, word)
+      ? c.tokens[0].length * letterWidth * WORD_WIDTH_TOLERANCE
+      : (Math.min(word.length, c.tokens.join('').length) + PUNCTUATION_LETTERS) * letterWidth * MISREAD_WIDTH_TOLERANCE
     if (!(box.width > width)) return box
     return box.left + box.width / 2 >= near.x ? { ...box, width } : { ...box, left: box.left + box.width - width, width }
   }))
