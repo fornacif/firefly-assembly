@@ -558,11 +558,14 @@ function findOverlaps (textArea, textBefore, edited, templateManifest, rendered,
 const readableCache = createCache(20)
 function readableTexts (params, templateUrl, manifest) {
   return readableCache(templateUrl, async () => {
+    const started = Date.now()
     const canvas = boundsSize(manifest.document.bounds)
     const texts = getEditableLayers(manifest.layers).filter(layer => layer.type === 'text_layer' && layer.area)
     const preview = await downloadImage(await renderPreview(params, templateUrl))
     const checks = await checkTexts(preview, texts.map(layer => ({ text: layer.text, rect: ocrRect(layer.area, canvas) })), canvas)
-    return new Set(texts.filter((layer, i) => checks[i] && !checks[i].missing.length && !checks[i].broken.length).map(layer => layer.id))
+    const readable = new Set(texts.filter((layer, i) => checks[i] && !checks[i].missing.length && !checks[i].broken.length).map(layer => layer.id))
+    console.log(`Template texts read in ${(Date.now() - started) / 1000}s: ${texts.map(layer => `"${layer.name}" ${readable.has(layer.id) ? 'readable' : 'not readable'}`).join(', ')}`)
+    return readable
   }).catch(error => {
     console.warn(`Template texts not read: ${error.message}`)
     return null
@@ -618,6 +621,7 @@ async function measureRenderedTexts (params, psdUrl, imageUrl, templateManifest,
     // A failure of this first read is reported by the second one, if any text is read again
     unchecked = null
 
+    if (toMeasure.length) console.log(`Text checks: rendered PSD read for ${toMeasure.map(t => `"${t.original?.name || t.edit.id}"`).join(', ')}`)
     const rendered = toMeasure.length ? await generateManifest(params, psdUrl) : null
     const measures = toMeasure.map(({ edit, original, before }) => {
       // By id, or by name in case the render gives new ids to the layers
@@ -927,10 +931,16 @@ async function createVariants (params, { templateUrl, formats, variants, deadlin
   const templateManifest = beforeDeadline(getManifest(params, templateUrl), deadline, tooLate('Reading the template'))
   // Read once for all variants, during the renders
   const readable = hasTexts ? templateManifest.then(manifest => readableTexts(params, templateUrl, manifest), () => null) : null
-  return Promise.all(variants.map(async (variant, index) => {
+  // Time of each step of each variant (seconds since the start), logged when all are done
+  const started = Date.now()
+  const timings = fileNames.map(() => ({}))
+  const mark = (index, step) => { timings[index][step] = Math.round((Date.now() - started) / 100) / 10 }
+  const results = await Promise.all(variants.map(async (variant, index) => {
     try {
       const manifest = await templateManifest
+      mark(index, 'template')
       const layers = await beforeDeadline(prepareLayers(params, manifest, variant.layers), deadline, tooLate('Cropping the images'))
+      mark(index, 'crops')
       const result = await createVariant(params, {
         templateUrl,
         templateManifest: manifest,
@@ -938,17 +948,21 @@ async function createVariants (params, { templateUrl, formats, variants, deadlin
         formats: variant.formats ? [...new Set(variant.formats)] : formats,
         layers,
         fileName: fileNames[index],
-        onRendered: rendered => report(index, { ...rendered, checking: true }),
+        onRendered: rendered => { mark(index, 'render'); report(index, { ...rendered, checking: true }) },
         readable
       })
+      mark(index, 'checks')
       report(index, result)
       return result
     } catch (error) {
+      mark(index, 'failed')
       const failed = { fileName: fileNames[index], error: error.message }
       report(index, failed)
       return failed
     }
   }))
+  console.log(`Variants, seconds since the start: ${fileNames.map((name, i) => `${name} ${JSON.stringify(timings[i])}`).join('; ')}`)
+  return results
 }
 
 // Smart object layers that get the same image in several variants: usually a mix-up in the image mapping.
@@ -1109,8 +1123,10 @@ async function runTask (params) {
   const task = JSON.parse(params.__task)
   if (!TASKS[task.type]) return { error: 'Unknown task type' }
   const update = taskWriter(task)
+  const started = Date.now()
   try {
-    const result = await TASKS[task.type](params, task, update, Date.now() + TASK_BUDGET_MS)
+    const result = await TASKS[task.type](params, task, update, started + TASK_BUDGET_MS)
+    console.log(`Task ${task.type} ${task.id} done in ${(Date.now() - started) / 1000}s`)
     await update({ status: 'done', result, partial: null })
   } catch (error) {
     console.warn(`Task ${task.type} failed: ${error.message}`)
