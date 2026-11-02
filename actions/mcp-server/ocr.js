@@ -64,17 +64,20 @@ const READ_EXCERPT_LENGTH = 60
 // Compares the expected text with the text read, line by line. Each word read is used once ("new" twice in the text needs it
 // twice in the visual). A word not read whole but as the end of a line and the start of the next is broken across lines: a
 // paragraph box too narrow for it at this font size, where Photoshop breaks the word without hyphen. A longer word found in
-// the text read joined, on one line, is read split in two by the OCR. Returns { missing: [words], broken: [{ word, fit }] }, fit being about
-// the font scale at which the word fits on one line: the letters of its first line, which it fills, over those of the word.
+// the text read joined, on one line, is read split in two by the OCR. Returns { missing: [words], broken: [{ word, fit }],
+// missingAt: 'end' | 'start' | 'middle' | null }, fit being about the font scale at which the word fits on one line: the letters of
+// its first line, which it fills, over those of the word.
 function compareTexts (expected, read) {
   const lines = read.split('\n').map(wordsOf).filter(line => line.length)
   const lineLength = words => words.join(' ').length
   const remaining = lines.flat()
   const readJoined = remaining.join('')
   const missing = []
+  const missingIndexes = []
   const broken = []
   const use = index => { remaining.splice(index, 1); return true }
-  wordsOf(expected).forEach(word => {
+  const expectedWords = wordsOf(expected)
+  expectedWords.forEach((word, wordIndex) => {
     // Read exactly, then broken across lines, then read with an error (a broken word is also one letter off on its first line)
     const exact = remaining.indexOf(word)
     if (exact >= 0 && use(exact)) return
@@ -87,9 +90,16 @@ function compareTexts (expected, read) {
     }
     const close = remaining.findIndex(r => isClose(word, r))
     if (close >= 0 && use(close)) return
-    if (!(word.length > 3 && readJoined.includes(word))) missing.push(word)
+    if (!(word.length > 3 && readJoined.includes(word))) {
+      missing.push(word)
+      missingIndexes.push(wordIndex)
+    }
   })
-  return { missing, broken }
+  // Where the missing words are: the last ones (a text cut at its end), the first ones, or elsewhere
+  const missingAt = !missing.length ? null
+    : missingIndexes.every((index, k) => index === expectedWords.length - missing.length + k) ? 'end'
+      : missingIndexes.every((index, k) => index === k) ? 'start' : 'middle'
+  return { missing, broken, missingAt }
 }
 
 // Size in pixels of a PNG or JPEG image, from its header; null for another format.
@@ -110,25 +120,48 @@ function imageSize (image) {
 
 const scaleRect = (rect, sx, sy) => ({ left: rect.left * sx, top: rect.top * sy, width: rect.width * sx, height: rect.height * sy })
 
-// Rectangle around the words read in the last recognition (from its TSV output, in image pixels), null if none.
-function wordsBox (api) {
-  const boxes = api.GetTSVText(0).split('\n')
+// Words of the last recognition, from its TSV output: [{ text, line, box: { left, top, width, height } }] in image pixels.
+function readWords (api) {
+  return api.GetTSVText(0).split('\n')
     .map(row => row.split('\t'))
     // Word rows: level 5, with a text
     .filter(fields => fields[0] === '5' && fields[11]?.trim())
-    .map(fields => fields.slice(6, 10).map(Number))
+    .map(fields => {
+      const [left, top, width, height] = fields.slice(6, 10).map(Number)
+      // Block, paragraph and line numbers
+      return { text: fields[11], line: fields.slice(2, 5).join('.'), box: { left, top, width, height } }
+    })
+}
+
+// Rectangle around boxes, null if none.
+function unionBox (boxes) {
   if (!boxes.length) return null
-  const left = Math.min(...boxes.map(([l]) => l))
-  const top = Math.min(...boxes.map(([, t]) => t))
-  const right = Math.max(...boxes.map(([l, , w]) => l + w))
-  const bottom = Math.max(...boxes.map(([, t, , h]) => t + h))
+  const left = Math.min(...boxes.map(b => b.left))
+  const top = Math.min(...boxes.map(b => b.top))
+  const right = Math.max(...boxes.map(b => b.left + b.width))
+  const bottom = Math.max(...boxes.map(b => b.top + b.height))
   return { left, top, width: right - left, height: bottom - top }
 }
 
-// Checks texts in an image: [{ text, rect: { left, top, width, height } }] (in pixels of the canvas: the image may be rendered at
-// another size, the areas are scaled to it and the boxes back) → per text, null when it is not
-// checked (not in Latin script), otherwise { missing: [words not found], share: of the letters,
-// broken: [{ word, fit }] (see compareTexts), box: rectangle of the words read in the area, read: start of the text read }.
+// Rectangle of the words of the expected text in the words read: for each expected word, the nearest word read that is it, or
+// a piece of it (broken across lines). Words of other texts read in the area are left out.
+function textBox (expected, words, near) {
+  const distance = box => Math.hypot(box.left + box.width / 2 - near.x, box.top + box.height / 2 - near.y)
+  const candidates = words.map(word => ({ ...word, tokens: wordsOf(word.text) }))
+  const used = new Set()
+  wordsOf(expected).forEach(word => {
+    const matches = candidates.filter(c => !used.has(c) && c.tokens.some(token => isClose(word, token) || (token.length > 1 && word.includes(token))))
+    matches.sort((a, b) => distance(a.box) - distance(b.box))
+    if (matches[0]) used.add(matches[0])
+  })
+  return unionBox([...used].map(c => c.box))
+}
+
+// Checks texts in an image: [{ text, rect, near }] in pixels of the canvas (the image may be rendered at another size: the areas
+// are scaled to it, and the boxes back), near being the point where the text is expected (the center of rect by default)
+// → per text, null when it is not checked (not in Latin script), otherwise { missing: [words not found], share: of the letters,
+// broken: [{ word, fit }] and missingAt (see compareTexts), box: rectangle of the words of the text read, read: start of the text
+// read }.
 // Throws when the OCR is not available.
 async function checkTexts (image, texts, canvas) {
   const toCheck = texts.map(({ text }) => isLatin(text) && wordsOf(text).length > 0)
@@ -141,18 +174,22 @@ async function checkTexts (image, texts, canvas) {
     const sy = size && canvas ? size.height / canvas.height : 1
     ocr.tesseract.FS.writeFile('/input', image)
     if (ocr.api.SetImageFile(1, 0) === 1) throw new Error('the visual could not be decoded')
-    return texts.map(({ text, rect }, i) => {
+    return texts.map(({ text, rect, near }, i) => {
       if (!toCheck[i]) return null
       const area = scaleRect(rect, sx, sy)
       ocr.api.SetRectangle(Math.round(area.left), Math.round(area.top), Math.round(area.width), Math.round(area.height))
       ocr.api.Recognize(null)
-      const read = ocr.api.GetUTF8Text()
-      const { missing, broken } = compareTexts(text, read)
-      const box = wordsBox(ocr.api)
+      const words = readWords(ocr.api)
+      // The text read, line by line
+      const read = words.reduce((lines, word, k) => lines + (k && word.line !== words[k - 1].line ? '\n' : k ? ' ' : '') + word.text, '')
+      const { missing, broken, missingAt } = compareTexts(text, read)
+      const center = near || { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+      const box = textBox(text, words, { x: center.x * sx, y: center.y * sy })
       return {
         missing,
         share: missing.join('').length / wordsOf(text).join('').length,
         broken,
+        missingAt,
         box: box && scaleRect(box, 1 / sx, 1 / sy),
         // What was read, on one line, to tell a misread from a missing text
         read: read.replace(/\s+/g, ' ').trim().slice(0, READ_EXCERPT_LENGTH)

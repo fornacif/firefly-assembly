@@ -19,17 +19,15 @@ Adobe I/O Runtime ends a web request after about 60 seconds, and Photoshop jobs 
 
 ## Text checks
 
-Each edited text of a generated variant is checked once rendered, one check per cause:
+Each edited text of a generated variant is checked on the rendered visual, with an OCR (Tesseract, `actions/mcp-server/ocr.js`): the area of the text in the template is read, wider by the growth expected from the length of the new text (without going into the other texts on the same lines, which the OCR would mix with it). The OCR gives the words read and where they are. A text read whole inside its area of the template fits. Otherwise, one problem per cause:
 
 | Check | How | Finds |
 |---|---|---|
-| Edges | Bounds of the text in the manifest of the rendered PSD | A text past an edge of the canvas |
-| Overlaps | Bounds of the text and of the other visible layers, compared with the template | A text overlapping an element (logo, button, other text) more than in the template. Backgrounds and the elements the text lies on in the template are by design and not reported |
-| Words (OCR) | The text area of the rendered visual read with Tesseract (`actions/mcp-server/ocr.js`) as one block of text, and compared with the text sent | Words missing (cut, hidden, unreadable), or broken across two lines by a paragraph box too narrow for them |
+| Edges | Where the text would end, from the words read and the share of letters not read (missing at its end or start) | A text past an edge of the canvas |
+| Overlaps | Rectangle of the words read, against the other visible layers of the template, compared with the template | A text overlapping an element (logo, button, other text) more than in the template. Backgrounds and the elements the text lies on in the template are by design and not reported |
+| Words | Words read against the text sent | Words missing (cut, hidden, unreadable), or broken across two lines by a paragraph box too narrow for them; only when no edge or overlap explains them |
 
-The visual is read first, on the area of each text in the template: when every text is read whole inside its area, the texts have not grown, so they cannot pass an edge or overlap an element, and the rendered PSD is not read (one Photoshop job less per variant). Otherwise its manifest gives the exact cause, the area to mark and the font scale. The OCR is only reported for a text without an edge or overlap problem, as missing words are then a consequence of it, and only for the texts it reads whole in the preview of the template: a text over a photo, which it cannot tell from the photo, is not checked by the OCR (the card says so). It reads the Latin script only (English model, accents and case ignored): texts in other scripts are not read. Its model is downloaded once per container from the jsDelivr CDN; if it cannot be, the variants are generated without this check.
-
-Every check is best effort: a generation answers within about 50 seconds (Adobe I/O Runtime ends web requests after about 60 seconds), and checks not done by then are skipped.
+Only the texts that the OCR reads whole in the preview of the template are checked: a text over a photo, which it cannot tell from the photo, is not (the card says so). The OCR reads the Latin script only (English model, accents and case ignored): texts in other scripts are not checked. Its model is downloaded once per container from the jsDelivr CDN; if it cannot be, the variants are shown without checks. The checks of a variant are given up after 60 seconds: it is shown, its texts not checked.
 
 ## Best practices for templates
 

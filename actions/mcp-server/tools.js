@@ -192,9 +192,9 @@ async function pollJob (check, label, timeoutMs = POLL_TIMEOUT_MS) {
 // this long is submitted again, and the first result kept
 const JOB_RESUBMIT_AFTER_MS = 60000
 
-// Submits an asynchronous Photoshop job and polls it until it finishes, within timeoutMs; returns the job result. A job longer
-// than JOB_RESUBMIT_AFTER_MS is submitted once more (the same outputs: either job writes them).
-function runPhotoshopJob (params, path, body, { timeoutMs = POLL_TIMEOUT_MS } = {}) {
+// Submits an asynchronous Photoshop job and polls it until it finishes, within POLL_TIMEOUT_MS; returns the job result. A job
+// longer than JOB_RESUBMIT_AFTER_MS is submitted once more (the same outputs: either job writes them).
+function runPhotoshopJob (params, path, body) {
   const run = limit => limitJob(async () => {
     const { jobId } = await callPhotoshop(params, path, { method: 'POST', body: JSON.stringify(body) })
     if (!jobId) throw new Error(`Photoshop API ${path}: no job id in the answer`)
@@ -204,24 +204,23 @@ function runPhotoshopJob (params, path, body, { timeoutMs = POLL_TIMEOUT_MS } = 
       if (status.status === 'failed') throw new Error(`Photoshop job failed: ${JSON.stringify(status.errorDetails)}`)
     }, `Photoshop job ${jobId}`, limit)
   })
-  const first = run(timeoutMs)
-  if (timeoutMs <= JOB_RESUBMIT_AFTER_MS) return first
+  const first = run(POLL_TIMEOUT_MS)
   let settled = false
   first.then(() => { settled = true }, () => { settled = true })
   const second = wait(JOB_RESUBMIT_AFTER_MS).then(() => {
     if (settled) return first
     console.warn(`Photoshop ${path} not finished after ${JOB_RESUBMIT_AFTER_MS / 1000}s: submitted again`)
-    return run(timeoutMs - JOB_RESUBMIT_AFTER_MS)
+    return run(POLL_TIMEOUT_MS - JOB_RESUBMIT_AFTER_MS)
   })
   // The first job to succeed; the error of the first one when both fail
   return Promise.any([first, second]).catch(() => first)
 }
 
-async function generateManifest (params, url, options) {
+async function generateManifest (params, url) {
   const result = await runPhotoshopJob(params, '/generate-manifest', {
     image: { source: { url } },
     outputs: [{ destination: { embedded: 'json' }, mediaType: 'application/json' }]
-  }, options)
+  })
   const manifest = result?.outputs?.[0]?.destination?.content ?? result
   if (!manifest?.document?.bounds) throw new Error('The Photoshop API returned no document in the manifest of the file.')
   return manifest
@@ -436,14 +435,12 @@ const VARIANT_OUTPUTS = {
 const VARIANT_FORMATS = Object.keys(VARIANT_OUTPUTS)
 const PREVIEW_OUTPUT = { mediaType: 'image/jpeg', quality: 'high' }
 
-// Renders one variant in all the requested formats with a single Photoshop job, then measures its texts against the template
-// manifest on the PSD output (rendered for that purpose when PSD is not a requested format).
+// Renders one variant in all the requested formats with a single Photoshop job, then checks its texts on the visual.
 async function createVariant (params, { templateUrl, templateManifest, formats, layers, fileName: baseName, deadline, onRendered, readable }) {
   const shownFormat = formats.find(format => VARIANT_OUTPUTS[format].displayable)
-  const [files, preview, measureCopy] = await Promise.all([
+  const [files, preview] = await Promise.all([
     Promise.all(formats.map(format => createStorageUrls('variants', `${baseName}.${VARIANT_OUTPUTS[format].extension}`))),
-    shownFormat ? null : createStorageUrls('variants', `${baseName}-preview.jpg`),
-    formats.includes('psd') ? null : createStorageUrls('measures', `${baseName}.psd`)
+    shownFormat ? null : createStorageUrls('variants', `${baseName}-preview.jpg`)
   ])
 
   await beforeDeadline(runPhotoshopJob(params, '/create-composite', {
@@ -451,11 +448,9 @@ async function createVariant (params, { templateUrl, templateManifest, formats, 
     edits: { layers: layers.map(toLayerEdit) },
     outputs: [
       ...formats.map((format, i) => ({ destination: { url: files[i].uploadUrl }, ...VARIANT_OUTPUTS[format].output })),
-      ...(preview ? [{ destination: { url: preview.uploadUrl }, ...PREVIEW_OUTPUT }] : []),
-      ...(measureCopy ? [{ destination: { url: measureCopy.uploadUrl }, ...VARIANT_OUTPUTS.psd.output }] : [])
+      ...(preview ? [{ destination: { url: preview.uploadUrl }, ...PREVIEW_OUTPUT }] : [])
     ]
   }), deadline, tooLate('The rendering'))
-  const psdUrl = measureCopy ? measureCopy.readUrl : files[formats.indexOf('psd')].readUrl
   // Shown in the view: the first displayable file, or the preview
   const imageUrl = preview ? preview.readUrl : files[formats.indexOf(shownFormat)].readUrl
   const rendered = {
@@ -470,14 +465,12 @@ async function createVariant (params, { templateUrl, templateManifest, formats, 
   const checkDeadline = Math.min(deadline, Date.now() + TEXT_CHECK_BUDGET_MS)
   return {
     ...rendered,
-    ...await beforeDeadline(measureRenderedTexts(params, psdUrl, imageUrl, templateManifest, layers, checkDeadline, readable)
+    ...await beforeDeadline(measureRenderedTexts(imageUrl, templateManifest, layers, checkDeadline, readable)
       .then(({ issues, unchecked }) => ({ textIssues: issues, ...(unchecked ? { textsUnchecked: unchecked } : {}) })),
     checkDeadline, () => ({ textIssues: null, textsUnchecked: 'not finished within the time limit' }))
   }
 }
 
-// A text is reported past an edge of the canvas beyond this margin
-const EDGE_TOLERANCE_PX = 2
 // A text overlaps another element when their common area grows beyond this share of the text area compared to the template
 const OVERLAP_TOLERANCE = 0.05
 // A text that lies mostly on an element in the template (this share of its area at least) is placed on it by design
@@ -488,9 +481,8 @@ const BACKGROUND_SHARE = 0.8
 // Smallest font scale proposed as a fix, as advised to the model: below it, a text is better shortened
 const MIN_FONT_SCALE = 0.8
 
-// The text checks are optional: their Photoshop job (reading the rendered PSD) is given up after this long, and the checks of a
-// variant after TEXT_CHECK_BUDGET_MS, so that a stalled job does not hold the variant (it is shown, its texts not checked)
-const CHECK_JOB_TIMEOUT_MS = 45000
+// The text checks are optional: given up after this long, so that they do not hold the variant (it is shown, its texts not
+// checked)
 const TEXT_CHECK_BUDGET_MS = 60000
 
 // The OCR gives up this long before the deadline of the measure, so that the other checks are returned in time
@@ -500,9 +492,13 @@ const OCR_DEADLINE_MARGIN_MS = 1000
 const OCR_MARGIN = 0.15
 // ...and at least this many pixels: the box of a small text may cut its last letter
 const OCR_MIN_MARGIN_PX = 8
-// A text is in place when its words read lie in its area of the template with OCR_MARGIN; to see whether they do, the area of
-// the template is read with this wider margin
+// A text is in place when its words read lie in its area of the template with OCR_MARGIN; to see whether they do, and where it
+// went if it grew, the area of the template is read with this wider margin, and wider by the growth expected from its length
+// (at least GROWTH_READ_MIN of its width on each side)
 const IN_PLACE_READ_MARGIN = 0.4
+const GROWTH_READ_MIN = 0.25
+// A text whose words read, with the missing ones, would go past an edge of the canvas by more than this, goes past it
+const OCR_EDGE_PX = 4
 
 // Image bytes of a rendered visual, for the OCR.
 async function downloadImage (url) {
@@ -553,15 +549,13 @@ const surface = rect => rect ? rect.width * rect.height : 0
 // reported, and not with the elements the text lies on in the template (a photo, a band), as they are by design. Returns
 // [{ name, factor, area }], factor being the font scale that removes the overlap, the text shrinking along the axis that needs
 // the least, and area the common rectangle.
-function findOverlaps (textArea, textBefore, edited, templateManifest, rendered, canvas) {
+function findOverlaps (textArea, textBefore, edited, templateManifest, canvas) {
   const canvasSurface = canvas.width * canvas.height
   return drawnLayers(templateManifest.layers).flatMap(other => {
     if (other.id === edited) return []
     const otherBefore = layerArea(other)
     if (!otherBefore || surface(otherBefore) > canvasSurface * BACKGROUND_SHARE) return []
-    // Where the element is in the render (another edited text may have moved or grown)
-    const otherAfter = layerArea(findLayer(rendered.layers, other.id) || other) || otherBefore
-    const after = intersection(textArea, otherAfter)
+    const after = intersection(textArea, otherBefore)
     const before = textBefore ? surface(intersection(textBefore, otherBefore)) : 0
     if (textBefore && before >= surface(textBefore) * DESIGNED_OVERLAP_SHARE) return []
     const grown = surface(after) - before
@@ -594,122 +588,146 @@ function readableTexts (params, templateUrl, manifest) {
   })
 }
 
-// Whether the OCR read a whole text inside its area of the template (with OCR_MARGIN): it then has not grown, so it cannot
-// pass an edge of the canvas or overlap an element more than in the template.
-function isInPlace (check, before) {
-  if (!check || check.missing.length || check.broken.length || !check.box || !before) return false
+// Whether a box lies in an area of the template, with OCR_MARGIN.
+function isInside (box, before) {
   const margin = ocrMargin(before, OCR_MARGIN)
-  return check.box.left >= before.left - margin && check.box.top >= before.top - margin &&
-    check.box.left + check.box.width <= before.left + before.width + margin &&
-    check.box.top + check.box.height <= before.top + before.height + margin
+  return box.left >= before.left - margin && box.top >= before.top - margin &&
+    box.left + box.width <= before.left + before.width + margin && box.top + box.height <= before.top + before.height + margin
 }
 
-// Problems of the edited texts of a rendered variant, one check per cause: text past the edges of the canvas or overlapping
-// other elements more than in the template, measured on the manifest of the rendered PSD against the template; words not
-// found in the visual by the OCR otherwise (a text cut by its box, hidden or unreadable), as words cut by an edge or hidden by
-// an element are only a consequence of these. A text that only grows is not a problem: what it may cause is checked.
-// The visual is read first, on the areas of the texts in the template: a text read whole in its area fits, and is not checked
-// further; when all do, the rendered PSD is not read (a Photoshop job less). One entry per text with problems, with the font scale that
-// brings it back in its bounds (rounded down to 5%, not below MIN_FONT_SCALE, then marked as not enough), its area and the
-// rectangles of its overlaps. Best effort: returns { issues, unchecked }, issues being null when the texts could not be
-// measured, and unchecked what could not be checked and why (e.g. the OCR, not ready by the deadline: the edges and overlaps
-// are still returned).
-async function measureRenderedTexts (params, psdUrl, imageUrl, templateManifest, layers, deadline, readable) {
+const longestLine = text => Math.max(1, ...linesOf(text).map(line => line.trim().length))
+
+// Area where a text is read on the visual: its area in the template with a margin, wider by the growth expected from its
+// length and font scale, inside the canvas, and not into the other texts on the same lines (the OCR mixes the lines of texts
+// side by side).
+function growthRect (t, canvas, otherTexts) {
+  const { before } = t
+  const ratio = longestLine(t.edit.text) / longestLine(t.original?.text?.content) * (t.edit.fontScale || 1)
+  const grow = before.width * Math.max(GROWTH_READ_MIN, ratio - 1 + GROWTH_READ_MIN)
+  const margin = ocrMargin(before, IN_PLACE_READ_MARGIN)
+  const top = Math.max(0, before.top - margin)
+  const bottom = Math.min(canvas.height, before.top + before.height + margin)
+  let left = Math.max(0, before.left - grow)
+  let right = Math.min(canvas.width, before.left + before.width + grow)
+  otherTexts.forEach(other => {
+    if (other.top >= bottom || other.top + other.height <= top) return
+    if (other.left >= before.left + before.width) right = Math.min(right, other.left)
+    else if (other.left + other.width <= before.left) left = Math.max(left, other.left + other.width)
+  })
+  return { left, top, width: right - left, height: bottom - top }
+}
+
+// Where a text cut at an edge of the canvas would end, from its words read (box) and the share of its letters not read: a text
+// on one line missing its last words goes on to the right, its first words to the left; on several lines, missing its last
+// words, below. Returns { edge, overflow, factor } when it goes past that edge by more than OCR_EDGE_PX, factor being the font
+// scale at which it fits; null otherwise.
+function pastEdge (box, missingAt, share, lineCount, canvas) {
+  const shown = 1 - share
+  if (!shown || (missingAt !== 'end' && missingAt !== 'start')) return null
+  if (lineCount > 1) {
+    if (missingAt !== 'end') return null
+    // The lines not read, of about the height of the lines read
+    const height = box.height / shown
+    const overflow = box.top + height - canvas.height
+    return overflow > OCR_EDGE_PX ? { edge: 'bottom', overflow, factor: (canvas.height - box.top) / height } : null
+  }
+  const width = box.width / shown
+  const overflow = missingAt === 'end' ? box.left + width - canvas.width : width - box.left - box.width
+  const room = missingAt === 'end' ? canvas.width - box.left : box.left + box.width
+  return overflow > OCR_EDGE_PX ? { edge: missingAt === 'end' ? 'right' : 'left', overflow, factor: room / width } : null
+}
+
+// Problems of the edited texts of a rendered variant, one check per cause, on the visual. The OCR reads it around the area of
+// each text in the template (growthRect), which gives the words read and where they are: a text read whole in its area fits;
+// otherwise it goes past an edge of the canvas (pastEdge), overlaps other elements more than in the template (their areas in
+// the template), or has words broken across lines or missing (cut, hidden or unreadable; only when no edge or overlap explains
+// it). A text that only grows is not a problem: what it may cause is checked. The texts that the OCR cannot read in the
+// template (see readableTexts) are not checked. One entry per text with problems, with the font scale that brings it back in
+// its bounds (rounded down to 5%, not below MIN_FONT_SCALE, then marked as not enough), its area and the rectangles of its
+// overlaps. Best effort: returns { issues, unchecked }, issues being null when the texts could not be checked, and unchecked
+// what could not be checked and why.
+async function measureRenderedTexts (imageUrl, templateManifest, layers, deadline, readable) {
   const textLayers = layers.filter(layer => layer.type === 'text_layer')
   if (!textLayers.length) return { issues: [], unchecked: null }
   try {
     const canvas = boundsSize(templateManifest.document.bounds)
-    const image = downloadImage(imageUrl).catch(error => { console.warn(`Visual not read: ${error.message}`); return null })
+    // Downloaded while the readable texts are awaited; its error is reported with the reading
+    const image = downloadImage(imageUrl)
+    image.catch(() => {})
     const texts = textLayers.map(edit => {
       const original = findLayer(templateManifest.layers, edit.id)
       return { edit, original, before: original && layerArea(original) }
     })
-    let unchecked = null
-    const notRead = reason => { unchecked = `words not read: ${reason}`; return null }
+    const notes = []
     // Texts that the OCR can read (see readableTexts)
     const readableIds = await beforeDeadline(readable || Promise.resolve(null), deadline - OCR_DEADLINE_MARGIN_MS, () => null)
-    const isReadable = t => !readableIds || readableIds.has(t.edit.id)
-    // Reads texts in their areas, before the deadline of the measure so that the other checks are returned
-    const read = areas => beforeDeadline(
-      image.then(visual => visual ? checkTexts(visual, areas, canvas) : notRead('the visual could not be downloaded'))
-        .catch(error => notRead(error.message)),
-      deadline - OCR_DEADLINE_MARGIN_MS, () => notRead('not finished within the time limit'))
+    const isReadable = t => t.before && (!readableIds || readableIds.has(t.edit.id))
+    const allTexts = drawnLayers(templateManifest.layers).filter(layer => layer.type === 'text_layer')
+    const measured = texts.filter(isReadable)
+    const unreadable = texts.filter(t => !isReadable(t)).map(t => `"${t.original?.name || t.edit.id}"`)
+    if (unreadable.length) {
+      notes.push(`${unreadable.join(', ')} not checked: the OCR cannot read ${unreadable.length > 1 ? 'them' : 'it'} in the template either (e.g. over a photo)`)
+    }
 
-    const candidates = texts.filter(t => t.before && isReadable(t))
-    const placed = candidates.length
-      ? await read(candidates.map(t => ({ text: t.edit.text, rect: ocrRect(t.before, canvas, IN_PLACE_READ_MARGIN) }))) || []
+    const checks = measured.length
+      ? await beforeDeadline(
+        image.then(visual => checkTexts(visual, measured.map(t => ({
+          text: t.edit.text,
+          rect: growthRect(t, canvas, allTexts.filter(layer => layer.id !== t.edit.id).map(layerArea).filter(Boolean)),
+          near: { x: t.before.left + t.before.width / 2, y: t.before.top + t.before.height / 2 }
+        })), canvas)).catch(error => { notes.push(`words not read: ${error.message}`); return [] }),
+        deadline - OCR_DEADLINE_MARGIN_MS, () => { notes.push('words not read: not finished within the time limit'); return [] })
       : []
-    const toMeasure = texts.filter(t => !isInPlace(placed[candidates.indexOf(t)], t.before))
-    // A failure of this first read is reported by the second one, if any text is read again
-    unchecked = null
 
-    if (toMeasure.length) console.log(`Text checks: rendered PSD read for ${toMeasure.map(t => `"${t.original?.name || t.edit.id}"`).join(', ')}`)
-    const rendered = toMeasure.length ? await generateManifest(params, psdUrl, { timeoutMs: CHECK_JOB_TIMEOUT_MS }) : null
-    const measures = toMeasure.map(({ edit, original, before }) => {
-      // By id, or by name in case the render gives new ids to the layers
-      const renderedLayer = findLayer(rendered.layers, edit.id) ||
-        (original && findLayer(rendered.layers, layer => layer.type === 'text_layer' && layer.name === original.name))
-      const area = layerArea(renderedLayer || {}) || before
+    const issues = measured.flatMap((t, i) => {
+      const check = checks[i]
+      if (!check || (!check.missing.length && !check.broken.length && check.box && isInside(check.box, t.before))) return []
       const problems = []
       // Factors by which the text must shrink to fix each problem
       const factors = []
       // Rectangles of the overlaps in the canvas, for the view
       const marks = []
-      if (area && renderedLayer) {
-        const past = { left: -area.left, top: -area.top, right: area.left + area.width - canvas.width, bottom: area.top + area.height - canvas.height }
-        Object.entries(past).forEach(([edge, px]) => {
-          if (px <= EDGE_TOLERANCE_PX) return
-          problems.push(`goes ${Math.round(px)} px past the ${edge} edge of the canvas`)
-          const size = edge === 'left' || edge === 'right' ? area.width : area.height
-          factors.push((size - px) / size)
-        })
-        findOverlaps(area, before, edit.id, templateManifest, rendered, canvas).forEach(overlap => {
+      const box = check.box
+      if (box) {
+        const past = check.missing.length && pastEdge(box, check.missingAt, check.share, linesOf(t.edit.text).length, canvas)
+        if (past) {
+          problems.push(`goes about ${Math.round(past.overflow)} px past the ${past.edge} edge of the canvas ("${check.missing.join(' ')}" not visible)`)
+          factors.push(past.factor)
+        }
+        findOverlaps(box, t.before, t.edit.id, templateManifest, canvas).forEach(overlap => {
           problems.push(`now overlaps "${overlap.name}"`)
           factors.push(overlap.factor)
           marks.push(overlap.area)
         })
       }
-      return { edit, original, area, problems, factors, marks }
-    })
-
-    // The words of the texts without other problems, read again in their rendered areas
-    const toRead = measures.filter(m => m.area && !m.problems.length && isReadable(m))
-    const unreadable = texts.filter(t => !isReadable(t)).map(t => `"${t.original?.name || t.edit.id}"`)
-    const checks = toRead.length ? await read(toRead.map(m => ({ text: m.edit.text, rect: ocrRect(m.area, canvas) }))) || [] : []
-    toRead.forEach((m, i) => {
-      const check = checks[i]
-      if (!check) return
-      check.broken.forEach(({ word, fit }) => {
-        m.problems.push(`breaks "${word}" across two lines (its box is too narrow for this word)`)
-        m.factors.push(fit)
-      })
-      if (check.missing.length) {
-        m.problems.push(`words not found in the visual: "${check.missing.join(' ')}" (cut, hidden or hard to read; read: "${check.read}")`)
-        // A smaller text shows the words cut by its box
-        m.factors.push(Math.sqrt(1 - check.share))
+      // Words broken or missing, when no edge or overlap explains them
+      if (!problems.length) {
+        check.broken.forEach(({ word, fit }) => {
+          problems.push(`breaks "${word}" across two lines (its box is too narrow for this word)`)
+          factors.push(fit)
+        })
+        if (check.missing.length) {
+          problems.push(`words not found in the visual: "${check.missing.join(' ')}" (cut, hidden or hard to read; read: "${check.read}")`)
+          // A smaller text shows the words cut by its box
+          factors.push(Math.sqrt(1 - check.share))
+        }
       }
-    })
-
-    const issues = measures.filter(m => m.problems.length).map(({ edit, original, area, problems, factors, marks }) => {
-      const needed = Math.floor((edit.fontScale || 1) * Math.min(...factors) * 20) / 20
-      return {
-        layerId: edit.id,
-        layerName: original?.name || String(edit.id),
+      if (!problems.length) return []
+      const needed = Math.floor((t.edit.fontScale || 1) * Math.min(...factors) * 20) / 20
+      return [{
+        layerId: t.edit.id,
+        layerName: t.original?.name || String(t.edit.id),
         problems,
         fontScale: Math.max(needed, MIN_FONT_SCALE),
         // A smaller font is not enough: the text should be shortened
         shorten: needed < MIN_FONT_SCALE,
-        area,
+        area: box || t.before,
         marks
-      }
+      }]
     })
-    if (unreadable.length) {
-      unchecked = [unchecked, `words of ${unreadable.join(', ')} not read: the OCR cannot read them in the template either (e.g. over a photo)`]
-        .filter(Boolean).join('; ')
-    }
-    return { issues, unchecked }
+    return { issues, unchecked: notes.join('; ') || null }
   } catch (error) {
-    console.warn(`Text measure failed: ${error.message}`)
+    console.warn(`Text check failed: ${error.message}`)
     return { issues: null, unchecked: error.message }
   }
 }
