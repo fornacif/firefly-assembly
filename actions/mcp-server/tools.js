@@ -1046,10 +1046,13 @@ function registerTools (server, params) {
     async ({ url }) => {
       try {
         const deadline = Date.now() + RESPONSE_BUDGET_MS
+        let previewError = null
         const [manifest, previewUrl] = await Promise.all([
           beforeDeadline(getManifest(params, url), deadline, tooLate('Reading the template')),
-          // The preview is best effort: without it, the view shows the list of layers only
-          beforeDeadline(renderPreview(params, url).catch(() => null), deadline, () => null)
+          // The preview is best effort: without it, the view shows the list of layers, then asks for the preview again
+          // (get-template-preview), which gets the render still running or starts another one
+          beforeDeadline(renderPreview(params, url), deadline, tooLate('The preview'))
+            .catch(error => { previewError = error.message; console.warn(`Template preview: ${error.message}`); return null })
         ])
         const data = {
           document: {
@@ -1068,7 +1071,7 @@ function registerTools (server, params) {
             text: `Editable layers (unlocked text and smart object layers), shown to the user for selection:\n${JSON.stringify(forModel, null, 2)}\n\n` +
               NEXT_STEPS_AFTER_SELECTION
           }],
-          structuredContent: { ...data, previewUrl }
+          structuredContent: { ...data, previewUrl, previewError, templateUrl: url }
         }
       } catch (error) {
         return errorResult(error)
@@ -1132,6 +1135,24 @@ function registerTools (server, params) {
           structuredContent: { templateUrl, variants: shown },
           isError: failed.length === results.length
         }
+      } catch (error) {
+        return errorResult(error)
+      }
+    }
+  )
+
+  server.registerTool(
+    'get-template-preview',
+    {
+      title: 'Get Template Preview',
+      description: 'Used by the widget of get-psd-manifest when the preview of the template was not ready: returns its URL.',
+      inputSchema: { url: z.string().url().describe('HTTPS URL of the PSD file') },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    async ({ url }) => {
+      try {
+        const previewUrl = await beforeDeadline(renderPreview(params, url), Date.now() + RESPONSE_BUDGET_MS, tooLate('The preview'))
+        return jsonResult({ previewUrl })
       } catch (error) {
         return errorResult(error)
       }

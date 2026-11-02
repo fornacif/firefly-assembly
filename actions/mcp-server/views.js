@@ -1177,6 +1177,30 @@ function getLayersViewHtml (scriptUrl) {
     document.getElementById('list').style.display = 'block';
     if (hasPreview) renderPreview(data.previewUrl, doc);
     setStatus(layers.length + ' editable layer(s).');
+    if (!data.previewUrl && data.templateUrl && doc.width && doc.height) loadPreview(data.templateUrl, doc, data.previewError);
+  }
+
+  // Asks the server again for the preview not ready with the manifest (tried twice), and shows it with the numbers of the
+  // layers, without changing the boxes already ticked.
+  function loadPreview(templateUrl, doc, firstError) {
+    setStatus(layers.length + ' editable layer(s). Rendering the preview of the template...');
+    var args = { url: templateUrl };
+    callTool('get-template-preview', args)
+      .catch(function () { return callTool('get-template-preview', args); })
+      .then(function (result) {
+        if (!result.previewUrl || !layers.some(function (l) { return l.area; })) throw new Error(firstError || 'no preview');
+        var next = 0;
+        numbers = layers.map(function (l) { return l.area ? ++next : null; });
+        layers.forEach(function (l, i) {
+          listEl.querySelector('.row[data-index="' + i + '"] .num').textContent = numbers[i] || '';
+        });
+        renderPreview(result.previewUrl, doc);
+        updateSelection();
+        setStatus(layers.length + ' editable layer(s).');
+      })
+      .catch(function (error) {
+        setStatus(layers.length + ' editable layer(s). Preview not available: ' + ((error && error.message) || error));
+      });
   }
 
   // Numbered zones of the layers over the preview, the largest first so that smaller ones stay clickable on top.
