@@ -1619,6 +1619,7 @@ function getVariantViewHtml (scriptUrl) {
 <div class="grid" id="grid"></div>
 <div class="actions" id="fix-actions" hidden>
   <sp-button variant="accent" id="send-changes" disabled>Send changes</sp-button>
+  <sp-button variant="secondary" treatment="outline" id="download-all" hidden disabled>Download all</sp-button>
 </div>
 <sp-help-text class="status" id="status"></sp-help-text>
 `, `
@@ -1634,6 +1635,10 @@ function getVariantViewHtml (scriptUrl) {
   // While the variants of the tool call are generated
   var generating = false;
   var sendBtn = document.getElementById('send-changes');
+  var downloadAllBtn = document.getElementById('download-all');
+  // Task of the generation, whose files are zipped by Download all
+  var generationTaskId = null;
+  var zipping = false;
   var FORMAT_LABELS = { png: 'PNG', jpeg: 'JPEG', psd: 'PSD' };
   // Download icon (arrow into a tray), in the text color of the button
   var DOWNLOAD_ICON = '<svg slot="icon" viewBox="0 0 18 18" width="16" height="16" aria-hidden="true">'
@@ -1737,7 +1742,27 @@ function getVariantViewHtml (scriptUrl) {
     sendBtn.textContent = count ? 'Send changes (' + count + ')' : 'Send changes';
     // Changes are sent once the generation is done, so that the next one does not start meanwhile
     sendBtn.disabled = busy || generating || !count;
+    // All the files of the generation in one ZIP archive, once it is done
+    var files = generated().reduce(function (total, i) { return total + filesOf(variants[i]).length; }, 0);
+    downloadAllBtn.hidden = !generationTaskId || files < 2;
+    downloadAllBtn.disabled = generating || zipping;
   }
+
+  function downloadAll() {
+    zipping = true;
+    updateFixActions();
+    setStatus('Preparing the ZIP archive...', false, true);
+    callTool('create-variants-zip', { taskId: generationTaskId })
+      .then(function (started) { return waitForTask(started.taskId); })
+      .then(function (zip) {
+        render();
+        return request('ui/open-link', { url: zip.url });
+      })
+      .catch(function (error) { setStatus((error && error.message) || String(error), true); })
+      .then(function () { zipping = false; updateFixActions(); });
+  }
+
+  downloadAllBtn.addEventListener('click', downloadAll);
 
   // Sends the changes of the variants to the model, which generates them again with create-variant. With the measured
   // problems of each text (layer id and proposed font scale), so that it can apply the proposed fixes the user kept.
@@ -1845,6 +1870,7 @@ function getVariantViewHtml (scriptUrl) {
       return;
     }
     generating = true;
+    generationTaskId = data.taskId;
     variants = (data.pending || []).map(function (fileName) { return { fileName: fileName, pending: true }; });
     render();
     waitForTask(data.taskId, function (partial) {

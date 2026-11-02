@@ -9,7 +9,7 @@ MCP server, deployed as an Adobe I/O Runtime (App Builder) action, that creates 
 3. **Texts** (`review-variant-texts`): an editable table with the texts of each variant.
 4. **Images** (`upload-variant-images`): a grid with one image per variant and smart object layer, from the computer or AEM, with crops framed on the subject.
 5. **Generation** (`create-variant`): the variants are rendered in parallel, as JPEG (default), PNG and/or layered PSD files.
-6. **Review**: the widget checks the texts of each variant (see below) and marks their problems on the visual, numbered, with a proposed fix (a smaller font size). Each variant has a "What should change?" field, pre-filled with the proposed fixes; the user edits it and sends the changes to the assistant, which generates again only these variants. Each generation shows only its own variants.
+6. **Review**: the widget checks the texts of each variant (see below) and marks their problems on the visual, numbered, with a proposed fix (a smaller font size). Each variant has a "What should change?" field, pre-filled with the proposed fixes; the user edits it and sends the changes to the assistant, which generates again only these variants. Each generation shows only its own variants, with a download button per file and a Download all button (a ZIP archive of all the files of the generation, built by a task: `create-variants-zip`).
 
 Widgets return what the user confirmed through a short reference that the assistant reads with `get-widget-result`. The other tools (`save-widget-result`, `suggest-crop`, `create-upload-url`, AEM picker tools…) are used by the widgets. `upload-file` uploads a single file outside the workflow.
 
@@ -56,6 +56,7 @@ Only the texts that the OCR reads whole in the preview of the template are check
 | `actions/mcp-server/tools.js` | MCP tools, resources and prompt, Photoshop API and storage calls |
 | `actions/mcp-server/views.js` | HTML of the widgets |
 | `actions/mcp-server/ocr.js` | Reading of the texts of the rendered visuals (Tesseract, WebAssembly) |
+| `actions/mcp-server/zip.js` | ZIP archives of the files of a generation |
 | `actions/mcp-server/aem-picker.js` | Sessions of the AEM Asset Selector page |
 | `actions/mcp-server/validator.js` | IMS token validation |
 | `ui/` | Build of the Spectrum Web Components bundle used by the widgets |

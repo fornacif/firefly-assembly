@@ -7,6 +7,7 @@ const { getStartViewHtml, getUploadViewHtml, getVariantImagesViewHtml, getLayers
 const stateLib = require('@adobe/aio-lib-state')
 const { getTokenFromRequest, getUnverifiedClaims, getUnverifiedClientId } = require('./validator.js')
 const { createPickerSession, getPickerResult } = require('./aem-picker.js')
+const { zipFiles } = require('./zip.js')
 const spectrumAsset = require('./spectrum-asset.js')
 
 const IMS_TOKEN_URL = 'https://ims-na1.adobelogin.com/ims/token/v3'
@@ -1257,7 +1258,37 @@ const TASKS = {
       onProgress: list => update({ partial: { templateUrl: args.templateUrl, variants: list } })
     })
     return { templateUrl: args.templateUrl, variants, summary: describeGeneration(variants, args.warnings || '') }
+  },
+
+  // ZIP archive of the files of a generation
+  async zip (params, { args, userId }) {
+    return zipGeneration(userId, args.variantsTaskId)
   }
+}
+
+// Files of a generation zipped together: at most this many bytes, held in memory
+const MAX_ZIP_BYTES = 400 * 1024 * 1024
+
+// ZIP archive of the files of a done generation (task variants) of the user of the task: { fileName, url, count }.
+async function zipGeneration (userId, variantsTaskId) {
+  const generation = (await (await initState()).get(taskKey(userId, variantsTaskId)))?.value
+  if (generation?.status !== 'done') throw new Error('The generation is not done, or expired (24 hours).')
+  const files = (generation.result?.variants || []).filter(v => !v.error).flatMap(v => v.files || [])
+  if (!files.length) throw new Error('No file to download.')
+  let total = 0
+  const entries = await Promise.all(files.map(async file => {
+    const response = await fetchWithRetry(file.url)
+    if (!response.ok) throw new Error(`${file.fileName} could not be downloaded (HTTP ${response.status})`)
+    const data = Buffer.from(await response.arrayBuffer())
+    total += data.length
+    if (total > MAX_ZIP_BYTES) throw new Error('The files are too large to be zipped together: download them one by one.')
+    return { name: file.fileName, data }
+  }))
+  const fileName = 'variants.zip'
+  const storage = await initFiles()
+  const path = newStoragePath('variants', fileName)
+  await storage.write(path, zipFiles(entries))
+  return { fileName, count: entries.length, url: await storage.generatePresignURL(path, { expiryInSeconds: URL_EXPIRY_SECONDS, permissions: 'r' }) }
 }
 
 // Runs a task invoked by startTask (not a web request), and writes its result or error.
@@ -1473,6 +1504,27 @@ function registerTools (server, params) {
         const task = await readTask(params, taskId)
         if (!task) return errorResult(new Error('This task is not known: it expired (24 hours) or belongs to another user.'))
         return jsonResult(task)
+      } catch (error) {
+        return errorResult(error)
+      }
+    }
+  )
+
+  server.registerTool(
+    'create-variants-zip',
+    {
+      title: 'Create Variants ZIP',
+      description: 'Used by the create-variant widget: starts a task (see get-task) whose result is the URL of a ZIP archive of ' +
+        'all the files of a generation.',
+      inputSchema: { taskId: z.string().describe('Task id of the generation, returned by create-variant') },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    async ({ taskId }) => {
+      try {
+        // A generation of the current user, done
+        const generation = await readTask(params, taskId)
+        if (generation?.status !== 'done') throw new Error('The generation is not done, or expired (24 hours).')
+        return jsonResult({ taskId: await startTask(params, 'zip', { variantsTaskId: taskId }) })
       } catch (error) {
         return errorResult(error)
       }
