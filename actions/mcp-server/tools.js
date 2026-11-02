@@ -580,7 +580,7 @@ async function measureRenderedTexts (params, psdUrl, imageUrl, templateManifest,
     const notRead = reason => { unchecked = `words not read: ${reason}`; return null }
     // Reads texts in their areas, before the deadline of the measure so that the other checks are returned
     const read = areas => beforeDeadline(
-      image.then(visual => visual ? checkTexts(visual, areas) : notRead('the visual could not be downloaded'))
+      image.then(visual => visual ? checkTexts(visual, areas, canvas) : notRead('the visual could not be downloaded'))
         .catch(error => notRead(error.message)),
       deadline - OCR_DEADLINE_MARGIN_MS, () => notRead('not finished within the time limit'))
 
@@ -629,7 +629,7 @@ async function measureRenderedTexts (params, psdUrl, imageUrl, templateManifest,
         m.factors.push(fit)
       })
       if (check.missing.length) {
-        m.problems.push(`words not found in the visual: "${check.missing.join(' ')}" (cut, hidden or hard to read)`)
+        m.problems.push(`words not found in the visual: "${check.missing.join(' ')}" (cut, hidden or hard to read; read: "${check.read}")`)
         // A smaller text shows the words cut by its box
         m.factors.push(Math.sqrt(1 - check.share))
       }

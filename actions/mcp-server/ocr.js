@@ -54,6 +54,7 @@ function isClose (word, read) {
 }
 
 const MAX_BROKEN_FIT = 0.95
+const READ_EXCERPT_LENGTH = 60
 
 // Compares the expected text with the text read, line by line. Each word read is used once ("new" twice in the text needs it
 // twice in the visual). A word not read whole but as the end of a line and the start of the next is broken across lines: a
@@ -86,6 +87,24 @@ function compareTexts (expected, read) {
   return { missing, broken }
 }
 
+// Size in pixels of a PNG or JPEG image, from its header; null for another format.
+function imageSize (image) {
+  if (image.readUInt32BE(0) === 0x89504e47) return { width: image.readUInt32BE(16), height: image.readUInt32BE(20) }
+  if (image[0] !== 0xff || image[1] !== 0xd8) return null
+  // JPEG: the frame header (SOF0 to SOF15, except DHT, JPG and DAC) gives the size
+  for (let offset = 2; offset + 9 < image.length;) {
+    if (image[offset] !== 0xff) return null
+    const marker = image[offset + 1]
+    if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) {
+      return { width: image.readUInt16BE(offset + 7), height: image.readUInt16BE(offset + 5) }
+    }
+    offset += 2 + image.readUInt16BE(offset + 2)
+  }
+  return null
+}
+
+const scaleRect = (rect, sx, sy) => ({ left: rect.left * sx, top: rect.top * sy, width: rect.width * sx, height: rect.height * sy })
+
 // Rectangle around the words read in the last recognition (from its TSV output, in image pixels), null if none.
 function wordsBox (api) {
   const boxes = api.GetTSVText(0).split('\n')
@@ -101,24 +120,38 @@ function wordsBox (api) {
   return { left, top, width: right - left, height: bottom - top }
 }
 
-// Checks texts in an image: [{ text, rect: { left, top, width, height } }] (in image pixels) → per text, null when it is not
+// Checks texts in an image: [{ text, rect: { left, top, width, height } }] (in pixels of the canvas: the image may be rendered at
+// another size, the areas are scaled to it and the boxes back) → per text, null when it is not
 // checked (not in Latin script), otherwise { missing: [words not found], share: of the letters,
-// broken: [{ word, fit }] (see compareTexts), box: rectangle of the words read in the area }. Throws when the OCR is not
+// broken: [{ word, fit }] (see compareTexts), box: rectangle of the words read in the area, read: start of the text read }. Throws when the OCR is not
 // available.
-async function checkTexts (image, texts) {
+async function checkTexts (image, texts, canvas) {
   const toCheck = texts.map(({ text }) => isLatin(text) && wordsOf(text).length > 0)
   if (!toCheck.some(Boolean)) return texts.map(() => null)
   const ocr = await getEngine()
   // Synchronous from here: the image and its areas are read without another call in between
   try {
+    const size = imageSize(image)
+    const sx = size && canvas ? size.width / canvas.width : 1
+    const sy = size && canvas ? size.height / canvas.height : 1
     ocr.tesseract.FS.writeFile('/input', image)
     if (ocr.api.SetImageFile(1, 0) === 1) throw new Error('the visual could not be decoded')
     return texts.map(({ text, rect }, i) => {
       if (!toCheck[i]) return null
-      ocr.api.SetRectangle(Math.round(rect.left), Math.round(rect.top), Math.round(rect.width), Math.round(rect.height))
+      const area = scaleRect(rect, sx, sy)
+      ocr.api.SetRectangle(Math.round(area.left), Math.round(area.top), Math.round(area.width), Math.round(area.height))
       ocr.api.Recognize(null)
-      const { missing, broken } = compareTexts(text, ocr.api.GetUTF8Text())
-      return { missing, share: missing.join('').length / wordsOf(text).join('').length, broken, box: wordsBox(ocr.api) }
+      const read = ocr.api.GetUTF8Text()
+      const { missing, broken } = compareTexts(text, read)
+      const box = wordsBox(ocr.api)
+      return {
+        missing,
+        share: missing.join('').length / wordsOf(text).join('').length,
+        broken,
+        box: box && scaleRect(box, 1 / sx, 1 / sy),
+        // What was read, on one line, to tell a misread from a missing text
+        read: read.replace(/\s+/g, ' ').trim().slice(0, READ_EXCERPT_LENGTH)
+      }
     })
   } catch (error) {
     // The engine may be left in a broken state (e.g. an abort of the WebAssembly module): a new one is created next time
