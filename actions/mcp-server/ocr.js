@@ -94,6 +94,8 @@ function isClose (word, read) {
 }
 
 const MAX_BROKEN_FIT = 0.95
+// A word read is at most this many times as wide as its letters at the median width of the letters read
+const WORD_WIDTH_TOLERANCE = 1.4
 const READ_EXCERPT_LENGTH = 60
 
 // Compares the expected text with the text read, line by line. Each word read is used once ("new" twice in the text needs it
@@ -215,7 +217,15 @@ function textBox (expected, words, near) {
     matches.sort((a, b) => distance(a.box) - distance(b.box))
     if (matches[0]) used.add(matches[0])
   })
-  return unionBox([...used].map(c => c.box))
+  // A word read with what is next to it (e.g. "da," read "day" with the photo behind its comma) gets a box wider than its
+  // letters: each box is cut to its letters at the median width of the letters of the words read, on the side of the text
+  const letterWidths = [...used].map(c => c.box.width / Math.max(1, c.tokens.join('').length)).sort((a, b) => a - b)
+  const letterWidth = letterWidths[Math.floor(letterWidths.length / 2)]
+  return unionBox([...used].map(({ box, tokens }) => {
+    const width = tokens.join('').length * letterWidth * WORD_WIDTH_TOLERANCE
+    if (!(box.width > width)) return box
+    return box.left + box.width / 2 >= near.x ? { ...box, width } : { ...box, left: box.left + box.width - width, width }
+  }))
 }
 
 // Checks texts in an image: [{ text, rect, near, language, lineHeight }] in pixels of the canvas (the image may be rendered at
