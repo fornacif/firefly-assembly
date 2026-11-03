@@ -2,7 +2,7 @@ const { Core } = require('@adobe/aio-sdk')
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js')
 const { WebStandardStreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js')
 const { WORKFLOW, registerTools, registerResources, registerPrompts, runTask } = require('./tools.js')
-const { checkAllowedOrg, validateRequestAuth } = require('./validator.js')
+const { validateRequestAuth } = require('./validator.js')
 const { handlePickerRequest } = require('./aem-picker.js')
 
 let logger = null
@@ -76,22 +76,6 @@ async function responseToRuntime (response) {
     const headers = {}
     response.headers.forEach((value, key) => { headers[key] = value })
     return { statusCode: response.status, headers, body: await response.text() }
-}
-
-// Answer to the tool calls of a request when its user is not in an allowed organization; null otherwise.
-async function refuseToolCalls (params) {
-    const body = parseRequestBody(params)
-    const messages = Array.isArray(body) ? body : [body]
-    const calls = messages.filter(message => message?.method === 'tools/call')
-    if (!calls.length) return null
-    const reason = await checkAllowedOrg(params, logger)
-    if (!reason) return null
-    const answers = calls.map(call => ({ jsonrpc: '2.0', id: call.id, result: { content: [{ type: 'text', text: reason }], isError: true } }))
-    return {
-        statusCode: 200,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(Array.isArray(body) ? answers : answers[0])
-    }
 }
 
 async function handleMcpRequest (params) {
@@ -223,9 +207,6 @@ async function main (params) {
                     })
                 }
             }
-            // Tool calls only for the users of the allowed organizations (ALLOWED_ORGS): the others get the reason as a tool error
-            const refused = await refuseToolCalls(params)
-            if (refused) return refused
             return await handleMcpRequest(params)
         }
 
