@@ -77,24 +77,26 @@ function orgIdsIn (value, ids = new Set()) {
 
 /**
  * Organizations of the user of a token (ids like 12345@AdobeOrg), from IMS: its organizations, or the product contexts of
- * its profile.
+ * its profile; answers: the HTTP status of each IMS request, for the refusals.
  * @param {string} imsHost
  * @param {string} token
- * @returns {Promise<string[]>}
+ * @returns {Promise<{ orgs: string[], answers: string[] }>}
  */
 async function getUserOrgs (imsHost, token) {
   const cached = orgsCache.get(token)
-  if (cached && cached.expiresAt > Date.now()) return cached.orgs
+  if (cached && cached.expiresAt > Date.now()) return cached.value
   const ids = new Set()
+  const answers = []
   for (const path of ['/ims/organizations/v5', '/ims/profile/v1']) {
     const response = await fetch(`${imsHost}${path}`, { headers: { Authorization: `Bearer ${token}` } })
+    answers.push(`${path.split('/')[2]} HTTP ${response.status}`)
     if (response.ok) orgIdsIn(await response.json(), ids)
     if (ids.size) break
   }
-  const orgs = [...ids]
+  const value = { orgs: [...ids], answers }
   for (const [key, entry] of orgsCache) if (entry.expiresAt <= Date.now()) orgsCache.delete(key)
-  orgsCache.set(token, { orgs, expiresAt: Date.now() + ORGS_CACHE_MS })
-  return orgs
+  orgsCache.set(token, { value, expiresAt: Date.now() + ORGS_CACHE_MS })
+  return value
 }
 
 /**
@@ -108,16 +110,20 @@ async function checkAllowedOrg (params, logger = console) {
   if (!allowedOrgs.length) return null
   const token = getTokenFromRequest(params)
   const imsHost = (params.IMS_HOST && String(params.IMS_HOST).trim()) || DEFAULT_IMS_HOST
-  let orgs
+  let read
   try {
-    orgs = await getUserOrgs(imsHost, token)
+    read = await getUserOrgs(imsHost, token)
   } catch (error) {
     logger.warn?.('IMS organizations request failed:', error.message)
     return 'Unable to read your Adobe organizations. Try again.'
   }
-  if (orgs.some(org => allowedOrgs.includes(org))) return null
-  logger.info?.(`IMS user ${getUnverifiedClaims(token).user_id} refused: ${orgs.length} organization(s) read, none allowed`)
-  return 'Your Adobe account is not in an organization allowed on this server. Sign in with your company account.'
+  if (read.orgs.some(org => allowedOrgs.includes(org))) return null
+  logger.info?.(`IMS user ${getUnverifiedClaims(token).user_id} refused: ${read.orgs.length} organization(s) read, none allowed`)
+  // The organizations read, or the answers of IMS when none: the user sees why
+  const found = read.orgs.length
+    ? `organizations of your account: ${read.orgs.join(', ')}`
+    : `no organization given by Adobe IMS for your account (${read.answers.join(', ')})`
+  return `Your Adobe account is not in an organization allowed on this server (${found}). Sign in with your company account.`
 }
 
 /**
