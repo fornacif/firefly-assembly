@@ -46,7 +46,7 @@ Only the texts that the OCR reads whole in the preview of the template are check
 ## Authentication
 
 - **Users** sign in with Adobe IMS. The action serves the OAuth protected resource metadata (RFC 9728) at `/.well-known/oauth-protected-resource` and validates the bearer token of each MCP request against IMS (`actions/mcp-server/validator.js`). The MCP client (Claude, ChatGPT) registers its own OAuth client with IMS, so no client ID is needed in the connector settings.
-- **Allowed organizations** (optional, `ALLOWED_ORGS`): only the members of these Adobe organizations may use the server; the others get a 403. The server then asks for the `read_organizations` scope too, reads the organizations of the user from IMS (cached 10 minutes per token) and answers 403 `insufficient_scope` when the token lacks it.
+- **Allowed organizations** (optional, `ALLOWED_ORGS`): the sign-in does not change, but only the members of these Adobe organizations may call the tools; the others get the reason as a tool error. The organizations of the user are read from IMS (its organizations, or the product contexts of its profile), cached 10 minutes per token.
 - **Photoshop API** calls use Firefly Services server-to-server credentials.
 
 ## Project structure
