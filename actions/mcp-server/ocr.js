@@ -153,10 +153,11 @@ function compareTexts (expected, read) {
     }
     const close = remaining.findIndex(r => isClose(word, r))
     if (close >= 0 && use(close)) return
-    // Words read joined (e.g. "jointheclub"): a longer word in the text read, or a shorter one with a word next to it
+    // Words read joined (e.g. "jointheclub"), or with letters of nothing before or after (e.g. "autunno" read "daqutunno"): a
+    // longer word in the text read, or a shorter one with a word next to it
     const before = expectedWords[wordIndex - 1]
     const after = expectedWords[wordIndex + 1]
-    const joined = (word.length > 3 && readJoined.includes(word)) ||
+    const joined = (word.length > 3 && includesClose(readJoined, word)) ||
       (before && includesClose(readJoined, before + word)) || (after && includesClose(readJoined, word + after))
     if (!joined) {
       missing.push(word)
@@ -238,10 +239,12 @@ function textWords (expected, words, near) {
   // Word read → the expected word it is
   const used = new Map()
   wordsOf(expected).forEach(word => {
-    // The word, a piece of it (broken across lines), words read joined with it (at least 3 letters, to be specific), or the word
-    // with a letter more (e.g. "da," read "day": a punctuation sign read as a letter)
+    // The word, a piece of it (broken across lines), words read joined with it (at least 3 letters, to be specific; longer than
+    // 3 letters, with letters of a similar shape), or the word with a letter more (e.g. "da," read "day": a punctuation sign read
+    // as a letter)
     const matches = candidates.filter(c => !used.has(c) && c.tokens.some(token => isClose(word, token) ||
-      (token.length > 1 && word.includes(token)) || ((word.length > 2 || token.length === word.length + 1) && token.includes(word))))
+      (token.length > 1 && word.includes(token)) || ((word.length > 2 || token.length === word.length + 1) && token.includes(word)) ||
+      (word.length > 3 && includesClose(token, word))))
     matches.sort((a, b) => distance(a.box) - distance(b.box))
     if (matches[0]) used.set(matches[0], word)
   })
