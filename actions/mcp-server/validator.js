@@ -5,6 +5,9 @@
  */
 
 const DEFAULT_IMS_HOST = 'https://ims-na1.adobelogin.com'
+// Organizations of the users, by token, for the containers kept warm between requests
+const ORGS_CACHE_MS = 10 * 60 * 1000
+const orgsCache = new Map()
 
 /**
  * Normalize request headers to lowercase keys.
@@ -52,6 +55,78 @@ function getUnverifiedClientId (token) {
 }
 
 /**
+ * Organizations allowed on this server (ALLOWED_ORGS, comma-separated, e.g. 12345@AdobeOrg); empty for any user.
+ * @param {Record<string, any>} params
+ * @returns {string[]}
+ */
+function getAllowedOrgs (params) {
+  return String(params.ALLOWED_ORGS || '').split(/[\s,]+/).filter(Boolean)
+}
+
+// Ids of organizations (12345@AdobeOrg) in an IMS answer: orgRef of the organizations, owningEntity of the product
+// contexts of a profile
+function orgIdsIn (value, ids = new Set()) {
+  if (Array.isArray(value)) value.forEach(item => orgIdsIn(item, ids))
+  else if (value && typeof value === 'object') {
+    if (value.orgRef?.ident && value.orgRef?.authSrc) ids.add(`${value.orgRef.ident}@${value.orgRef.authSrc}`)
+    if (typeof value.owningEntity === 'string') ids.add(value.owningEntity)
+    Object.values(value).forEach(item => orgIdsIn(item, ids))
+  }
+  return ids
+}
+
+/**
+ * Organizations of the user of a token (ids like 12345@AdobeOrg), from IMS: its organizations, or the product contexts of
+ * its profile; answers: the HTTP status of each IMS request, for the refusals.
+ * @param {string} imsHost
+ * @param {string} token
+ * @returns {Promise<{ orgs: string[], answers: string[] }>}
+ */
+async function getUserOrgs (imsHost, token) {
+  const cached = orgsCache.get(token)
+  if (cached && cached.expiresAt > Date.now()) return cached.value
+  const ids = new Set()
+  const answers = []
+  for (const path of ['/ims/organizations/v5', '/ims/profile/v1']) {
+    const response = await fetch(`${imsHost}${path}`, { headers: { Authorization: `Bearer ${token}` } })
+    answers.push(`${path.split('/')[2]} HTTP ${response.status}`)
+    if (response.ok) orgIdsIn(await response.json(), ids)
+    if (ids.size) break
+  }
+  const value = { orgs: [...ids], answers }
+  for (const [key, entry] of orgsCache) if (entry.expiresAt <= Date.now()) orgsCache.delete(key)
+  orgsCache.set(token, { value, expiresAt: Date.now() + ORGS_CACHE_MS })
+  return value
+}
+
+/**
+ * Checks that the user of the request is in an organization allowed on this server (ALLOWED_ORGS), for the tool calls.
+ * @param {Record<string, any>} params
+ * @param {{ info?: (...args: any[]) => void, warn?: (...args: any[]) => void }} logger
+ * @returns {Promise<string | null>} the reason of the refusal, or null when allowed
+ */
+async function checkAllowedOrg (params, logger = console) {
+  const allowedOrgs = getAllowedOrgs(params)
+  if (!allowedOrgs.length) return null
+  const token = getTokenFromRequest(params)
+  const imsHost = (params.IMS_HOST && String(params.IMS_HOST).trim()) || DEFAULT_IMS_HOST
+  let read
+  try {
+    read = await getUserOrgs(imsHost, token)
+  } catch (error) {
+    logger.warn?.('IMS organizations request failed:', error.message)
+    return 'Unable to read your Adobe organizations. Try again.'
+  }
+  if (read.orgs.some(org => allowedOrgs.includes(org))) return null
+  logger.info?.(`IMS user ${getUnverifiedClaims(token).user_id} refused: ${read.orgs.length} organization(s) read, none allowed`)
+  // The organizations read, or the answers of IMS when none: the user sees why
+  const found = read.orgs.length
+    ? `organizations of your account: ${read.orgs.join(', ')}`
+    : `no organization given by Adobe IMS for your account (${read.answers.join(', ')}): reconnect the connector to grant the read_organizations scope`
+  return `Your Adobe account is not in an organization allowed on this server (${found}). Sign in with your company account.`
+}
+
+/**
  * Validate request auth against Adobe IMS.
  * @param {Record<string, any>} params - action params (__ow_headers, IMS_HOST)
  * @param {{ info?: (...args: any[]) => void, warn?: (...args: any[]) => void }} logger
@@ -89,6 +164,8 @@ async function validateRequestAuth (params, logger = console) {
 }
 
 module.exports = {
+  checkAllowedOrg,
+  getAllowedOrgs,
   getHeadersNormalized,
   getTokenFromRequest,
   getUnverifiedClaims,
