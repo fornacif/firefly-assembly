@@ -2,7 +2,7 @@ const { Core } = require('@adobe/aio-sdk')
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js')
 const { WebStandardStreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js')
 const { WORKFLOW, registerTools, registerResources, registerPrompts, runTask } = require('./tools.js')
-const { validateRequestAuth } = require('./validator.js')
+const { getAllowedOrgs, validateRequestAuth } = require('./validator.js')
 const { handlePickerRequest } = require('./aem-picker.js')
 
 let logger = null
@@ -115,12 +115,19 @@ function getResourceUrl (params) {
     return `https://${namespace}.adobeioruntime.net/api/v1/web/${actionPath.join('/')}`
 }
 
+// Scopes asked by MCP clients: IMS_SCOPES, with read_organizations when only the users of some organizations are allowed
+function getScopes (params) {
+    const scopes = String(params.IMS_SCOPES || 'openid,AdobeID').split(/[\s,]+/).filter(Boolean)
+    if (getAllowedOrgs(params).length && !scopes.includes('read_organizations')) scopes.push('read_organizations')
+    return scopes
+}
+
 // RFC 9728 metadata pointing MCP clients (e.g. Claude) to Adobe IMS for sign-in.
 function getProtectedResourceMetadata (params) {
     return {
         resource: getResourceUrl(params),
         authorization_servers: [(params.IMS_HOST && String(params.IMS_HOST).trim()) || 'https://ims-na1.adobelogin.com'],
-        scopes_supported: String(params.IMS_SCOPES || 'openid,AdobeID').split(/[\s,]+/).filter(Boolean),
+        scopes_supported: getScopes(params),
         bearer_methods_supported: ['header']
     }
 }
@@ -194,11 +201,13 @@ async function main (params) {
 
             const authResult = await validateRequestAuth(params, logger)
             if (authResult.error) {
+                // 403 for a valid token not allowed (RFC 6750): insufficient_scope when it lacks a scope
+                const error = authResult.scope ? `insufficient_scope", scope="${getScopes(params).join(' ')}` : authResult.forbidden ? 'access_denied' : 'invalid_token'
                 return {
-                    statusCode: 401,
+                    statusCode: authResult.forbidden ? 403 : 401,
                     headers: {
                         'Content-Type': 'application/json',
-                        'WWW-Authenticate': `Bearer error="invalid_token", resource_metadata="${getResourceUrl(params)}/.well-known/oauth-protected-resource"`
+                        'WWW-Authenticate': `Bearer error="${error}", resource_metadata="${getResourceUrl(params)}/.well-known/oauth-protected-resource"`
                     },
                     body: JSON.stringify({
                         jsonrpc: '2.0',

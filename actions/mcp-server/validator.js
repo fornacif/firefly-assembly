@@ -5,6 +5,9 @@
  */
 
 const DEFAULT_IMS_HOST = 'https://ims-na1.adobelogin.com'
+// Organizations of the users, by token, for the containers kept warm between requests
+const ORGS_CACHE_MS = 10 * 60 * 1000
+const orgsCache = new Map()
 
 /**
  * Normalize request headers to lowercase keys.
@@ -52,10 +55,40 @@ function getUnverifiedClientId (token) {
 }
 
 /**
+ * Organizations allowed on this server (ALLOWED_ORGS, comma-separated, e.g. 12345@AdobeOrg); empty for any user.
+ * @param {Record<string, any>} params
+ * @returns {string[]}
+ */
+function getAllowedOrgs (params) {
+  return String(params.ALLOWED_ORGS || '').split(/[\s,]+/).filter(Boolean)
+}
+
+/**
+ * Organizations of the user of a token (ids like 12345@AdobeOrg), from IMS (scope read_organizations); null when IMS
+ * does not give them.
+ * @param {string} imsHost
+ * @param {string} token
+ * @returns {Promise<string[] | null>}
+ */
+async function getUserOrgs (imsHost, token) {
+  const cached = orgsCache.get(token)
+  if (cached && cached.expiresAt > Date.now()) return cached.orgs
+  const response = await fetch(`${imsHost}/ims/organizations/v5`, { headers: { Authorization: `Bearer ${token}` } })
+  if (!response.ok) return null
+  const result = await response.json()
+  const orgs = (Array.isArray(result) ? result : [])
+    .map(org => org?.orgRef && `${org.orgRef.ident}@${org.orgRef.authSrc}`).filter(Boolean)
+  for (const [key, entry] of orgsCache) if (entry.expiresAt <= Date.now()) orgsCache.delete(key)
+  orgsCache.set(token, { orgs, expiresAt: Date.now() + ORGS_CACHE_MS })
+  return orgs
+}
+
+/**
  * Validate request auth against Adobe IMS.
  * @param {Record<string, any>} params - action params (__ow_headers, IMS_HOST)
  * @param {{ info?: (...args: any[]) => void, warn?: (...args: any[]) => void }} logger
- * @returns {Promise<{ error?: string, token?: object }>} error set if invalid, token holds the validated IMS claims
+ * @returns {Promise<{ error?: string, forbidden?: boolean, scope?: string, token?: object }>} error set if invalid
+ *   (forbidden: valid but not allowed, scope: a scope it lacks), token holds the validated IMS claims
  */
 async function validateRequestAuth (params, logger = console) {
   const token = getTokenFromRequest(params)
@@ -84,11 +117,31 @@ async function validateRequestAuth (params, logger = console) {
     return { error: `Invalid token: ${result.reason || 'rejected by Adobe IMS'}.` }
   }
 
+  // Only the users of the allowed organizations
+  const allowedOrgs = getAllowedOrgs(params)
+  if (allowedOrgs.length) {
+    let orgs
+    try {
+      orgs = await getUserOrgs(imsHost, token)
+    } catch (error) {
+      logger.warn?.('IMS organizations request failed:', error.message)
+      return { error: 'Unable to read your Adobe organizations.' }
+    }
+    if (!orgs) {
+      return { error: 'This server needs to read your Adobe organizations: sign in again.', forbidden: true, scope: 'read_organizations' }
+    }
+    if (!orgs.some(org => allowedOrgs.includes(org))) {
+      logger.info?.(`IMS user ${result.token.user_id} refused: not in an allowed organization (${orgs.length} organization(s))`)
+      return { error: 'Your Adobe account is not in an organization allowed on this server. Sign in with your company account.', forbidden: true }
+    }
+  }
+
   logger.info?.(`Authenticated IMS user ${result.token.user_id} via client ${result.token.client_id}`)
   return { token: result.token }
 }
 
 module.exports = {
+  getAllowedOrgs,
   getHeadersNormalized,
   getTokenFromRequest,
   getUnverifiedClaims,
