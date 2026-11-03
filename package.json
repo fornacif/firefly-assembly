@@ -10,6 +10,7 @@
     "dev": "aio app run"
   },
   "dependencies": {
+    "@adobe/aio-lib-state": "^5.4.0",
     "@adobe/aio-sdk": "^5.0.0",
     "@modelcontextprotocol/sdk": "^1.24.0",
     "jpeg-js": "^0.4.4",

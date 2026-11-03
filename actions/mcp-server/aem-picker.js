@@ -3,7 +3,7 @@
 // A picker session holds the selector config, with the IMS token of the user, under an unguessable id passed in the
 // URL fragment of the page; the page reads it and posts the selection back through handlePickerRequest.
 const crypto = require('crypto')
-const stateLib = require('@adobe/aio-lib-state')
+const stateStore = require('./state')
 
 const SESSION_TTL_SECONDS = 15 * 60
 const SESSION_ID = /^[0-9a-f]{64}$/
@@ -14,7 +14,7 @@ const sessionKey = id => `aem-picker-${id}`
 
 async function createPickerSession (selectorConfig, { multiple }) {
   const id = crypto.randomBytes(32).toString('hex')
-  const state = await stateLib.init()
+  const state = stateStore
   await state.put(sessionKey(id), { status: 'pending', multiple, selectorConfig }, { ttl: SESSION_TTL_SECONDS })
   return id
 }
@@ -27,7 +27,7 @@ async function readSession (state, id) {
 // Selection of a session: { status: 'pending' | 'selected' | 'cancelled' | 'expired', assets }. A final result is
 // returned once, then the session is deleted.
 async function getPickerResult (id) {
-  const state = await stateLib.init()
+  const state = stateStore
   const session = await readSession(state, id)
   if (!session) return { status: 'expired', assets: [] }
   if (session.status !== 'pending') await state.delete(sessionKey(id))
@@ -43,7 +43,7 @@ function json (statusCode, body) {
 // ends the session (the token is dropped from it).
 async function handlePickerRequest (body) {
   if (!body || typeof body !== 'object') return json(400, { error: 'Invalid request' })
-  const state = await stateLib.init()
+  const state = stateStore
   const session = await readSession(state, body.sessionId)
   if (!session || session.status !== 'pending') return json(404, { error: 'This AEM selection has expired or is already done. Start it again from Claude.' })
 

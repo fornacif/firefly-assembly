@@ -4,7 +4,7 @@ const { z } = require('zod')
 const filesLib = require('@adobe/aio-lib-files')
 const { checkTexts, guessLanguage, warmUp: warmUpOcr } = require('./ocr.js')
 const { getStartViewHtml, getUploadViewHtml, getVariantImagesViewHtml, getLayersViewHtml, getTextsViewHtml, getVariantViewHtml } = require('./views.js')
-const stateLib = require('@adobe/aio-lib-state')
+const stateStore = require('./state')
 const { getTokenFromRequest, getUnverifiedClaims, getUnverifiedClientId } = require('./validator.js')
 const { createPickerSession, getPickerResult } = require('./aem-picker.js')
 const { zipFiles } = require('./zip.js')
@@ -322,9 +322,8 @@ function newStoragePath (folder, fileName) {
 
 // Clients of App Builder storage and state, initialized once per container (a failed init is tried again on the next call).
 let filesClient = null
-let stateClient = null
 const initFiles = () => (filesClient = filesClient || filesLib.init().catch(error => { filesClient = null; throw error }))
-const initState = () => (stateClient = stateClient || stateLib.init().catch(error => { stateClient = null; throw error }))
+const initState = async () => stateStore
 
 async function createStorageUrls (folder, fileName) {
   const files = await initFiles()
