@@ -40,8 +40,6 @@ application:
               AEM_REPOSITORY_ID: $AEM_REPOSITORY_ID
               # Tier browsed by the selector: delivery (default, approved assets) or author
               AEM_TIER: $AEM_TIER
-              # Optional organizations whose users may call the tools, comma-separated (e.g. 12345@AdobeOrg); empty for any Adobe user.
-              ALLOWED_ORGS: $ALLOWED_ORGS
             annotations:
               # The action validates the Adobe IMS token itself (validator.js) and serves the OAuth metadata
               require-adobe-auth: false

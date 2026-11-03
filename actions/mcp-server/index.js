@@ -2,7 +2,7 @@ const { Core } = require('@adobe/aio-sdk')
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js')
 const { WebStandardStreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js')
 const { WORKFLOW, registerTools, registerResources, registerPrompts, runTask } = require('./tools.js')
-const { checkAllowedOrg, getAllowedOrgs, validateRequestAuth } = require('./validator.js')
+const { validateRequestAuth } = require('./validator.js')
 const { handlePickerRequest } = require('./aem-picker.js')
 
 let logger = null
@@ -78,22 +78,6 @@ async function responseToRuntime (response) {
     return { statusCode: response.status, headers, body: await response.text() }
 }
 
-// Answer to the tool calls of a request when its user is not in an allowed organization; null otherwise.
-async function refuseToolCalls (params) {
-    const body = parseRequestBody(params)
-    const messages = Array.isArray(body) ? body : [body]
-    const calls = messages.filter(message => message?.method === 'tools/call')
-    if (!calls.length) return null
-    const reason = await checkAllowedOrg(params, logger)
-    if (!reason) return null
-    const answers = calls.map(call => ({ jsonrpc: '2.0', id: call.id, result: { content: [{ type: 'text', text: reason }], isError: true } }))
-    return {
-        statusCode: 200,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(Array.isArray(body) ? answers : answers[0])
-    }
-}
-
 async function handleMcpRequest (params) {
     const server = createMcpServer(params)
     const body = parseRequestBody(params)
@@ -131,20 +115,12 @@ function getResourceUrl (params) {
     return `https://${namespace}.adobeioruntime.net/api/v1/web/${actionPath.join('/')}`
 }
 
-// Scopes asked by MCP clients: IMS_SCOPES, with read_organizations when only the users of some organizations are allowed
-// (IMS gives the organizations of a user only with it)
-function getScopes (params) {
-    const scopes = String(params.IMS_SCOPES || 'openid,AdobeID').split(/[\s,]+/).filter(Boolean)
-    if (getAllowedOrgs(params).length && !scopes.includes('read_organizations')) scopes.push('read_organizations')
-    return scopes
-}
-
 // RFC 9728 metadata pointing MCP clients (e.g. Claude) to Adobe IMS for sign-in.
 function getProtectedResourceMetadata (params) {
     return {
         resource: getResourceUrl(params),
         authorization_servers: [(params.IMS_HOST && String(params.IMS_HOST).trim()) || 'https://ims-na1.adobelogin.com'],
-        scopes_supported: getScopes(params),
+        scopes_supported: String(params.IMS_SCOPES || 'openid,AdobeID').split(/[\s,]+/).filter(Boolean),
         bearer_methods_supported: ['header']
     }
 }
@@ -231,9 +207,6 @@ async function main (params) {
                     })
                 }
             }
-            // Tool calls only for the users of the allowed organizations (ALLOWED_ORGS): the others get the reason as a tool error
-            const refused = await refuseToolCalls(params)
-            if (refused) return refused
             return await handleMcpRequest(params)
         }
 

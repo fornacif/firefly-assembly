@@ -46,7 +46,6 @@ Only the texts that the OCR reads whole in the preview of the template are check
 ## Authentication
 
 - **Users** sign in with Adobe IMS. The action serves the OAuth protected resource metadata (RFC 9728) at `/.well-known/oauth-protected-resource` and validates the bearer token of each MCP request against IMS (`actions/mcp-server/validator.js`). The MCP client (Claude, ChatGPT) registers its own OAuth client with IMS, so no client ID is needed in the connector settings.
-- **Allowed organizations** (optional, `ALLOWED_ORGS`): only the members of these Adobe organizations may call the tools; the others get the reason as a tool error. The server then asks for the `read_organizations` scope too (the OAuth credential of the connector must allow it), and reads the organizations of the user from IMS, cached 10 minutes per token.
 - **Photoshop API** calls use Firefly Services server-to-server credentials.
 
 ## Project structure
@@ -83,8 +82,6 @@ FIREFLY_SERVICES_API_SCOPES=
 AEM_REPOSITORY_ID=
 # delivery (default, approved assets) or author
 AEM_TIER=
-## Organizations allowed on this server (optional), comma-separated, e.g. 12345@AdobeOrg. Empty: any Adobe user.
-ALLOWED_ORGS=
 ```
 
 Optional action parameters, with their defaults: `IMS_HOST` (`https://ims-na1.adobelogin.com`), `IMS_SCOPES` (`openid,AdobeID`), `MCP_RESOURCE_URL` (the `adobeioruntime.net` URL of the action), `STATIC_ORIGIN` (`https://<namespace>.adobeio-static.net`), `AEM_IMS_ORG` (picked by the user), `AEM_API_KEY` (the client ID of the user's token).
