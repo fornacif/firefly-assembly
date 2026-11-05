@@ -105,8 +105,19 @@ const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 // Exponential backoff, randomized so that parallel jobs do not retry all at once
 const backoff = attempt => Math.min(RETRY_BASE_DELAY_MS * 2 ** attempt * (0.5 + Math.random()), RETRY_MAX_DELAY_MS)
 
-// Wait asked by a 429 answer, at most this long
+// Wait asked by a 429 answer, at most this long: a longer one (e.g. hours, a daily quota used up) is not waited for, the requests
+// to the host fail at once until then
 const RATE_LIMIT_MAX_WAIT_MS = 120000
+// Until when each host refuses the requests (quota used up), from the Retry-After of its 429 answer
+const quotaUsedUntil = new Map()
+
+// Error of a request to a host whose quota is used up until a time.
+function quotaError (host, until) {
+  const minutes = Math.ceil((until - Date.now()) / 60000)
+  const delay = minutes >= 60 ? `${Math.floor(minutes / 60)} h ${minutes % 60} min` : `${minutes} min`
+  return new Error(`The quota of ${host} for this server is used up until ${new Date(until).toISOString().slice(11, 16)} UTC ` +
+    `(in ${delay}): try again then.`)
+}
 // Until when the requests to each host wait, after a 429 answer of this host: all the requests of the container wait, not only
 // the one that got it, as each request counts against the rate limit
 const rateLimitedUntil = new Map()
@@ -126,6 +137,7 @@ const recentlyRateLimited = url => (rateLimitedUntil.get(new URL(url).host) || 0
 async function fetchWithRetry (url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
   const host = new URL(url).host
   for (let attempt = 0; ; attempt++) {
+    if ((quotaUsedUntil.get(host) || 0) > Date.now()) throw quotaError(host, quotaUsedUntil.get(host))
     const until = rateLimitedUntil.get(host) || 0
     if (until > Date.now()) await wait(until - Date.now())
     let response
@@ -145,7 +157,13 @@ async function fetchWithRetry (url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS
     await response.body?.cancel().catch(() => {})
     if (response.status === 429) {
       const header = response.headers.get('retry-after')
-      const delay = Math.min(retryAfterMs(header) ?? backoff(attempt), RATE_LIMIT_MAX_WAIT_MS)
+      const asked = retryAfterMs(header)
+      if (asked > RATE_LIMIT_MAX_WAIT_MS) {
+        quotaUsedUntil.set(host, Date.now() + asked)
+        console.warn(`${host} quota used up on ${options.method || 'GET'} ${new URL(url).pathname} (429, Retry-After ${header}): requests refused until then`)
+        throw quotaError(host, Date.now() + asked)
+      }
+      const delay = asked ?? backoff(attempt)
       if (Date.now() + delay > (rateLimitedUntil.get(host) || 0)) {
         rateLimitedUntil.set(host, Date.now() + delay)
         console.warn(`${host} rate limited on ${options.method || 'GET'} ${new URL(url).pathname} (429, Retry-After ${header ?? 'none'}): requests wait ${Math.round(delay / 1000)}s`)
