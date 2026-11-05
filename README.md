@@ -9,31 +9,26 @@ MCP server, deployed as an Adobe I/O Runtime (App Builder) action, that creates 
 3. **Texts** (`review-variant-texts`): an editable table with the texts of each variant.
 4. **Images** (`upload-variant-images`): a grid with one image per variant and smart object layer, from the computer or AEM, with crops framed on the subject.
 5. **Generation** (`create-variant`): the variants are rendered in parallel, by generations of 10 at most (one task each, within the action timeout; more variants are generated in several), as JPEG (default), PNG and/or layered PSD files.
-6. **Review**: the widget checks the texts of each variant (see below) and marks their problems on the visual, numbered, with a proposed fix (a smaller font size). Each variant has a "What should change?" field, pre-filled with the proposed fixes; the user edits it and sends the changes to the assistant, which generates again only these variants. Each generation shows only its own variants, with a download button per file and a Download all button (a ZIP archive of all the files of the generation, built by a task: `create-variants-zip`).
+6. **Review**: the assistant checks the texts of each variant on its visual (see below), and the widget marks their problems on the visual, numbered, with a proposed fix. Each variant has a "What should change?" field, pre-filled with the proposed fixes; the user edits it and sends the changes to the assistant, which generates again only these variants. Each generation shows only its own variants, with a download button per file and a Download all button (a ZIP archive of all the files of the generation, built by a task: `create-variants-zip`).
 
 Widgets return what the user confirmed through a short reference that the assistant reads with `get-widget-result`. The other tools (`save-widget-result`, `suggest-crop`, `create-upload-url`, AEM picker tools…) are used by the widgets. `upload-file` uploads a single file outside the workflow.
 
 ## Long operations
 
-Adobe I/O Runtime ends a web request after about 60 seconds, and Photoshop jobs on large files can take longer. The operations that run Photoshop jobs (reading a template and rendering its preview, framing an image, generating variants) run as tasks: the tool starts an activation of the same action without waiting for it (5 minutes, the action timeout), signed with a secret of the action, and answers at once with a task id. The task writes its progress and result in App Builder state; the widgets poll `get-task` and show what is ready: the layers then the preview, each variant as soon as it is rendered then its text checks. `get-psd-manifest` still waits up to 50 seconds for the layers, as the assistant needs them.
+Adobe I/O Runtime ends a web request after about 60 seconds, and Photoshop jobs on large files can take longer. The operations that run Photoshop jobs (reading a template and rendering its preview, framing an image, generating variants) run as tasks: the tool starts an activation of the same action without waiting for it (5 minutes, the action timeout), signed with a secret of the action, and answers at once with a task id. The task writes its progress and result in App Builder state; the widgets poll `get-task` and show what is ready: the layers then the preview, each variant as soon as it is rendered. `get-psd-manifest` still waits up to 50 seconds for the layers, as the assistant needs them.
 
 ## Text checks
 
-Each edited text of a generated variant is checked on the rendered visual, with an OCR (Tesseract, `actions/mcp-server/ocr.js`). The text must stay within its bounds: the smallest element it lies within in the template (a panel, a band), or the canvas. The OCR reads the area of the text in the template, wider by the growth expected from the length of the new text, within these bounds but for 2.5 line heights past their sides (little of a photo next to a panel is read with the text, and the letters past the side of a panel are read), and not into the other texts on the same lines (the OCR would mix them). It gives the words read and where they are. A text read whole inside its area of the template fits. Otherwise, one problem per cause:
+The assistant checks the texts of the generated variants by looking at them. When a generation is done, its widget asks the assistant in a message to check its texts (or, when the generation was done a while ago, e.g. in a conversation opened again, the Check the texts button does). The assistant then calls:
 
-| Check | How | Finds |
-|---|---|---|
-| Bounds | Words read past a side of its bounds (measured), or words missing at the end (or start) of the text, read up to a side of its bounds: the text goes on past it, by an estimate line by line from the letters not read | A text running out of its panel or band, or past an edge of the visual |
-| Overlaps | Rectangle of the words read, against the other visible layers of the template, compared with the template | A text overlapping an element (logo, button, other text) more than in the template. Backgrounds and the elements the text lies on in the template are by design and not reported |
-| Words | Words read against the text sent | Words missing (cut, hidden, low contrast), or broken across two lines by a paragraph box too narrow for them; only when no other cause explains them |
+1. `review-variants`: the visuals of the generation, reduced to 1000 px on their longest side and given as images (the assistant reads images in a tool result, not their URLs; `actions/mcp-server/review.js`), with the texts sent and the layers of the template with their positions.
+2. `report-variant-issues`: per variant, the problems found (a text cut or past an edge, hidden, overlapping another element, hard to read, badly broken, or not the text sent), each with its layer, a fix proposed to the user and the rectangle of the text on the visual; without a rectangle, the area of the layer in the template is marked, and where it overlaps the layers named.
 
-The card marks the whole text as estimated, and in red the part out of its bounds or over another element.
-
-Only the texts that the OCR reads whole in the preview of the template are checked: a text over a photo, which it cannot tell from the photo, is not (the card says so). The OCR reads the Latin script only, with the model of the language of the text: English, French, German, Spanish, Italian or Portuguese, given per variant by the assistant (`language`) or guessed from the text; the English model for the other languages. Accents and case are ignored in the comparison. Texts in other scripts are not checked. Areas whose lines are less than 40 px high in the visual are enlarged (up to 3 times) before they are read. The models are downloaded once per container from the jsDelivr CDN; if they cannot be, the variants are shown without checks. The checks of a variant are given up after 60 seconds: it is shown, its texts not checked.
+The problems are stored with the generation; the widget reads them (`get-variant-review`), marks them on the visuals, numbered, and pre-fills the changes of each variant with the fixes proposed.
 
 ## Best practices for templates
 
-- **Use point text, not paragraph text**, for the texts to vary. A paragraph text keeps its box: a longer text is hidden past its last line or has its words broken across lines. A point text only breaks lines where its text does, and grows from its anchor, which the edge and overlap checks measure.
+- **Use point text, not paragraph text**, for the texts to vary. A paragraph text keeps its box: a longer text is hidden past its last line or has its words broken across lines. A point text only breaks lines where its text does, and grows from its anchor.
 - **Align the texts from the side they should grow from**: centered texts grow on both sides, left-aligned texts to the right.
 - **Leave room around the texts** that will be translated or rewritten: localized texts are often longer.
 - **Keep each element in its own layer** (logo, button, badge), not merged into a background: the overlap check compares layers.
@@ -41,7 +36,7 @@ Only the texts that the OCR reads whole in the preview of the template are check
 - **Do not lock the layers to vary**: locked layers are not offered in the layer picker.
 - **Name the layers** (e.g. "headline", "cta"): the names are shown to the user and to the assistant.
 - **Break the lines of the original texts where they should be**: the assistant writes the new texts with the same number of lines and about the same number of characters per line. A new text written without any line break is spread over as many lines as the original text, of balanced lengths, without breaking words; a text with line breaks is kept as written.
-- **Avoid texts on busy areas of an image**: they are hard to read, and the OCR reports them as such.
+- **Avoid texts on busy areas of an image**: they are hard to read.
 
 ## Authentication
 
@@ -55,7 +50,7 @@ Only the texts that the OCR reads whole in the preview of the template are check
 | `actions/mcp-server/index.js` | Action entry point: HTTP routing, OAuth metadata, MCP transport |
 | `actions/mcp-server/tools.js` | MCP tools, resources and prompt, Photoshop API and storage calls |
 | `actions/mcp-server/views.js` | HTML of the widgets |
-| `actions/mcp-server/ocr.js` | Reading of the texts of the rendered visuals (Tesseract, WebAssembly) |
+| `actions/mcp-server/review.js` | Visuals of the generated variants reduced for the review by the assistant |
 | `actions/mcp-server/zip.js` | ZIP archives of the files of a generation |
 | `actions/mcp-server/aem-picker.js` | Sessions of the AEM Asset Selector page |
 | `actions/mcp-server/validator.js` | IMS token validation |

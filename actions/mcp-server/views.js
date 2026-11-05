@@ -1657,6 +1657,7 @@ function getVariantViewHtml (scriptUrl) {
 <div class="actions" id="fix-actions" hidden>
   <sp-button variant="accent" id="send-changes" disabled>Send changes</sp-button>
   <sp-button variant="secondary" treatment="outline" id="download-all" hidden disabled>Download all</sp-button>
+  <sp-button variant="secondary" treatment="outline" id="review" hidden>Check the texts</sp-button>
 </div>
 <sp-help-text class="status" id="status"></sp-help-text>
 `, `
@@ -1734,14 +1735,11 @@ function getVariantViewHtml (scriptUrl) {
         return '<div class="card"><div class="subtle card-name">' + escapeHtml(v.fileName) + '</div>'
           + '<div class="card-error">' + escapeHtml(v.error) + '</div></div>';
       }
-      // Text problems measured on the generated file, numbered as their marks on the visual
+      // Text problems found on the generated file, numbered as their marks on the visual
       var problems = (v.textIssues || []).map(function (issue, k) {
         return '<div class="card-warning"><span class="issue-number">' + (k + 1) + '</span>'
           + escapeHtml('"' + issue.layerName + '" ' + issue.problems.join(', ')) + '</div>';
       }).join('')
-        // Checks not done, and why: the user checks the visual
-        + (v.textsUnchecked ? '<div class="subtle">' + escapeHtml((v.textIssues ? 'Texts partly checked, ' : 'Texts not checked, check the visual: ')
-          + v.textsUnchecked) + '</div>' : '')
         + (v.checking ? '<sp-progress-bar size="s" label="Checking the texts" indeterminate></sp-progress-bar>' : '');
       // Pre-filled once the texts are checked
       if (requests[v.fileName] == null && !v.checking) requests[v.fileName] = recommendationOf(v);
@@ -1763,12 +1761,14 @@ function getVariantViewHtml (scriptUrl) {
     updateFixActions();
   }
 
-  // Proposed fixes of the texts of a variant (a smaller font size), as pre-filled in its changes
+  // Proposed fixes of the texts of a variant (a smaller font size, or the fix proposed by the assistant), as pre-filled in its
+  // changes
   function recommendationOf(v) {
     return (v.textIssues || []).map(function (issue) {
+      if (issue.fix || !issue.fontScale) return issue.fix || '';
       return 'Reduce the font size of "' + issue.layerName + '" to ' + Math.round(issue.fontScale * 100) + '%.'
         + (issue.shorten ? ' A shorter text may be needed.' : '');
-    }).join('\\n');
+    }).filter(Boolean).join('\\n');
   }
 
   // Changes of a variant, '' if none
@@ -1893,8 +1893,83 @@ function getVariantViewHtml (scriptUrl) {
     else if (e.key === 'ArrowRight') step(1);
   });
 
+  // Texts checked by the assistant (review-variants, report-variant-issues): once the generation is done, the widget asks it in
+  // a message, then shows the problems it reports (get-variant-review) as those measured by the server
+  var reviewBtn = document.getElementById('review');
+  var REVIEW_POLL_MS = 3000;
+  var REVIEW_WAIT_MS = 10 * 60 * 1000;
+  // A generation done longer ago than this (e.g. the conversation opened again) is not sent for review by itself: the button
+  // asks for it
+  var REVIEW_ASK_WITHIN_MS = 2 * 60 * 1000;
+  var reviewedGeneration = null;
+
+  function setChecking(checking) {
+    variants = variants.map(function (v) { return v.error || v.pending ? v : Object.assign({}, v, { checking: checking }); });
+    render();
+  }
+
+  // Applies the problems reported so far; true when every variant generated has been reviewed
+  function applyReview(issues) {
+    var done = true;
+    variants = variants.map(function (v) {
+      if (v.error || v.pending) return v;
+      if (!issues[v.fileName]) { done = false; return v; }
+      // Pre-filled again with the fixes proposed, unless the user has written changes
+      if (!requestOf(v)) delete requests[v.fileName];
+      return Object.assign({}, v, { checking: false, textIssues: issues[v.fileName] });
+    });
+    render();
+    return done;
+  }
+
+  function waitForReview(taskId) {
+    var started = Date.now();
+    function poll() {
+      callTool('get-variant-review', { taskId: taskId }).then(function (review) {
+        if (review.reviewed && applyReview(review.issues)) return;
+        if (Date.now() - started > REVIEW_WAIT_MS) {
+          setChecking(false);
+          reviewBtn.hidden = false;
+          return setStatus('The texts were not checked: look at the visuals, or click Check the texts.', true);
+        }
+        setTimeout(poll, REVIEW_POLL_MS);
+      }, function () {
+        if (Date.now() - started > REVIEW_WAIT_MS) { setChecking(false); reviewBtn.hidden = false; return; }
+        setTimeout(poll, REVIEW_POLL_MS);
+      });
+    }
+    poll();
+  }
+
+  function askReview() {
+    var generation = reviewedGeneration;
+    reviewBtn.hidden = true;
+    setChecking(true);
+    var context = 'Result of create-variant: ' + generation.summary + '\\n\\nCheck the texts of these variants now (step 6 of the '
+      + 'workflow): call review-variants with taskId "' + generationTaskId + '", look at each visual, then call report-variant-issues '
+      + 'ONCE with every variant (no issues for those that are fine). Do not list the problems in chat: the widget shows them.';
+    sendToModel(context, 'Check the texts of the generated variants.', 'Checking the texts...')
+      .then(function () { waitForReview(generationTaskId); })
+      .catch(function (error) {
+        setChecking(false);
+        reviewBtn.hidden = false;
+        setStatus((error && error.message) || String(error), true);
+      });
+  }
+
+  function startReview(generation) {
+    reviewedGeneration = generation;
+    return callTool('get-variant-review', { taskId: generationTaskId }).then(function (review) {
+      if (review.reviewed && applyReview(review.issues)) return;
+      if (Date.now() - (generation.doneAt || 0) < REVIEW_ASK_WITHIN_MS) return askReview();
+      reviewBtn.hidden = false;
+    }, function () { reviewBtn.hidden = false; });
+  }
+
+  reviewBtn.addEventListener('click', askReview);
+
   // The variants are generated in a task: shown as they are rendered, then checked; when all are done, the model is given
-  // the result (failures, warnings, text problems).
+  // the result (failures, warnings, text problems), or asked to check the texts.
   onToolResult(function (result) {
     var data = result.structuredContent || {};
     if (result.isError || (!data.taskId && !data.variants)) {
@@ -1918,6 +1993,7 @@ function getVariantViewHtml (scriptUrl) {
         generating = false;
         variants = generation.variants || variants;
         render();
+        if (generation.review) return startReview(generation);
         return request('ui/update-model-context', { content: [{ type: 'text', text: 'Result of create-variant: ' + generation.summary }] });
       })
       .catch(function (error) {

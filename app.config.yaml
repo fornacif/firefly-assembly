@@ -30,8 +30,6 @@ application:
             inputs:
               # debug, info, warn or error
               LOG_LEVEL: debug
-              # Text checks of the generated variants (OCR): false to turn them off
-              TEXT_CHECKS: false
               # Firefly Services server-to-server credentials used to call the Photoshop API
               FIREFLY_SERVICES_API_CLIENT_ID: $FIREFLY_SERVICES_API_CLIENT_ID
               FIREFLY_SERVICES_API_CLIENT_SECRET: $FIREFLY_SERVICES_API_CLIENT_SECRET

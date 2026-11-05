@@ -2,7 +2,7 @@ const crypto = require('crypto')
 const { Readable } = require('stream')
 const { z } = require('zod')
 const filesLib = require('@adobe/aio-lib-files')
-const { checkTexts, guessLanguage, warmUp: warmUpOcr } = require('./ocr.js')
+const { reviewImage } = require('./review.js')
 const { getStartViewHtml, getUploadViewHtml, getVariantImagesViewHtml, getLayersViewHtml, getTextsViewHtml, getVariantViewHtml } = require('./views.js')
 const stateStore = require('./state')
 const { getTokenFromRequest, getUnverifiedClaims, getUnverifiedClientId } = require('./validator.js')
@@ -46,7 +46,7 @@ const WORKFLOW = `Variant creation workflow. When the user asks to create varian
 3. Texts: right after the layer selection, if text layers were selected, get the texts of each variant: the user provides them, or you write them from a brief (subject, tone, language). The user's requests always come first (length, number of words or lines, wording): follow them exactly, even if the text may not fit, and never shorten or change a text the user asked for to make it fit. Otherwise, write each text about as long as the original text of its layer (given by get-psd-manifest): the same number of lines and about the same number of characters per line (within 10%), so that it fits the layout. Write the line breaks yourself (\\n), where the original text has them: a point text layer does not wrap its lines by itself (a text without any line break is spread over the lines of the original text, by length). Each variant is created in each language chosen in the start widget (the total is the number of variants times the number of languages): write the texts of each variant in each language (the same message, translated and adapted, not word for word), and give each a short label ending with its language code (e.g. "Winter sale FR"), in the order variant by variant then language by language. Then call review-variant-texts with the texts and the original text of each layer. Then wait.
 4. Images: if smart object layers were selected, call upload-variant-images ONCE with the variant labels and the selected smart object layers (id, name and frame width and height from get-psd-manifest), so the user drops (or picks from AEM Assets) one image per variant and layer in a grid and adjusts how each one is cropped to its frame. When the user confirms, the widget gives you the URL, size and crop of each image the same way. Never ask for image URLs in chat. Then wait.
 5. Generation: as soon as the images are confirmed (or the texts, without smart object layers), call create-variant ONCE with all variants (with more than ${MAX_VARIANTS_PER_GENERATION}, in calls of ${MAX_VARIANTS_PER_GENERATION} at most, one after the other, without waiting for the renders), passing for each image the crop chosen in the grid and for each variant its language; do not recap the variants or ask for another approval. The widget shows the generated files with download buttons.
-6. Review: create-variant measures the texts of the generated files (past the edges of the canvas, overlapping other elements more than in the template, or, read by an OCR, words broken across two lines by a text box too narrow for them, or not found in the visual: cut by a text box that is too small, hidden or hard to read) and the widget marks each problem on the visual, with a proposed fix (a smaller font size). Each variant has a field of changes, pre-filled with its proposed fixes, that the user edits, then sends to you: nothing is generated again before. Do not list the problems in chat: briefly say that the widget shows them and takes the changes. When the user asks for changes (in the widget or in chat), make exactly the changes asked, nothing else: change a font size only when asked; to change the words of a text, rewrite it as asked (e.g. twice as many words, at most two lines) and keep its font size, even if it may not fit; then call create-variant again with the variants to change only, with the same file names and the same edits except the changes (a font size of N% is fontScale N/100): the new widget shows only these variants, the others stay in the earlier widgets. The widget checks whether the texts fit: do not adjust them beforehand. If a text the user asked for does not fit, you may then suggest a fix (a smaller font size or a shorter text), without applying it.
+6. Review: when the generation is done, the widget asks you to check the texts of the generated files: call review-variants with the task id it gives: it shows you each visual with the texts sent. Look at each edited text on its visual: cut or past an edge of the visual or of its panel, letters or words hidden, overlapping another element (logo, image, other text) more than in the template, too small or hard to read on its background, lines broken badly, or not the text sent. Then call report-variant-issues ONCE with every variant reviewed (no issues for those that are fine): per problem, the layer, a short description, the fix you propose (e.g. Reduce the font size of "headline" to 85%.) and the rectangle of the text on the visual, in pixels of the canvas. The widget marks each problem on the visual, with your proposed fix. Each variant has a field of changes, pre-filled with its proposed fixes, that the user edits, then sends to you: nothing is generated again before. Do not list the problems in chat: briefly say that the widget shows them and takes the changes. When the user asks for changes (in the widget or in chat), make exactly the changes asked, nothing else: change a font size only when asked; to change the words of a text, rewrite it as asked (e.g. twice as many words, at most two lines) and keep its font size, even if it may not fit; then call create-variant again with the variants to change only, with the same file names and the same edits except the changes (a font size of N% is fontScale N/100): the new widget shows only these variants, the others stay in the earlier widgets. The texts are checked once generated: do not adjust them beforehand. If a text the user asked for does not fit, you may then suggest a fix (a smaller font size or a shorter text), without applying it.
 Changes after generation: to re-crop or swap images, call upload-variant-images again with images pre-filled from the previous confirmation (never ask to upload again the images you already have, unless their URLs expired); to change texts, call create-variant again with the variants to change only (same file names).
 Widgets send their result (template URL, layers, texts, images) in your context and end the user's message with a reference in parentheses like "(r7k2p9)": if you do not have that result in your context, call get-widget-result with this ref before going on; never ask the user to redo a step because a result seems missing.
 The URLs from the widgets are temporary presigned URLs: use them in tool calls, but never show them to the user. Reply in the user's language.`
@@ -179,7 +179,7 @@ function createLimiter (max) {
 }
 
 // Asynchronous Firefly Services jobs running at once in this container (a generation of 10 variants runs up to 10 renders, plus
-// their crops and text measures): keeps the polling within the rate limits, without delaying the renders of a full generation.
+// their crops): keeps the polling within the rate limits, without delaying the renders of a full generation.
 const MAX_CONCURRENT_JOBS = 10
 const limitJob = createLimiter(MAX_CONCURRENT_JOBS)
 
@@ -440,11 +440,8 @@ const VARIANT_OUTPUTS = {
 const VARIANT_FORMATS = Object.keys(VARIANT_OUTPUTS)
 const PREVIEW_OUTPUT = { mediaType: 'image/jpeg', quality: 'high' }
 
-// Text checks of the generated variants (OCR), on unless the TEXT_CHECKS input of the action is false
-const textChecksEnabled = params => String(params.TEXT_CHECKS ?? 'true') !== 'false'
-
-// Renders one variant in all the requested formats with a single Photoshop job, then checks its texts on the visual (checkTexts).
-async function createVariant (params, { templateUrl, templateManifest, formats, layers, language, fileName: baseName, deadline, onRendered, readable, checkTexts }) {
+// Renders one variant in all the requested formats with a single Photoshop job.
+async function createVariant (params, { templateUrl, templateManifest, formats, layers, fileName: baseName, deadline }) {
   const shownFormat = formats.find(format => VARIANT_OUTPUTS[format].displayable)
   const [files, preview] = await Promise.all([
     Promise.all(formats.map(format => createStorageUrls('variants', `${baseName}.${VARIANT_OUTPUTS[format].extension}`))),
@@ -461,80 +458,12 @@ async function createVariant (params, { templateUrl, templateManifest, formats, 
   }), deadline, tooLate('The rendering'))
   // Shown in the view: the first displayable file, or the preview
   const imageUrl = preview ? preview.readUrl : files[formats.indexOf(shownFormat)].readUrl
-  const rendered = {
+  return {
     fileName: baseName,
     imageUrl,
     files: formats.map((format, i) => ({ format, fileName: `${baseName}.${VARIANT_OUTPUTS[format].extension}`, url: files[i].readUrl })),
     // For the view, which marks the text problems on the image
     canvas: boundsSize(templateManifest.document.bounds)
-  }
-  // Without text checks, the variant as rendered
-  if (!checkTexts) return rendered
-  // Shown while its texts are checked
-  onRendered?.(rendered)
-  const checkDeadline = Math.min(deadline, Date.now() + TEXT_CHECK_BUDGET_MS)
-  return {
-    ...rendered,
-    ...await beforeDeadline(measureRenderedTexts(imageUrl, templateManifest, layers, language, checkDeadline, readable)
-      .then(({ issues, unchecked }) => ({ textIssues: issues, ...(unchecked ? { textsUnchecked: unchecked } : {}) })),
-    checkDeadline, () => ({ textIssues: null, textsUnchecked: 'not finished within the time limit' }))
-  }
-}
-
-// A text overlaps another element when their common area grows beyond this share of the text area compared to the template
-const OVERLAP_TOLERANCE = 0.05
-// A text that lies mostly on an element in the template (this share of its area at least) is placed on it by design
-const DESIGNED_OVERLAP_SHARE = 0.5
-// Layers covering more of the canvas than this share are backgrounds, under the texts by design
-const BACKGROUND_SHARE = 0.8
-
-// Smallest font scale proposed as a fix, as advised to the model: below it, a text is better shortened
-const MIN_FONT_SCALE = 0.8
-
-// The text checks are optional: given up after this long, so that they do not hold the variant (it is shown, its texts not
-// checked)
-const TEXT_CHECK_BUDGET_MS = 60000
-
-// The OCR gives up this long before the deadline of the measure, so that the other checks are returned in time
-const OCR_DEADLINE_MARGIN_MS = 1000
-
-// Margin around a text area read by the OCR, as a share of its height: glyphs may go past the box of the layer
-const OCR_MARGIN = 0.15
-// ...and at least this many pixels: the box of a small text may cut its last letter
-const OCR_MIN_MARGIN_PX = 8
-// A text is in place when its words read lie in its area of the template with OCR_MARGIN; to see whether they do, and where it
-// went if it grew, the area of the template is read with this wider margin, and wider by the growth expected from its length
-// (at least GROWTH_READ_MIN of its width on each side)
-const IN_PLACE_READ_MARGIN = 0.4
-const GROWTH_READ_MIN = 0.25
-// A text whose words read, with the missing ones, would go past an edge of the canvas by more than this, goes past it
-const OCR_EDGE_PX = 4
-// The area read goes past the sides of the bounds of a text by this many of its line heights: the letters past a side of a panel
-// are read, and the words they end are not taken for words read with an error
-const PAST_BOUNDS_READ_LINES = 2.5
-// A word cut by a side of the bounds of a text is not read: the words read end up to about this many line heights from it
-const CUT_WORD_LINES = 3
-
-// Image bytes of a rendered visual, for the OCR.
-async function downloadImage (url) {
-  const response = await fetchWithRetry(url)
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return Buffer.from(await response.arrayBuffer())
-}
-
-// Margin of an area read by the OCR: a share of its height, at least OCR_MIN_MARGIN_PX for OCR_MARGIN (in proportion for others)
-const ocrMargin = (area, share) => Math.max(area.height * share, OCR_MIN_MARGIN_PX * share / OCR_MARGIN)
-
-// Area read by the OCR: the text area with a margin (share of its height), inside the canvas.
-function ocrRect (area, canvas, marginShare = OCR_MARGIN) {
-  const margin = ocrMargin(area, marginShare)
-  const left = Math.max(0, area.left - margin)
-  const top = Math.max(0, area.top - margin)
-  return {
-    left,
-    top,
-    width: Math.min(canvas.width, area.left + area.width + margin) - left,
-    height: Math.min(canvas.height, area.top + area.height + margin) - top
   }
 }
 
@@ -555,293 +484,6 @@ function intersection (a, b) {
   const width = Math.min(a.left + a.width, b.left + b.width) - left
   const height = Math.min(a.top + a.height, b.top + b.height) - top
   return width > 0 && height > 0 ? { left, top, width, height } : null
-}
-
-const surface = rect => rect ? rect.width * rect.height : 0
-
-// Elements of the template that a rendered text overlaps more than in the template: other texts, images, shapes, logos...
-// Layers are compared by their bounding boxes (a round logo counts as its box): only overlaps that appear or grow are
-// reported, and not with the elements the text lies on in the template (a photo, a band, a panel), as they are by design (a
-// text going out of the element it lies within is found by pastBounds and outOfBounds). Returns [{ name, factor, area }], factor being the
-// font scale that removes the overlap, the text shrinking along the axis that needs the least, and area the common rectangle.
-function findOverlaps (textArea, textBefore, edited, templateManifest, canvas) {
-  const canvasSurface = canvas.width * canvas.height
-  return drawnLayers(templateManifest.layers).flatMap(other => {
-    if (other.id === edited) return []
-    const otherBefore = layerArea(other)
-    if (!otherBefore || surface(otherBefore) > canvasSurface * BACKGROUND_SHARE) return []
-    const after = intersection(textArea, otherBefore)
-    const before = textBefore ? surface(intersection(textBefore, otherBefore)) : 0
-    if (textBefore && before >= surface(textBefore) * DESIGNED_OVERLAP_SHARE) return []
-    const grown = surface(after) - before
-    if (!after || grown <= surface(textArea) * OVERLAP_TOLERANCE) return []
-    return [{
-      name: other.name || String(other.id),
-      factor: Math.max((textArea.width - after.width) / textArea.width, (textArea.height - after.height) / textArea.height),
-      area: after
-    }]
-  })
-}
-
-// Text layers of a template that the OCR reads whole on its preview. For the others (e.g. a text over a photo, which the OCR
-// cannot tell from it), words not read in a variant say nothing: they are not checked. Cached per template; null when the
-// preview cannot be read, all texts are then checked.
-const readableCache = createCache(20)
-function readableTexts (params, templateUrl, manifest) {
-  return readableCache(templateUrl, async () => {
-    const started = Date.now()
-    const canvas = boundsSize(manifest.document.bounds)
-    const texts = getEditableLayers(manifest.layers).filter(layer => layer.type === 'text_layer' && layer.area)
-    const preview = await downloadImage(await renderPreview(params, templateUrl))
-    const checks = await checkTexts(preview, texts.map(layer => ({
-      text: layer.text,
-      rect: ocrRect(layer.area, canvas),
-      lineHeight: layer.area.height / linesOf(layer.text).length
-    })), canvas)
-    const readable = new Set(texts.filter((layer, i) => checks[i] && !checks[i].missing.length && !checks[i].broken.length).map(layer => layer.id))
-    console.log(`Template texts read in ${(Date.now() - started) / 1000}s: ${texts.map(layer => `"${layer.name}" ${readable.has(layer.id) ? 'readable' : 'not readable'}`).join(', ')}`)
-    return readable
-  }).catch(error => {
-    console.warn(`Template texts not read: ${error.message}`)
-    return null
-  })
-}
-
-// Whether a box lies in an area of the template, with OCR_MARGIN.
-function isInside (box, before) {
-  const margin = ocrMargin(before, OCR_MARGIN)
-  return box.left >= before.left - margin && box.top >= before.top - margin &&
-    box.left + box.width <= before.left + before.width + margin && box.top + box.height <= before.top + before.height + margin
-}
-
-const longestLine = text => Math.max(1, ...linesOf(text).map(line => line.trim().length))
-
-// Bounds a text must stay within: the smallest element of the template it lies within (a panel, a band), backgrounds left
-// out, or the canvas. Returns { name, rect }, name null for the canvas.
-function textBounds (before, templateManifest, canvas) {
-  const margin = ocrMargin(before, OCR_MARGIN)
-  const within = drawnLayers(templateManifest.layers)
-    .filter(layer => layer.type !== 'text_layer')
-    .map(layer => ({ name: layer.name, rect: layerArea(layer) }))
-    .filter(({ rect }) => rect && surface(rect) <= canvas.width * canvas.height * BACKGROUND_SHARE &&
-      before.left >= rect.left - margin && before.top >= rect.top - margin &&
-      before.left + before.width <= rect.left + rect.width + margin && before.top + before.height <= rect.top + rect.height + margin)
-    .sort((a, b) => surface(a.rect) - surface(b.rect))
-  return within[0] || { name: null, rect: { left: 0, top: 0, width: canvas.width, height: canvas.height } }
-}
-
-// Area where a text is read on the visual: its area in the template with a margin, wider by the growth expected from its
-// length and font scale, within its bounds (textBounds: little of what is out of them is read, so that a photo next to a panel
-// is not read with the text) but for PAST_BOUNDS_READ_LINES on the sides, and not into the other texts on the same lines (the
-// OCR mixes the lines of texts side by side).
-function growthRect (t, bounds, otherTexts) {
-  const { before } = t
-  const ratio = longestLine(t.edit.text) / longestLine(t.original?.text?.content) * (t.edit.fontScale || 1)
-  const grow = before.width * Math.max(GROWTH_READ_MIN, ratio - 1 + GROWTH_READ_MIN)
-  const margin = ocrMargin(before, IN_PLACE_READ_MARGIN)
-  const past = lineHeightOf(t) * PAST_BOUNDS_READ_LINES
-  const top = Math.max(bounds.top, before.top - margin)
-  const bottom = Math.min(bounds.top + bounds.height, before.top + before.height + margin)
-  let left = Math.max(bounds.left - past, before.left - grow)
-  let right = Math.min(bounds.left + bounds.width + past, before.left + before.width + grow)
-  otherTexts.forEach(other => {
-    if (other.top >= bottom || other.top + other.height <= top) return
-    if (other.left >= before.left + before.width) right = Math.min(right, other.left)
-    else if (other.left + other.width <= before.left) left = Math.max(left, other.left + other.width)
-  })
-  return { left, top, width: right - left, height: bottom - top }
-}
-
-// Expected height of the lines of a text: of its lines in the template, at its font scale.
-const lineHeightOf = t => t.before.height / linesOf(t.original?.text?.content).length * (t.edit.fontScale || 1)
-
-// Side of its bounds that the words read of a text (box) go past, by more than OCR_EDGE_PX, as measured: { side, overflow,
-// factor, area, atLeast } (see outOfBounds), null if none; atLeast when they reach a side of the area read (read): the text
-// goes on past it.
-function pastBounds (box, bounds, read) {
-  const right = box.left + box.width
-  const boundsRight = bounds.left + bounds.width
-  const boundsBottom = bounds.top + bounds.height
-  const sides = [
-    { side: 'right', overflow: right - boundsRight, factor: (boundsRight - box.left) / box.width, atLeast: right >= read.left + read.width - OCR_EDGE_PX },
-    { side: 'left', overflow: bounds.left - box.left, factor: (right - bounds.left) / box.width, atLeast: box.left <= read.left + OCR_EDGE_PX },
-    { side: 'bottom', overflow: box.top + box.height - boundsBottom, factor: (boundsBottom - box.top) / box.height, atLeast: false }
-  ].filter(({ overflow }) => overflow > OCR_EDGE_PX)
-  const side = sides.sort((a, b) => b.overflow - a.overflow)[0]
-  return side ? { ...side, area: box } : null
-}
-
-// Where a text cut by its bounds (textBounds) would end, from its words read and the letters not read: words missing with the
-// text read up to a side of its bounds (a word cut there is not read: within CUT_WORD_LINES line heights) go on past it,
-// missing at the end of the text for the right side and the bottom, at its start for the left side. On several lines, each
-// line read is as much wider as letters of its line of the text (lines) are not read. Returns { side, overflow, factor, area,
-// cut: true } when it goes past by more than OCR_EDGE_PX, factor being the font scale at which it fits, area the whole text as
-// estimated; null otherwise.
-function outOfBounds (check, text, bounds) {
-  const { box, missingAt, share } = check
-  const shown = 1 - share
-  if (!box || !shown || !missingAt) return null
-  const textLines = linesOf(text)
-  const near = Math.max(OCR_EDGE_PX, box.height / textLines.length * CUT_WORD_LINES)
-  const right = bounds.left + bounds.width
-  const bottom = bounds.top + bounds.height
-  const letters = line => line.normalize('NFKD').replace(/[^\p{L}\p{N}]/gu, '').length
-  // The right end of the text: line by line when its lines are read, otherwise from the share of its letters read
-  const end = textLines.length > 1 && check.lines.length === textLines.length
-    ? Math.max(...check.lines.map((line, i) => line.box.left + line.box.width * Math.max(1, letters(textLines[i]) / Math.max(1, line.letters))))
-    : box.left + box.width / shown
-  const width = end - box.left
-  const height = textLines.length > 1 ? box.height / shown : box.height
-  const sides = [
-    missingAt !== 'start' && box.left + box.width >= right - near &&
-      { side: 'right', overflow: end - right, factor: (right - box.left) / width, area: { ...box, width } },
-    missingAt !== 'end' && box.left <= bounds.left + near &&
-      { side: 'left', overflow: box.width / shown - (box.left + box.width - bounds.left), factor: (box.left + box.width - bounds.left) / (box.width / shown), area: { ...box, left: box.left + box.width - box.width / shown, width: box.width / shown } },
-    missingAt === 'end' && textLines.length > 1 && check.lines.length < textLines.length && box.top + box.height >= bottom - near &&
-      { side: 'bottom', overflow: box.top + height - bottom, factor: (bottom - box.top) / height, area: { ...box, height } }
-  ]
-  const side = sides.find(side => side && side.overflow > OCR_EDGE_PX)
-  return side ? { ...side, cut: true } : null
-}
-
-// Part of a text area out of a side of its bounds, null if none.
-function outsidePart (area, bounds, side) {
-  const outside = { ...area }
-  if (side === 'right') { outside.left = bounds.left + bounds.width; outside.width = area.left + area.width - outside.left }
-  if (side === 'left') outside.width = bounds.left - area.left
-  if (side === 'bottom') { outside.top = bounds.top + bounds.height; outside.height = area.top + area.height - outside.top }
-  return outside.width > 0 && outside.height > 0 ? outside : null
-}
-
-// A rectangle in the logs: left,top,width,height
-const rectText = rect => rect ? [rect.left, rect.top, rect.width, rect.height].map(Math.round).join(',') : 'none'
-
-// Missing words, as shown to the user: "sellers", or "best sellers"
-const quoteWords = words => `"${words.join(' ')}"`
-
-// Problems of the edited texts of a rendered variant, one check per cause, on the visual. The OCR reads it around the area of
-// each text in the template (growthRect), which gives the words read and where they are: a text read whole in its area and
-// within its bounds fits; otherwise it goes out of its bounds (the element it lies within, or the canvas: pastBounds for the
-// words read past them, outOfBounds for the words cut by them), overlaps other elements more than in the template (their
-// areas in the template), or has words broken across lines or missing (cut, hidden or unreadable; only when no edge or
-// overlap explains it). A text that only grows is not a problem: what it may cause is checked. The texts that the OCR cannot read in the
-// template (see readableTexts) are not checked. One entry per text with problems, with the font scale that brings it back in
-// its bounds (rounded down to 5%, not below MIN_FONT_SCALE, then marked as not enough), its area and the rectangles of its
-// overlaps. Best effort: returns { issues, unchecked }, issues being null when the texts could not be checked, and unchecked
-// what could not be checked and why.
-async function measureRenderedTexts (imageUrl, templateManifest, layers, language, deadline, readable) {
-  const textLayers = layers.filter(layer => layer.type === 'text_layer')
-  if (!textLayers.length) return { issues: [], unchecked: null }
-  try {
-    const canvas = boundsSize(templateManifest.document.bounds)
-    // Downloaded while the readable texts are awaited; its error is reported with the reading
-    const image = downloadImage(imageUrl)
-    image.catch(() => {})
-    const texts = textLayers.map(edit => {
-      const original = findLayer(templateManifest.layers, edit.id)
-      return { edit, original, before: original && layerArea(original) }
-    })
-    const notes = []
-    // Texts that the OCR can read (see readableTexts)
-    const readableIds = await beforeDeadline(readable || Promise.resolve(null), deadline - OCR_DEADLINE_MARGIN_MS, () => null)
-    const isReadable = t => t.before && (!readableIds || readableIds.has(t.edit.id))
-    const allTexts = drawnLayers(templateManifest.layers).filter(layer => layer.type === 'text_layer')
-    const measured = texts.filter(isReadable).map(t => {
-      const bounds = textBounds(t.before, templateManifest, canvas)
-      const otherTexts = allTexts.filter(layer => layer.id !== t.edit.id).map(layerArea).filter(Boolean)
-      return { ...t, bounds, read: growthRect(t, bounds.rect, otherTexts) }
-    })
-    const unreadable = texts.filter(t => !isReadable(t)).map(t => `"${t.original?.name || t.edit.id}"`)
-    if (unreadable.length) {
-      notes.push(`${unreadable.join(', ')} not checked: the OCR cannot read ${unreadable.length > 1 ? 'them' : 'it'} in the template either (e.g. over a photo)`)
-    }
-
-    const checks = measured.length
-      ? await beforeDeadline(
-        image.then(visual => checkTexts(visual, measured.map(t => ({
-          text: t.edit.text,
-          rect: t.read,
-          near: { x: t.before.left + t.before.width / 2, y: t.before.top + t.before.height / 2 },
-          language,
-          lineHeight: lineHeightOf(t)
-        })), canvas)).catch(error => { notes.push(`words not read: ${error.message}`); return [] }),
-        deadline - OCR_DEADLINE_MARGIN_MS, () => { notes.push('words not read: not finished within the time limit'); return [] })
-      : []
-
-    const issues = measured.flatMap((t, i) => {
-      const check = checks[i]
-      if (!check) return []
-      console.log(`Text check: "${t.original?.name}" read "${check.read}" at ${rectText(check.box)}, within ` +
-        `"${t.bounds.name || 'canvas'}" ${rectText(t.bounds.rect)}, area read ${rectText(t.read)}`)
-      const past = check.box && pastBounds(check.box, t.bounds.rect, t.read)
-      // In place: read whole in its area of the template, and not out of its bounds
-      if (!check.missing.length && !check.broken.length && check.box && !past && isInside(check.box, t.before)) return []
-      const problems = []
-      // Factors by which the text must shrink to fix each problem
-      const factors = []
-      // Rectangles of the overlaps in the canvas, for the view
-      const marks = []
-      let box = check.box
-      if (box) {
-        // Words cut by a side of its bounds, or words read past it
-        const out = (check.missing.length && outOfBounds(check, t.edit.text, t.bounds.rect)) || past
-        if (out) {
-          const where = t.bounds.name ? `out of "${t.bounds.name}" on the ${out.side}` : `past the ${out.side} edge of the visual`
-          const cut = out.cut ? `: ${quoteWords(check.missing)} cut` : ''
-          problems.push(`runs ${out.atLeast ? 'at least' : 'about'} ${Math.round(out.overflow)} px ${where}${cut}`)
-          factors.push(out.factor)
-          // The whole text as estimated, and the part out of its bounds
-          box = intersection(out.area, { left: 0, top: 0, width: canvas.width, height: canvas.height }) || box
-          const outside = outsidePart(box, t.bounds.rect, out.side)
-          if (outside) marks.push(outside)
-        }
-        findOverlaps(box, t.before, t.edit.id, templateManifest, canvas).forEach(overlap => {
-          problems.push(`now overlaps "${overlap.name}"`)
-          factors.push(overlap.factor)
-          marks.push(overlap.area)
-        })
-      }
-      // Words broken or missing, when no edge or overlap explains them
-      if (!problems.length) {
-        check.broken.forEach(({ word, fit }) => {
-          problems.push(`breaks "${word}" across two lines: its text box is too narrow for this word`)
-          factors.push(fit)
-        })
-        if (check.missing.length) {
-          problems.push(check.share === 1
-            ? 'cannot be read in the visual (cut, hidden or low contrast)'
-            : `${quoteWords(check.missing)} cannot be read in the visual (cut, hidden or low contrast)`)
-          // A smaller text shows the words cut by its box
-          factors.push(Math.sqrt(1 - check.share))
-        }
-      }
-      if (!problems.length) return []
-      const needed = Math.floor((t.edit.fontScale || 1) * Math.min(...factors) * 20) / 20
-      return [{
-        layerId: t.edit.id,
-        layerName: t.original?.name || String(t.edit.id),
-        problems,
-        fontScale: Math.max(needed, MIN_FONT_SCALE),
-        // A smaller font is not enough: the text should be shortened
-        shorten: needed < MIN_FONT_SCALE,
-        area: box || t.before,
-        marks
-      }]
-    })
-    return { issues, unchecked: notes.join('; ') || null }
-  } catch (error) {
-    console.warn(`Text check failed: ${error.message}`)
-    return { issues: null, unchecked: error.message }
-  }
-}
-
-// Text problems of one variant, for the model.
-function describeTextIssues (label, issues, unchecked) {
-  if (issues == null) return `${label}: texts could not be measured (${unchecked}): check the visual.`
-  const note = unchecked ? ` (${unchecked})` : ''
-  if (!issues.length) return `${label}: all texts fit${note}.`
-  return `${label}: ` + issues.map(issue => `"${issue.layerName}" ${issue.problems.join(', ')} (proposed to the user: font size ` +
-    `${Math.round(issue.fontScale * 100)}%${issue.shorten ? ', or a shorter text' : ''})`).join('; ') + note + '.'
 }
 
 // Character style attributes kept from the template when the font size of a text is scaled. The manifest describes the font
@@ -1062,29 +704,16 @@ function uniqueFileNames (variants) {
 
 // Runs each variant on its own, in parallel: its crops, then its render as soon as they are done, in its own formats or the
 // formats of the call. A failed or late variant does not prevent the others from being returned. onProgress(list) gets the
-// variants each time one changes: { fileName, pending: true } until rendered, then with checking: true until its texts are
-// checked, then as returned.
+// variants each time one changes: { fileName, pending: true } until rendered, then as returned.
 async function createVariants (params, { templateUrl, formats, variants, deadline, onProgress }) {
   const fileNames = uniqueFileNames(variants)
   const progress = fileNames.map(fileName => ({ fileName, pending: true }))
   const report = (index, variant) => { progress[index] = variant; onProgress?.([...progress]) }
-  // The OCR engine loads during the renders
-  const hasTexts = textChecksEnabled(params) && variants.some(variant => variant.layers.some(layer => layer.type === 'text_layer'))
-  // Language of the texts of each variant, as given or guessed from them
-  const languages = variants.map(variant => variant.language ||
-    guessLanguage(variant.layers.filter(layer => layer.type === 'text_layer').map(layer => layer.text).join('\n')))
-  if (hasTexts) {
-    warmUpOcr(languages)
-    // Needed to read the texts of the template (readableTexts), rendered during the reading of the template
-    renderPreview(params, templateUrl).catch(() => {})
-  }
   // The crops chosen by the user do not need the template: started during its reading, prepareLayers then gets them cached
   variants.forEach(variant => variant.layers
     .filter(layer => layer.type === 'smart_object_layer' && layer.crop)
     .forEach(layer => Promise.resolve(cropLayerImage(params, null, layer)).catch(() => {})))
   const templateManifest = beforeDeadline(getManifest(params, templateUrl), deadline, tooLate('Reading the template'))
-  // Read once for all variants, during the renders
-  const readable = hasTexts ? templateManifest.then(manifest => readableTexts(params, templateUrl, manifest), () => null) : null
   // Time of each step of each variant (seconds since the start), logged when all are done
   const started = Date.now()
   const timings = fileNames.map(() => ({}))
@@ -1101,13 +730,9 @@ async function createVariants (params, { templateUrl, formats, variants, deadlin
         deadline,
         formats: variant.formats ? [...new Set(variant.formats)] : formats,
         layers,
-        language: languages[index],
-        fileName: fileNames[index],
-        onRendered: rendered => { mark(index, 'render'); report(index, { ...rendered, checking: true }) },
-        readable,
-        checkTexts: hasTexts
+        fileName: fileNames[index]
       })
-      mark(index, 'checks')
+      mark(index, 'render')
       report(index, result)
       return result
     } catch (error) {
@@ -1145,17 +770,6 @@ function currentUserId (params) {
 }
 
 const shortHash = value => crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 16)
-
-// Text problems of the generated variants, for the model: nothing when there are no text layers or all texts fit.
-function describeGeneratedTexts (results) {
-  const measured = results.filter(v => !v.error && v.textIssues !== undefined)
-  if (!measured.some(v => v.textIssues == null || v.textIssues.length || v.textsUnchecked)) {
-    return measured.length ? '\nTexts measured on the generated files: all texts fit.' : ''
-  }
-  return '\n\nTexts measured on the generated files:\n' + measured.map(v => describeTextIssues(v.fileName, v.textIssues, v.textsUnchecked)).join('\n') +
-    '\nThe widget marks these problems on the visuals with the fixes proposed, and sends you the changes the user wants: do not list ' +
-    'them in chat, and do not apply a fix the user did not ask for.'
-}
 
 async function saveWidgetResult (params, text) {
   const ref = 'r' + Array.from({ length: 6 }, () => REF_ALPHABET[crypto.randomInt(REF_ALPHABET.length)]).join('')
@@ -1238,7 +852,7 @@ function templateData (manifest) {
 function describeGeneration (results, warnings) {
   const failed = results.filter(v => v.error)
   return `${results.length - failed.length}/${results.length} variant(s) generated and shown to the user with download buttons.` +
-    failed.map(v => `\n- ${v.fileName} failed: ${v.error}`).join('') + warnings + describeGeneratedTexts(results)
+    failed.map(v => `\n- ${v.fileName} failed: ${v.error}`).join('') + warnings
 }
 
 // Tasks by type: (params, task, update, deadline) → result. update({ partial }) gives the views what is ready.
@@ -1267,13 +881,83 @@ const TASKS = {
       deadline,
       onProgress: list => update({ partial: { templateUrl: args.templateUrl, variants: list } })
     })
-    return { templateUrl: args.templateUrl, variants, summary: describeGeneration(variants, args.warnings || '') }
+    // Reviewed by the assistant: with the layers of the template and the texts sent, for review-variants and report-variant-issues
+    const review = variants.some(v => !v.error) &&
+      args.variants.some(variant => variant.layers.some(layer => layer.type === 'text_layer'))
+    return {
+      templateUrl: args.templateUrl,
+      variants,
+      summary: describeGeneration(variants, args.warnings || ''),
+      ...(review ? { review: await reviewData(params, args), doneAt: Date.now() } : {})
+    }
   },
 
   // ZIP archive of the files of a generation
   async zip (params, { args, userId }) {
     return zipGeneration(userId, args.variantsTaskId)
   }
+}
+
+// What the assistant needs to review a generation: the drawn layers of the template ({ id, name, type, area }, area in pixels of
+// the canvas) and, per variant in order, its edited texts ({ layerId, text, fontScale }).
+async function reviewData (params, args) {
+  const manifest = await getManifest(params, args.templateUrl).catch(() => null)
+  return {
+    layers: manifest ? drawnLayers(manifest.layers).map(layer => ({ id: layer.id, name: layer.name, type: layer.type, area: layerArea(layer) })) : [],
+    texts: args.variants.map(variant => variant.layers.filter(layer => layer.type === 'text_layer')
+      .map(layer => ({ layerId: layer.id, text: layer.text, ...(layer.fontScale ? { fontScale: layer.fontScale } : {}) })))
+  }
+}
+
+// Problems reported by the assistant on a generation (report-variant-issues), read by its widget
+const reviewKey = (userId, taskId) => `review-${shortHash(userId)}-${taskId}`
+
+// A generation of the current user, done and to be reviewed by the assistant; throws otherwise.
+async function generationToReview (params, taskId) {
+  const generation = await readTask(params, taskId)
+  if (!generation) throw new Error('This generation is not known: it expired (24 hours) or belongs to another user.')
+  if (generation.status === 'failed') throw new Error(`This generation failed: ${generation.error}`)
+  return generation
+}
+
+// Content of review-variants: the texts to check, then each visual reduced (the assistant reads images, not their URLs).
+async function reviewContent (generation, fileNames) {
+  const { variants, review } = generation.result
+  const layerName = id => review.layers.find(layer => layer.id === id)?.name || String(id)
+  const shown = variants.map((variant, index) => ({ variant, texts: review.texts[index] || [] }))
+    .filter(({ variant }) => !variant.error && (!fileNames?.length || fileNames.includes(variant.fileName)))
+  const images = await Promise.all(shown.map(async ({ variant }) => {
+    const response = await fetchWithRetry(variant.imageUrl)
+    if (!response.ok) throw new Error(`The visual of ${variant.fileName} could not be downloaded (HTTP ${response.status})`)
+    return reviewImage(Buffer.from(await response.arrayBuffer()))
+  }))
+  const intro = `${shown.length} variant(s) to review. Layers of the template (pixels of the canvas: left, top, width, height): ` +
+    review.layers.map(layer => `"${layer.name}" (id ${layer.id}, ${layer.type}${layer.area ? `, ${['left', 'top', 'width', 'height'].map(k => Math.round(layer.area[k])).join(',')}` : ''})`).join('; ') +
+    '. Below, each visual with the texts sent. Check each edited text as the workflow says (step 6), then call report-variant-issues ' +
+    'ONCE with every variant below, with the rectangles in pixels of the canvas (each visual is reduced: multiply its pixels by the factor given).'
+  return [{ type: 'text', text: intro }, ...shown.flatMap(({ variant, texts }, i) => {
+    const canvas = variant.canvas || { width: images[i].width, height: images[i].height }
+    return [{
+      type: 'text',
+      text: `Variant "${variant.fileName}": canvas ${canvas.width}x${canvas.height} px, visual reduced to ${images[i].width}x${images[i].height} ` +
+        `(factor ${Math.round(canvas.width / images[i].width * 1000) / 1000}). Texts sent: ` +
+        texts.map(t => `"${layerName(t.layerId)}" (id ${t.layerId}${t.fontScale ? `, font ${Math.round(t.fontScale * 100)}%` : ''}): ${JSON.stringify(t.text)}`).join('; ')
+    }, { type: 'image', data: images[i].data, mimeType: images[i].mimeType }]
+  })]
+}
+
+// Problems reported by the assistant, as the widget shows them: per variant
+// file name, [{ layerId, layerName, problems, fix, area, marks }], marks being where the text overlaps the layers it names.
+function reviewIssues (generation, reported) {
+  const layers = generation.result.review.layers
+  const fileNames = new Set(generation.result.variants.map(variant => variant.fileName))
+  return Object.fromEntries(reported.filter(variant => fileNames.has(variant.fileName)).map(variant => [variant.fileName, variant.issues.map(issue => {
+    const layer = layers.find(l => l.id === issue.layerId) || layers.find(l => l.name === issue.layerName)
+    const area = issue.area || layer?.area || null
+    const marks = area ? (issue.overlapsLayerIds || []).map(id => layers.find(l => l.id === id)?.area)
+      .filter(Boolean).map(other => intersection(area, other)).filter(Boolean) : []
+    return { layerId: layer?.id ?? issue.layerId, layerName: layer?.name || issue.layerName, problems: [issue.problem], fix: issue.fix, area, marks }
+  })]))
 }
 
 // Files of a generation zipped together: at most this many bytes, held in memory
@@ -1345,6 +1029,8 @@ async function awaitTask (params, taskId, deadline, ready) {
   return null
 }
 const TASK_AWAIT_POLL_MS = 1000
+// review-variants waits this long for the generation, the rest of the response time being for the visuals
+const REVIEW_WAIT_MS = RESPONSE_BUDGET_MS - 15000
 
 // Tool result with structured content, also given as JSON text for clients without structured content.
 function jsonResult (data) {
@@ -1462,7 +1148,7 @@ function registerTools (server, params) {
         variants: z.array(z.object({
           fileName: z.string().optional().describe('Output file name without extension, e.g. "variant-summer"'),
           layers: z.array(layerEditSchema).min(1).describe('Edits to apply, one per layer'),
-          language: z.string().optional().describe('Language of the texts of this variant, as an ISO 639-1 code (e.g. "fr"), used to check them'),
+          language: z.string().optional().describe('Language of the texts of this variant, as an ISO 639-1 code (e.g. "fr")'),
           formats: z.array(z.enum(VARIANT_FORMATS)).min(1).optional()
             .describe('Formats of this variant only, when they differ between variants (e.g. ["png", "psd"] for one of them); ' +
               'otherwise the formats of the call')
@@ -1495,6 +1181,95 @@ function registerTools (server, params) {
           }],
           structuredContent: { taskId, templateUrl, pending: uniqueFileNames(variantList) }
         }
+      } catch (error) {
+        return errorResult(error)
+      }
+    }
+  )
+
+  server.registerTool(
+    'review-variants',
+    {
+      title: 'Review Variants',
+      description: 'Step 6 of the variant workflow, when the widget of create-variant asks you to check the texts: shows you the ' +
+        'visuals of a generation (images) with the texts sent and the layers of the template, waiting for the generation if needed. ' +
+        'Look at them, then call report-variant-issues.',
+      inputSchema: {
+        taskId: z.string().describe('Task id of the generation, given by the widget'),
+        fileNames: z.array(z.string()).optional().describe('Variants to show only (file names), e.g. to review a large generation in parts')
+      }
+    },
+    async ({ taskId, fileNames }) => {
+      try {
+        await generationToReview(params, taskId)
+        const generation = await awaitTask(params, taskId, Date.now() + REVIEW_WAIT_MS, task => task?.status === 'done' && task)
+        if (!generation) return { content: [{ type: 'text', text: 'The generation is not finished yet: call review-variants again.' }] }
+        if (!generation.result?.review) throw new Error('This generation has no texts to review.')
+        return { content: await reviewContent(generation, fileNames) }
+      } catch (error) {
+        return errorResult(error)
+      }
+    }
+  )
+
+  server.registerTool(
+    'report-variant-issues',
+    {
+      title: 'Report Variant Issues',
+      description: 'Step 6 of the variant workflow, after review-variants: gives the widget of the generation the text problems you ' +
+        'found on the visuals, which it marks with the fixes you propose and lets the user edit and send. Call it ONCE with every ' +
+        'variant reviewed, with no issues for those that are fine.',
+      inputSchema: {
+        taskId: z.string().describe('Task id of the generation, as given to review-variants'),
+        variants: z.array(z.object({
+          fileName: z.string().describe('File name of the variant, as in review-variants'),
+          issues: z.array(z.object({
+            layerId: z.number().int().optional().describe('Id of the text layer with the problem'),
+            layerName: z.string().describe('Name of the text layer'),
+            problem: z.string().describe('Short description of the problem, e.g. "is cut by the right edge of the visual"'),
+            fix: z.string().optional().describe('Fix proposed to the user, e.g. "Reduce the font size of \"headline\" to 85%."'),
+            area: z.object({ left: z.number(), top: z.number(), width: z.number(), height: z.number() }).optional()
+              .describe('Rectangle of the text on the visual, in pixels of the canvas'),
+            overlapsLayerIds: z.array(z.number().int()).optional().describe('Ids of the layers the text overlaps, if it does')
+          })).describe('Problems of the variant, none when it is fine')
+        })).min(1).max(MAX_VARIANTS)
+      }
+    },
+    async ({ taskId, variants }) => {
+      try {
+        const generation = await generationToReview(params, taskId)
+        if (!generation.result?.review) throw new Error('This generation is not done, or has no texts to review.')
+        const issues = reviewIssues(generation, variants)
+        const stored = (await (await initState()).get(reviewKey(currentUserId(params), taskId)))?.value || {}
+        await (await initState()).put(reviewKey(currentUserId(params), taskId), { ...stored, ...issues }, { ttl: TASK_TTL_SECONDS })
+        const count = Object.values(issues).reduce((total, list) => total + list.length, 0)
+        return {
+          content: [{
+            type: 'text',
+            text: `${count} problem(s) on ${Object.keys(issues).length} variant(s) given to the widget, which marks them on the visuals ` +
+              'with your fixes, for the user to edit and send. Do not list them in chat: say briefly that the widget shows them.'
+          }]
+        }
+      } catch (error) {
+        return errorResult(error)
+      }
+    }
+  )
+
+  server.registerTool(
+    'get-variant-review',
+    {
+      title: 'Get Variant Review',
+      description: 'Used by the create-variant widget: the text problems reported by the assistant on a generation, by file name ' +
+        '(reviewed: false until reported).',
+      inputSchema: { taskId: z.string().describe('Task id of the generation') },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    async ({ taskId }) => {
+      try {
+        if (!TASK_ID.test(String(taskId))) throw new Error('Invalid task id')
+        const issues = (await (await initState()).get(reviewKey(currentUserId(params), taskId)))?.value
+        return jsonResult(issues ? { reviewed: true, issues } : { reviewed: false })
       } catch (error) {
         return errorResult(error)
       }
