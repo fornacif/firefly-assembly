@@ -12,8 +12,8 @@ const spectrumAsset = require('./spectrum-asset.js')
 
 const IMS_TOKEN_URL = 'https://ims-na1.adobelogin.com/ims/token/v3'
 const PHOTOSHOP_API = 'https://photoshop-api.adobe.io/v2'
-const POLL_FIRST_DELAY_MS = 1000
-const POLL_MAX_DELAY_MS = 5000
+const POLL_FIRST_DELAY_MS = 3000
+const POLL_MAX_DELAY_MS = 8000
 const POLL_TIMEOUT_MS = 240000
 const URL_EXPIRY_SECONDS = 24 * 3600
 const STORAGE_ORIGIN = 'https://firefly.azureedge.net'
@@ -148,7 +148,7 @@ async function fetchWithRetry (url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS
       const delay = Math.min(retryAfterMs(header) ?? backoff(attempt), RATE_LIMIT_MAX_WAIT_MS)
       if (Date.now() + delay > (rateLimitedUntil.get(host) || 0)) {
         rateLimitedUntil.set(host, Date.now() + delay)
-        console.warn(`${host} rate limited (429, Retry-After ${header ?? 'none'}): requests wait ${Math.round(delay / 1000)}s`)
+        console.warn(`${host} rate limited on ${options.method || 'GET'} ${new URL(url).pathname} (429, Retry-After ${header ?? 'none'}): requests wait ${Math.round(delay / 1000)}s`)
       }
     } else {
       await wait(backoff(attempt))
@@ -210,7 +210,8 @@ function createLimiter (max) {
 const MAX_CONCURRENT_JOBS = 10
 const limitJob = createLimiter(MAX_CONCURRENT_JOBS)
 
-// Polls check() until it returns a value (undefined: not finished), more often at first, as most jobs take a few seconds.
+// Polls check() until it returns a value (undefined: not finished), more often at first, as most jobs take a few seconds; each
+// status request counts against the rate limit of the API, as the jobs do.
 async function pollJob (check, label, timeoutMs = POLL_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs
   for (let delay = POLL_FIRST_DELAY_MS; Date.now() < deadline; delay = Math.min(delay * 1.5, POLL_MAX_DELAY_MS)) {
