@@ -259,7 +259,8 @@ function runPhotoshopJob (params, path, body) {
   const first = run(POLL_TIMEOUT_MS)
   let settled = false
   first.then(() => { settled = true }, () => { settled = true })
-  const second = wait(JOB_RESUBMIT_AFTER_MS).then(() => {
+  // Not after the first job failed or succeeded: its result is given at once
+  const second = Promise.race([wait(JOB_RESUBMIT_AFTER_MS), first.catch(() => {})]).then(() => {
     // A job slowed down by the rate limit is not stalled: submitting it again would add to the requests
     if (settled || recentlyRateLimited(PHOTOSHOP_API)) return first
     console.warn(`Photoshop ${path} not finished after ${JOB_RESUBMIT_AFTER_MS / 1000}s: submitted again`)
@@ -1009,7 +1010,7 @@ function reviewIssues (generation, reported) {
 
 // Test generations (create-test-variants), only in a Stage workspace: visuals rendered elsewhere, shown by the create-variant
 // widget and reviewed by the assistant as if generated, without the Photoshop API
-const isStage = () => /-stage$/.test(process.env.__OW_NAMESPACE || '')
+const isStage = () => /-stage$/.test(process.env.__OW_NAMESPACE || '') || /^\/?[^/]+-stage\//.test(process.env.__OW_ACTION_NAME || '')
 
 // Writes a done generation of the current user from visuals and the texts they should show: { taskId, pending } as create-variant
 // gives them to its widget. Without layers, each text gets a layer of its name, without area.
