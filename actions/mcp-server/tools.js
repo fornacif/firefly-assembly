@@ -1041,7 +1041,9 @@ async function createTestGeneration (params, { variants, layers = [] }) {
     variants: rendered,
     summary: `${rendered.length}/${rendered.length} variant(s) generated and shown to the user with download buttons (test generation).`,
     review: { layers: allLayers, texts },
-    doneAt: Date.now()
+    doneAt: Date.now(),
+    // Reviewed as soon as created (create-test-variants tells the assistant): the widget does not ask for it
+    askReview: false
   }
   await (await initState()).put(taskKey(task.userId, task.id), { status: 'done', startedAt: Date.now(), updatedAt: Date.now(), result },
     { ttl: TASK_TTL_SECONDS })
@@ -1265,7 +1267,8 @@ function registerTools (server, params) {
             type: 'text',
             text: `Generation of ${variantList.length} variant(s) started. The widget shows each variant as soon as it is rendered, with ` +
               'download buttons, marks the text problems on the visuals, and gives you the result when all are done; the user then sends ' +
-              'you the changes to make. Do not call create-variant again meanwhile.' + warnings
+              `you the changes to make. Do not call create-variant again meanwhile. When it is done, the widget asks you to check the ` +
+              `texts (review-variants with taskId "${taskId}"); if the user asks you instead, use this task id.` + warnings
           }],
           structuredContent: { taskId, templateUrl, pending: uniqueFileNames(variantList) }
         }
@@ -1378,7 +1381,8 @@ function registerTools (server, params) {
             imageUrl: z.string().url().describe('HTTPS URL of the visual (JPEG or PNG), e.g. from upload-file'),
             texts: z.array(z.object({
               layerName: z.string().describe('Name of the text layer, e.g. "headline"'),
-              text: z.string().describe('Text the visual should show in this layer')
+              text: z.string().describe('Text the visual should show in this layer, as sent to be rendered (the intended text, ' +
+                'not as read on the visual: the review compares them)')
             })).min(1)
           })).min(1).max(MAX_VARIANTS_PER_GENERATION),
           layers: z.array(z.object({
@@ -1395,7 +1399,11 @@ function registerTools (server, params) {
         try {
           const { taskId, pending } = await createTestGeneration(params, args)
           return {
-            content: [{ type: 'text', text: `Test generation of ${pending.length} variant(s) shown in the widget, which then asks you to check their texts (step 6).` }],
+            content: [{
+              type: 'text',
+              text: `Test generation of ${pending.length} variant(s) shown in the widget (task id ${taskId}). Now check their texts (step 6): ` +
+                `call review-variants with taskId "${taskId}", then report-variant-issues.`
+            }],
             structuredContent: { taskId, templateUrl: 'test', pending }
           }
         } catch (error) {

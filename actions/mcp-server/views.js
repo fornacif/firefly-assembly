@@ -1902,6 +1902,7 @@ function getVariantViewHtml (scriptUrl) {
   // asks for it
   var REVIEW_ASK_WITHIN_MS = 2 * 60 * 1000;
   var reviewedGeneration = null;
+  var polling = false;
 
   function setChecking(checking) {
     variants = variants.map(function (v) { return v.error || v.pending ? v : Object.assign({}, v, { checking: checking }); });
@@ -1923,18 +1924,22 @@ function getVariantViewHtml (scriptUrl) {
   }
 
   function waitForReview(taskId) {
+    if (polling) return;
+    polling = true;
+    setChecking(true);
     var started = Date.now();
     function poll() {
       callTool('get-variant-review', { taskId: taskId }).then(function (review) {
-        if (review.reviewed && applyReview(review.issues)) return;
+        if (review.reviewed && applyReview(review.issues)) { polling = false; return; }
         if (Date.now() - started > REVIEW_WAIT_MS) {
+          polling = false;
           setChecking(false);
           reviewBtn.hidden = false;
           return setStatus('The texts were not checked: look at the visuals, or click Check the texts.', true);
         }
         setTimeout(poll, REVIEW_POLL_MS);
       }, function () {
-        if (Date.now() - started > REVIEW_WAIT_MS) { setChecking(false); reviewBtn.hidden = false; return; }
+        if (Date.now() - started > REVIEW_WAIT_MS) { polling = false; setChecking(false); reviewBtn.hidden = false; return; }
         setTimeout(poll, REVIEW_POLL_MS);
       });
     }
@@ -1948,10 +1953,9 @@ function getVariantViewHtml (scriptUrl) {
     var context = 'Result of create-variant: ' + generation.summary + '\\n\\nCheck the texts of these variants now (step 6 of the '
       + 'workflow): call review-variants with taskId "' + generationTaskId + '", look at each visual, then call report-variant-issues '
       + 'ONCE with every variant (no issues for those that are fine). Do not list the problems in chat: the widget shows them.';
+    waitForReview(generationTaskId);
     sendToModel(context, 'Check the texts of the generated variants.', 'Checking the texts...')
-      .then(function () { waitForReview(generationTaskId); })
       .catch(function (error) {
-        setChecking(false);
         reviewBtn.hidden = false;
         setStatus((error && error.message) || String(error), true);
       });
@@ -1961,8 +1965,10 @@ function getVariantViewHtml (scriptUrl) {
     reviewedGeneration = generation;
     return callTool('get-variant-review', { taskId: generationTaskId }).then(function (review) {
       if (review.reviewed && applyReview(review.issues)) return;
-      if (Date.now() - (generation.doneAt || 0) < REVIEW_ASK_WITHIN_MS) return askReview();
-      reviewBtn.hidden = false;
+      if (Date.now() - (generation.doneAt || 0) >= REVIEW_ASK_WITHIN_MS) { reviewBtn.hidden = false; return; }
+      // A generation that the assistant was told to review in its tool result (e.g. a test generation): not asked again
+      if (generation.askReview === false) return waitForReview(generationTaskId);
+      askReview();
     }, function () { reviewBtn.hidden = false; });
   }
 
