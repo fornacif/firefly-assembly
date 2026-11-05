@@ -2,7 +2,7 @@ const crypto = require('crypto')
 const { Readable } = require('stream')
 const { z } = require('zod')
 const filesLib = require('@adobe/aio-lib-files')
-const { reviewImage } = require('./review.js')
+const { reviewImage, imageSize } = require('./review.js')
 const { getStartViewHtml, getUploadViewHtml, getVariantImagesViewHtml, getLayersViewHtml, getTextsViewHtml, getVariantViewHtml } = require('./views.js')
 const stateStore = require('./state')
 const { getTokenFromRequest, getUnverifiedClaims, getUnverifiedClientId } = require('./validator.js')
@@ -1007,6 +1007,46 @@ function reviewIssues (generation, reported) {
   })]))
 }
 
+// Test generations (create-test-variants), only in a Stage workspace: visuals rendered elsewhere, shown by the create-variant
+// widget and reviewed by the assistant as if generated, without the Photoshop API
+const isStage = () => /-stage$/.test(process.env.__OW_NAMESPACE || '')
+
+// Writes a done generation of the current user from visuals and the texts they should show: { taskId, pending } as create-variant
+// gives them to its widget. Without layers, each text gets a layer of its name, without area.
+async function createTestGeneration (params, { variants, layers = [] }) {
+  const ids = new Map(layers.map(layer => [layer.name, layer.id]))
+  const layerId = name => {
+    if (!ids.has(name)) ids.set(name, 1000 + ids.size)
+    return ids.get(name)
+  }
+  const fileNames = uniqueFileNames(variants)
+  const rendered = await Promise.all(variants.map(async (variant, index) => {
+    const response = await fetchWithRetry(variant.imageUrl)
+    if (!response.ok) throw new Error(`The visual of ${fileNames[index]} could not be downloaded (HTTP ${response.status})`)
+    const canvas = imageSize(Buffer.from(await response.arrayBuffer()))
+    return {
+      fileName: fileNames[index],
+      imageUrl: variant.imageUrl,
+      files: [{ format: 'jpeg', fileName: `${fileNames[index]}.jpg`, url: variant.imageUrl }],
+      canvas
+    }
+  }))
+  const texts = variants.map(variant => variant.texts.map(t => ({ layerId: layerId(t.layerName), text: t.text })))
+  const allLayers = [...layers, ...[...ids].filter(([name]) => !layers.some(layer => layer.name === name))
+    .map(([name, id]) => ({ id, name, type: 'text_layer', area: null }))]
+  const task = { id: crypto.randomUUID(), userId: currentUserId(params) }
+  const result = {
+    templateUrl: 'test',
+    variants: rendered,
+    summary: `${rendered.length}/${rendered.length} variant(s) generated and shown to the user with download buttons (test generation).`,
+    review: { layers: allLayers, texts },
+    doneAt: Date.now()
+  }
+  await (await initState()).put(taskKey(task.userId, task.id), { status: 'done', startedAt: Date.now(), updatedAt: Date.now(), result },
+    { ttl: TASK_TTL_SECONDS })
+  return { taskId: task.id, pending: fileNames }
+}
+
 // Files of a generation zipped together: at most this many bytes, held in memory
 const MAX_ZIP_BYTES = 400 * 1024 * 1024
 
@@ -1322,6 +1362,47 @@ function registerTools (server, params) {
       }
     }
   )
+
+  if (isStage()) {
+    server.registerTool(
+      'create-test-variants',
+      {
+        title: 'Create Test Variants',
+        description: 'Test only (Stage): shows visuals rendered elsewhere in the create-variant widget as a done generation, without ' +
+          'the Photoshop API, so that their texts are reviewed (step 6) as those of generated variants. Give for each visual the ' +
+          'texts it should show, by layer name, and if known the layers of the template with their areas.',
+        inputSchema: {
+          variants: z.array(z.object({
+            fileName: z.string().optional().describe('Name of the variant, e.g. "gifts-fr"'),
+            imageUrl: z.string().url().describe('HTTPS URL of the visual (JPEG or PNG), e.g. from upload-file'),
+            texts: z.array(z.object({
+              layerName: z.string().describe('Name of the text layer, e.g. "headline"'),
+              text: z.string().describe('Text the visual should show in this layer')
+            })).min(1)
+          })).min(1).max(MAX_VARIANTS_PER_GENERATION),
+          layers: z.array(z.object({
+            id: z.number().int(),
+            name: z.string(),
+            type: z.string().describe('e.g. text_layer, smart_object_layer, layer'),
+            area: z.object({ left: z.number(), top: z.number(), width: z.number(), height: z.number() }).optional()
+              .describe('Area in the template, in pixels of the canvas')
+          })).optional().describe('Layers of the template, if known')
+        },
+        _meta: uiMeta(VIEWS.variant)
+      },
+      async args => {
+        try {
+          const { taskId, pending } = await createTestGeneration(params, args)
+          return {
+            content: [{ type: 'text', text: `Test generation of ${pending.length} variant(s) shown in the widget, which then asks you to check their texts (step 6).` }],
+            structuredContent: { taskId, templateUrl: 'test', pending }
+          }
+        } catch (error) {
+          return errorResult(error)
+        }
+      }
+    )
+  }
 
   server.registerTool(
     'get-task',
