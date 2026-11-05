@@ -1024,13 +1024,16 @@ async function createTestGeneration (params, { variants, layers = [] }) {
   const rendered = await Promise.all(variants.map(async (variant, index) => {
     const response = await fetchWithRetry(variant.imageUrl)
     if (!response.ok) throw new Error(`The visual of ${fileNames[index]} could not be downloaded (HTTP ${response.status})`)
-    const canvas = imageSize(Buffer.from(await response.arrayBuffer()))
-    return {
-      fileName: fileNames[index],
-      imageUrl: variant.imageUrl,
-      files: [{ format: 'jpeg', fileName: `${fileNames[index]}.jpg`, url: variant.imageUrl }],
-      canvas
-    }
+    const image = Buffer.from(await response.arrayBuffer())
+    const canvas = imageSize(image)
+    // Copied to the storage, as the rendered files: the widget shows the images of the storage only (its CSP)
+    const format = image[0] === 0xff ? 'jpeg' : 'png'
+    const fileName = `${fileNames[index]}.${format === 'jpeg' ? 'jpg' : 'png'}`
+    const storage = await initFiles()
+    const path = newStoragePath('variants', fileName)
+    await storage.write(path, image)
+    const url = await storage.generatePresignURL(path, { expiryInSeconds: URL_EXPIRY_SECONDS, permissions: 'r' })
+    return { fileName: fileNames[index], imageUrl: url, files: [{ format, fileName, url }], canvas }
   }))
   const texts = variants.map(variant => variant.texts.map(t => ({ layerId: layerId(t.layerName), text: t.text })))
   const allLayers = [...layers, ...[...ids].filter(([name]) => !layers.some(layer => layer.name === name))
