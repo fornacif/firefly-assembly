@@ -6,7 +6,7 @@
 const zlib = require('zlib')
 
 // Tesseract models of the languages read, by ISO 639-1 code
-const MODELS = { en: 'eng', fr: 'fra', de: 'deu', es: 'spa', it: 'ita' }
+const MODELS = { en: 'eng', fr: 'fra', de: 'deu', es: 'spa', it: 'ita', pt: 'por' }
 const DEFAULT_LANGUAGE = 'en'
 const modelUrl = model => `https://cdn.jsdelivr.net/npm/@tesseract.js-data/${model}/4.0.0_best_int/${model}.traineddata.gz`
 const MODEL_DOWNLOAD_TIMEOUT_MS = 20000
@@ -65,7 +65,8 @@ const COMMON_WORDS = {
   fr: 'le les un une des et est du de pour avec votre vos nos notre sur dans au aux ce qui plus en decouvrez jusqu nouvelle nouveautes offre',
   de: 'der die das und ist mit fur ihr ihre unser unsere auf im ein eine den dem zu jetzt neu von bis entdecken angebot',
   es: 'el los las y es con para tu tus su sus nuestra nuestro del de en por hasta ya mas nuevo nueva descubre oferta ahora todo',
-  it: 'il lo gli e con per tuo tua tuoi nostra nostro del della di in sul al nei dei delle fino ora nuovo nuova che scopri offerta'
+  it: 'il lo gli e con per tuo tua tuoi nostra nostro del della di in sul al nei dei delle fino ora nuovo nuova che scopri offerta',
+  pt: 'o os as um uma e com para seu sua seus nossa nosso do da dos das no na em ate ja mais novo nova descubra oferta agora tudo'
 }
 const commonWords = Object.fromEntries(Object.entries(COMMON_WORDS).map(([language, words]) => [language, new Set(words.split(' '))]))
 

@@ -198,6 +198,8 @@ const ADOBE_ICON = '<svg slot="icon" viewBox="0 10.22 16.86 14.94" width="18" he
 
 // Keep in sync with MAX_VARIANTS in tools.js
 const MAX_VARIANTS_UI = 10
+// Languages offered in the start widget: ISO 639-1 code and name
+const LANGUAGES = [['en', 'English'], ['fr', 'French'], ['it', 'Italian'], ['de', 'German'], ['es', 'Spanish'], ['pt', 'Portuguese']]
 
 // Uploads a file to App Builder storage through a presigned URL from create-upload-url; resolves to { name, url }.
 const UPLOAD_SCRIPT = `
@@ -398,6 +400,7 @@ function getStartViewHtml (scriptUrl) {
     border-radius: var(--spectrum-corner-radius-100);
   }
   .field input:focus { outline: none; border-color: var(--spectrum-gray-800); }
+  .languages { display: flex; flex-wrap: wrap; gap: var(--spectrum-spacing-100) var(--spectrum-spacing-300); }
   /* Compact drop zone: one row with the message on the left and the buttons on the right, wrapping when narrow */
   sp-dropzone {
     display: flex;
@@ -418,10 +421,17 @@ function getStartViewHtml (scriptUrl) {
   sp-progress-bar { width: 100%; margin-top: var(--spectrum-spacing-200); }
 `, `
 <h2 class="heading">Create variants</h2>
-<div class="subtle intro">Set the number of variants and drop the layered PSD template.</div>
+<div class="subtle intro">Set the number of variants and their languages, and drop the layered PSD template.</div>
 <div class="field">
-  <label for="count">Number of variants (1-${MAX_VARIANTS_UI})</label>
+  <label for="count">Number of variants per language</label>
   <input type="number" id="count" min="1" max="${MAX_VARIANTS_UI}" value="2">
+</div>
+<div class="field">
+  <label>Languages</label>
+  <div class="languages" id="languages">
+    ${LANGUAGES.map(([code, name]) => `<sp-checkbox data-code="${code}"${code === 'en' ? ' checked' : ''}>${name}</sp-checkbox>`).join('\n    ')}
+  </div>
+  <sp-help-text id="total"></sp-help-text>
 </div>
 <sp-dropzone id="drop">
   <div class="message"><div id="message-heading">Drop your PSD template</div><div class="subtle" id="message-description">Layered .psd file</div></div>
@@ -439,6 +449,7 @@ function getStartViewHtml (scriptUrl) {
 `, `
 ${UPLOAD_SCRIPT}
 ${AEM_SCRIPT}
+  var LANGUAGE_NAMES = ${JSON.stringify(Object.fromEntries(LANGUAGES))};
   var countInput = document.getElementById('count');
   var input = document.getElementById('file');
   var drop = document.getElementById('drop');
@@ -447,6 +458,8 @@ ${AEM_SCRIPT}
   var messageDescription = document.getElementById('message-description');
   var continueBtn = document.getElementById('continue');
   var aemBtn = document.getElementById('aem');
+  var languageBoxes = Array.prototype.slice.call(document.querySelectorAll('#languages sp-checkbox'));
+  var totalText = document.getElementById('total');
   var template = null;
 
   function count() {
@@ -454,10 +467,26 @@ ${AEM_SCRIPT}
     return n >= 1 && n <= ${MAX_VARIANTS_UI} ? n : null;
   }
 
-  function updateButton() { continueBtn.disabled = !template || !count(); }
+  function languages() {
+    return languageBoxes.filter(function (box) { return box.checked; }).map(function (box) { return box.dataset.code; });
+  }
+
+  // Each variant is created in each language: the total is at most ${MAX_VARIANTS_UI}, as generated in one go
+  function total() { return (count() || 0) * languages().length; }
+
+  function updateButton() {
+    var n = total();
+    totalText.textContent = !languages().length ? 'Choose at least one language.'
+      : n > ${MAX_VARIANTS_UI} ? n + ' variants in total: at most ${MAX_VARIANTS_UI}.' : n + ' variant' + (n > 1 ? 's' : '') + ' in total.';
+    totalText.variant = n > ${MAX_VARIANTS_UI} || !languages().length ? 'negative' : 'neutral';
+    continueBtn.disabled = !template || !count() || !n || n > ${MAX_VARIANTS_UI};
+  }
 
   onToolInput(function (args) {
     if (args.variantCount) countInput.value = args.variantCount;
+    if (args.languages && args.languages.length) {
+      languageBoxes.forEach(function (box) { box.checked = args.languages.indexOf(box.dataset.code) >= 0; });
+    }
     updateButton();
   });
 
@@ -519,6 +548,10 @@ ${AEM_SCRIPT}
   loadAemConfig().then(function (config) { aemBtn.hidden = !config; reportSize(); });
 
   countInput.addEventListener('input', updateButton);
+  languageBoxes.forEach(function (box) { box.addEventListener('change', updateButton); });
+  // The boxes say whether they are checked once the Spectrum bundle has defined them
+  updateButton();
+  customElements.whenDefined('sp-checkbox').then(updateButton);
   document.getElementById('browse').addEventListener('click', function () { input.value = ''; input.click(); });
   input.addEventListener('change', function () { upload(input.files[0]); });
   drop.addEventListener('sp-dropzone-should-accept', function (e) { e.detail.dataTransfer.dropEffect = 'copy'; });
@@ -526,10 +559,14 @@ ${AEM_SCRIPT}
 
   continueBtn.addEventListener('click', function () {
     var n = count();
+    var codes = languages();
+    var names = codes.map(function (code) { return LANGUAGE_NAMES[code]; });
     continueBtn.disabled = true;
-    var context = 'Variant creation started. Number of variants: ' + n + '. PSD template: ' + template.name
+    var context = 'Variant creation started. Number of variants per language: ' + n + '. Languages: '
+      + codes.map(function (code, i) { return names[i] + ' (' + code + ')'; }).join(', ') + '. Total: ' + n * codes.length
+      + ' variants, each of the ' + n + ' variants in each language. PSD template: ' + template.name
       + ', URL (valid 24 hours): ' + template.url + '. Next step: call get-psd-manifest with this URL.';
-    sendToModel(context, 'I want ' + n + ' variant(s) of ' + template.name + ', continue.', 'Template sent.')
+    sendToModel(context, 'I want ' + n + ' variant(s) of ' + template.name + ' in ' + names.join(', ') + ', continue.', 'Template sent.')
       .catch(function (error) {
         updateButton();
         setStatus((error && error.message) || String(error), true);
