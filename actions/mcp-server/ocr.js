@@ -234,10 +234,14 @@ function unionBox (boxes) {
 // (broken across lines), or words read joined with it. Words of other texts, or of the image, read in the area are left out. A
 // word read joined with several words of the text counts once. Returns the words read, with their boxes cut to their letters.
 function textWords (expected, words, near) {
-  const distance = box => Math.hypot(box.left + box.width / 2 - near.x, box.top + box.height / 2 - near.y)
+  const distance = (box, point) => Math.hypot(box.left + box.width / 2 - point.x, box.top + box.height / 2 - point.y)
+  const center = box => ({ x: box.left + box.width / 2, y: box.top + box.height / 2 })
   const candidates = words.map(word => ({ ...word, tokens: wordsOf(word.text) }))
   // Word read → the expected word it is
   const used = new Map()
+  // Word read kept for the previous expected word: the next one is read after it, next to it (a word of the text also found in
+  // another text read in the area, e.g. "the" in "they'll" of a text below, may be nearer to the center of the area)
+  let previous = null
   wordsOf(expected).forEach(word => {
     // The word, a piece of it (broken across lines), words read joined with it (at least 3 letters, to be specific; longer than
     // 3 letters, with letters of a similar shape), or the word with a letter more (e.g. "da," read "day": a punctuation sign read
@@ -245,8 +249,13 @@ function textWords (expected, words, near) {
     const matches = candidates.filter(c => !used.has(c) && c.tokens.some(token => isClose(word, token) ||
       (token.length > 1 && word.includes(token)) || ((word.length > 2 || token.length === word.length + 1) && token.includes(word)) ||
       (word.length > 3 && includesClose(token, word))))
-    matches.sort((a, b) => distance(a.box) - distance(b.box))
-    if (matches[0]) used.set(matches[0], word)
+    const after = previous ? matches.filter(c => candidates.indexOf(c) > candidates.indexOf(previous)) : []
+    const from = after.length ? center(previous.box) : near
+    const match = (after.length ? after : matches).sort((a, b) => distance(a.box, from) - distance(b.box, from))[0]
+    if (match) {
+      used.set(match, word)
+      previous = match
+    }
   })
   // A word read with what is next to it (e.g. "da," read "day" with the photo behind its comma) gets a box wider than its
   // letters: each box is cut to its letters at the median width of the letters of the words read as they are, on the side of
