@@ -197,7 +197,7 @@ const ADOBE_ICON = '<svg slot="icon" viewBox="0 10.22 16.86 14.94" width="18" he
   '<path style="fill:#eb1000;stroke:none" d="M6.27,10.22h4.39l6.2,14.94h-4.64l-3.92-9.92-2.59,6.51h3.08l1.23,3.41H0l6.27-14.94"/></svg>'
 
 // Keep in sync with MAX_VARIANTS in tools.js
-const MAX_VARIANTS_UI = 10
+const MAX_VARIANTS_UI = 50
 // Languages offered in the start widget: ISO 639-1 code and name
 const LANGUAGES = [['en', 'English'], ['fr', 'French'], ['it', 'Italian'], ['de', 'German'], ['es', 'Spanish'], ['pt', 'Portuguese']]
 
@@ -471,7 +471,7 @@ ${AEM_SCRIPT}
     return languageBoxes.filter(function (box) { return box.checked; }).map(function (box) { return box.dataset.code; });
   }
 
-  // Each variant is created in each language: the total is at most ${MAX_VARIANTS_UI}, as generated in one go
+  // Each variant is created in each language: the total is at most ${MAX_VARIANTS_UI}
   function total() { return (count() || 0) * languages().length; }
 
   function updateButton() {

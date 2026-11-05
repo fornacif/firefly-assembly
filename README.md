@@ -4,11 +4,11 @@ MCP server, deployed as an Adobe I/O Runtime (App Builder) action, that creates 
 
 ## Workflow
 
-1. **Start** (`start-variant-creation`): number of variants per language, languages (English, French, Italian, German, Spanish, Portuguese; each variant is created in each language, up to 10 in total) and PSD template, uploaded from the computer or picked in AEM Assets.
+1. **Start** (`start-variant-creation`): number of variants per language, languages (English, French, Italian, German, Spanish, Portuguese; each variant is created in each language, up to 50 in total) and PSD template, uploaded from the computer or picked in AEM Assets.
 2. **Layers** (`get-psd-manifest`): the template preview with its editable layers (text and smart object layers); the user picks the ones to change.
 3. **Texts** (`review-variant-texts`): an editable table with the texts of each variant.
 4. **Images** (`upload-variant-images`): a grid with one image per variant and smart object layer, from the computer or AEM, with crops framed on the subject.
-5. **Generation** (`create-variant`): the variants are rendered in parallel, as JPEG (default), PNG and/or layered PSD files.
+5. **Generation** (`create-variant`): the variants are rendered in parallel, by generations of 10 at most (one task each, within the action timeout; more variants are generated in several), as JPEG (default), PNG and/or layered PSD files.
 6. **Review**: the widget checks the texts of each variant (see below) and marks their problems on the visual, numbered, with a proposed fix (a smaller font size). Each variant has a "What should change?" field, pre-filled with the proposed fixes; the user edits it and sends the changes to the assistant, which generates again only these variants. Each generation shows only its own variants, with a download button per file and a Download all button (a ZIP archive of all the files of the generation, built by a task: `create-variants-zip`).
 
 Widgets return what the user confirmed through a short reference that the assistant reads with `get-widget-result`. The other tools (`save-widget-result`, `suggest-crop`, `create-upload-url`, AEM picker tools…) are used by the widgets. `upload-file` uploads a single file outside the workflow.
