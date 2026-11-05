@@ -12,8 +12,8 @@ const spectrumAsset = require('./spectrum-asset.js')
 
 const IMS_TOKEN_URL = 'https://ims-na1.adobelogin.com/ims/token/v3'
 const PHOTOSHOP_API = 'https://photoshop-api.adobe.io/v2'
-const POLL_FIRST_DELAY_MS = 500
-const POLL_MAX_DELAY_MS = 2000
+const POLL_FIRST_DELAY_MS = 1000
+const POLL_MAX_DELAY_MS = 5000
 const POLL_TIMEOUT_MS = 240000
 const URL_EXPIRY_SECONDS = 24 * 3600
 const STORAGE_ORIGIN = 'https://firefly.azureedge.net'
@@ -105,10 +105,29 @@ const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 // Exponential backoff, randomized so that parallel jobs do not retry all at once
 const backoff = attempt => Math.min(RETRY_BASE_DELAY_MS * 2 ** attempt * (0.5 + Math.random()), RETRY_MAX_DELAY_MS)
 
+// Wait asked by a 429 answer, at most this long
+const RATE_LIMIT_MAX_WAIT_MS = 120000
+// Until when the requests to each host wait, after a 429 answer of this host: all the requests of the container wait, not only
+// the one that got it, as each request counts against the rate limit
+const rateLimitedUntil = new Map()
+
+// Delay of a Retry-After header, in seconds or as a date; null without one.
+function retryAfterMs (header) {
+  if (!header) return null
+  const delay = /^\d+$/.test(header.trim()) ? Number(header) * 1000 : Date.parse(header) - Date.now()
+  return Number.isFinite(delay) ? Math.max(0, delay) : null
+}
+
+// Whether the requests to a host were rate limited within the last minute (a job slowed down by the rate limit is not stalled).
+const recentlyRateLimited = url => (rateLimitedUntil.get(new URL(url).host) || 0) > Date.now() - 60000
+
 // fetch with a time limit, that waits and retries when Firefly Services answers 429 (rate limit), for the Retry-After delay
-// when given, and on server errors and network failures.
+// when given (the other requests to the same host waiting as long), and on server errors and network failures.
 async function fetchWithRetry (url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+  const host = new URL(url).host
   for (let attempt = 0; ; attempt++) {
+    const until = rateLimitedUntil.get(host) || 0
+    if (until > Date.now()) await wait(until - Date.now())
     let response
     try {
       response = await fetch(url, { ...options, signal: AbortSignal.timeout(timeoutMs) })
@@ -122,10 +141,18 @@ async function fetchWithRetry (url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS
       ? attempt < RATE_LIMIT_RETRIES
       : TRANSIENT_STATUSES.includes(response.status) && attempt < TRANSIENT_RETRIES
     if (!retry) return response
-    const retryAfterMs = Number(response.headers.get('retry-after')) * 1000
     // Frees the connection
     await response.body?.cancel().catch(() => {})
-    await wait(retryAfterMs > 0 ? Math.min(retryAfterMs, RETRY_MAX_DELAY_MS) : backoff(attempt))
+    if (response.status === 429) {
+      const header = response.headers.get('retry-after')
+      const delay = Math.min(retryAfterMs(header) ?? backoff(attempt), RATE_LIMIT_MAX_WAIT_MS)
+      if (Date.now() + delay > (rateLimitedUntil.get(host) || 0)) {
+        rateLimitedUntil.set(host, Date.now() + delay)
+        console.warn(`${host} rate limited (429, Retry-After ${header ?? 'none'}): requests wait ${Math.round(delay / 1000)}s`)
+      }
+    } else {
+      await wait(backoff(attempt))
+    }
   }
 }
 
@@ -214,7 +241,8 @@ function runPhotoshopJob (params, path, body) {
   let settled = false
   first.then(() => { settled = true }, () => { settled = true })
   const second = wait(JOB_RESUBMIT_AFTER_MS).then(() => {
-    if (settled) return first
+    // A job slowed down by the rate limit is not stalled: submitting it again would add to the requests
+    if (settled || recentlyRateLimited(PHOTOSHOP_API)) return first
     console.warn(`Photoshop ${path} not finished after ${JOB_RESUBMIT_AFTER_MS / 1000}s: submitted again`)
     return run(POLL_TIMEOUT_MS - JOB_RESUBMIT_AFTER_MS)
   })
