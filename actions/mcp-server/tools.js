@@ -440,8 +440,11 @@ const VARIANT_OUTPUTS = {
 const VARIANT_FORMATS = Object.keys(VARIANT_OUTPUTS)
 const PREVIEW_OUTPUT = { mediaType: 'image/jpeg', quality: 'high' }
 
-// Renders one variant in all the requested formats with a single Photoshop job, then checks its texts on the visual.
-async function createVariant (params, { templateUrl, templateManifest, formats, layers, language, fileName: baseName, deadline, onRendered, readable }) {
+// Text checks of the generated variants (OCR), on unless the TEXT_CHECKS input of the action is false
+const textChecksEnabled = params => String(params.TEXT_CHECKS ?? 'true') !== 'false'
+
+// Renders one variant in all the requested formats with a single Photoshop job, then checks its texts on the visual (checkTexts).
+async function createVariant (params, { templateUrl, templateManifest, formats, layers, language, fileName: baseName, deadline, onRendered, readable, checkTexts }) {
   const shownFormat = formats.find(format => VARIANT_OUTPUTS[format].displayable)
   const [files, preview] = await Promise.all([
     Promise.all(formats.map(format => createStorageUrls('variants', `${baseName}.${VARIANT_OUTPUTS[format].extension}`))),
@@ -465,6 +468,8 @@ async function createVariant (params, { templateUrl, templateManifest, formats, 
     // For the view, which marks the text problems on the image
     canvas: boundsSize(templateManifest.document.bounds)
   }
+  // Without text checks, the variant as rendered
+  if (!checkTexts) return rendered
   // Shown while its texts are checked
   onRendered?.(rendered)
   const checkDeadline = Math.min(deadline, Date.now() + TEXT_CHECK_BUDGET_MS)
@@ -1064,7 +1069,7 @@ async function createVariants (params, { templateUrl, formats, variants, deadlin
   const progress = fileNames.map(fileName => ({ fileName, pending: true }))
   const report = (index, variant) => { progress[index] = variant; onProgress?.([...progress]) }
   // The OCR engine loads during the renders
-  const hasTexts = variants.some(variant => variant.layers.some(layer => layer.type === 'text_layer'))
+  const hasTexts = textChecksEnabled(params) && variants.some(variant => variant.layers.some(layer => layer.type === 'text_layer'))
   // Language of the texts of each variant, as given or guessed from them
   const languages = variants.map(variant => variant.language ||
     guessLanguage(variant.layers.filter(layer => layer.type === 'text_layer').map(layer => layer.text).join('\n')))
@@ -1099,7 +1104,8 @@ async function createVariants (params, { templateUrl, formats, variants, deadlin
         language: languages[index],
         fileName: fileNames[index],
         onRendered: rendered => { mark(index, 'render'); report(index, { ...rendered, checking: true }) },
-        readable
+        readable,
+        checkTexts: hasTexts
       })
       mark(index, 'checks')
       report(index, result)
