@@ -1966,8 +1966,6 @@ function getVariantViewHtml (scriptUrl) {
     return callTool('get-variant-review', { taskId: generationTaskId }).then(function (review) {
       if (review.reviewed && applyReview(review.issues)) return;
       if (Date.now() - (generation.doneAt || 0) >= REVIEW_ASK_WITHIN_MS) { reviewBtn.hidden = false; return; }
-      // A generation that the assistant was told to review in its tool result (e.g. a test generation): not asked again
-      if (generation.askReview === false) return waitForReview(generationTaskId);
       askReview();
     }, function () { reviewBtn.hidden = false; });
   }

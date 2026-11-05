@@ -53,10 +53,4 @@ function reviewImage (image) {
   return { data: Buffer.from(encoded.data).toString('base64'), mimeType: 'image/jpeg', width: reduced.width, height: reduced.height }
 }
 
-// Size of a PNG or JPEG image, in pixels.
-function imageSize (image) {
-  const { width, height } = decodeImage(image)
-  return { width, height }
-}
-
-module.exports = { reviewImage, imageSize }
+module.exports = { reviewImage }
