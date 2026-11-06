@@ -1761,14 +1761,9 @@ function getVariantViewHtml (scriptUrl) {
     updateFixActions();
   }
 
-  // Proposed fixes of the texts of a variant (a smaller font size, or the fix proposed by the assistant), as pre-filled in its
-  // changes
+  // Fixes proposed by the assistant for the texts of a variant, as pre-filled in its changes
   function recommendationOf(v) {
-    return (v.textIssues || []).map(function (issue) {
-      if (issue.fix || !issue.fontScale) return issue.fix || '';
-      return 'Reduce the font size of "' + issue.layerName + '" to ' + Math.round(issue.fontScale * 100) + '%.'
-        + (issue.shorten ? ' A shorter text may be needed.' : '');
-    }).filter(Boolean).join('\\n');
+    return (v.textIssues || []).map(function (issue) { return issue.fix || ''; }).filter(Boolean).join('\\n');
   }
 
   // Changes of a variant, '' if none
@@ -1801,8 +1796,8 @@ function getVariantViewHtml (scriptUrl) {
 
   downloadAllBtn.addEventListener('click', downloadAll);
 
-  // Sends the changes of the variants to the model, which generates them again with create-variant. With the measured
-  // problems of each text (layer id and proposed font scale), so that it can apply the proposed fixes the user kept.
+  // Sends the changes of the variants to the model, which generates them again with create-variant. With the problems found
+  // in each text (layer id and name), so that it finds the layers named in the changes.
   function sendChanges() {
     var toChange = variants.filter(function (v) { return !v.error && requestOf(v); });
     var changes = toChange.map(function (v) {

@@ -947,13 +947,14 @@ const TASKS = {
 }
 
 // What the assistant needs to review a generation: the drawn layers of the template ({ id, name, type, area }, area in pixels of
-// the canvas) and, per variant in order, its edited texts ({ layerId, text, fontScale }).
+// the canvas) and, per variant in order, its edited texts ({ layerId, text, fontScale }), and its languages, when given.
 async function reviewData (params, args) {
   const manifest = await getManifest(params, args.templateUrl).catch(() => null)
   return {
     layers: manifest ? drawnLayers(manifest.layers).map(layer => ({ id: layer.id, name: layer.name, type: layer.type, area: layerArea(layer) })) : [],
     texts: args.variants.map(variant => variant.layers.filter(layer => layer.type === 'text_layer')
-      .map(layer => ({ layerId: layer.id, text: layer.text, ...(layer.fontScale ? { fontScale: layer.fontScale } : {}) })))
+      .map(layer => ({ layerId: layer.id, text: layer.text, ...(layer.fontScale ? { fontScale: layer.fontScale } : {}) }))),
+    languages: args.variants.map(variant => variant.language || null)
   }
 }
 
@@ -976,7 +977,7 @@ const REVIEW_MAX_IMAGE_CHARS = 750000
 async function reviewContent (generation, fileNames) {
   const { variants, review } = generation.result
   const layerName = id => review.layers.find(layer => layer.id === id)?.name || String(id)
-  const toReview = variants.map((variant, index) => ({ variant, texts: review.texts[index] || [] }))
+  const toReview = variants.map((variant, index) => ({ variant, texts: review.texts[index] || [], language: review.languages?.[index] }))
     .filter(({ variant }) => !variant.error && (!fileNames?.length || fileNames.includes(variant.fileName)))
   const downloads = toReview.map(async ({ variant }) => {
     const response = await fetchWithRetry(variant.imageUrl)
@@ -999,12 +1000,12 @@ async function reviewContent (generation, fileNames) {
     '. Below, each visual with the texts sent. Check each edited text as the workflow says (step 6), then call report-variant-issues ' +
     'with every variant below, with the rectangles in pixels of the canvas (each visual is reduced: multiply its pixels by the factor given).' +
     (left.length ? ` Then, without asking the user, call review-variants again with fileNames ${JSON.stringify(left)} for the variants left, and report them the same way.` : '')
-  return [{ type: 'text', text: intro }, ...shown.flatMap(({ variant, texts, image }) => {
+  return [{ type: 'text', text: intro }, ...shown.flatMap(({ variant, texts, language, image }) => {
     const canvas = variant.canvas || { width: image.width, height: image.height }
     return [{
       type: 'text',
       text: `Variant "${variant.fileName}": canvas ${canvas.width}x${canvas.height} px, visual reduced to ${image.width}x${image.height} ` +
-        `(factor ${Math.round(canvas.width / image.width * 1000) / 1000}). Texts sent: ` +
+        `(factor ${Math.round(canvas.width / image.width * 1000) / 1000}). Texts sent${language ? ` (language ${language})` : ''}: ` +
         texts.map(t => `"${layerName(t.layerId)}" (id ${t.layerId}${t.fontScale ? `, font ${Math.round(t.fontScale * 100)}%` : ''}): ${JSON.stringify(t.text)}`).join('; ')
     }, { type: 'image', data: image.data, mimeType: image.mimeType }]
   })]
@@ -1212,7 +1213,7 @@ function registerTools (server, params) {
         variants: z.array(z.object({
           fileName: z.string().optional().describe('Output file name without extension, e.g. "variant-summer"'),
           layers: z.array(layerEditSchema).min(1).describe('Edits to apply, one per layer'),
-          language: z.string().optional().describe('Language of the texts of this variant, as an ISO 639-1 code (e.g. "fr")'),
+          language: z.string().optional().describe('Language of the texts of this variant, as an ISO 639-1 code (e.g. "fr"), given to the review'),
           formats: z.array(z.enum(VARIANT_FORMATS)).min(1).optional()
             .describe('Formats of this variant only, when they differ between variants (e.g. ["png", "psd"] for one of them); ' +
               'otherwise the formats of the call')
