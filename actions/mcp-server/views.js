@@ -404,7 +404,8 @@ function getStartViewHtml (scriptUrl) {
   /* The picker of the languages, in place, then the languages chosen as tags that can be removed, wrapping next to it */
   .languages { display: flex; align-items: flex-start; gap: var(--spectrum-spacing-200); }
   .languages sp-picker { flex: 0 0 200px; width: 200px; }
-  .languages sp-tags { flex: 1; min-width: 0; }
+  /* Each tag has a margin on all sides: taken back, so that the first row is aligned with the picker */
+  .languages sp-tags { flex: 1; min-width: 0; margin: calc(-1 * var(--spectrum-spacing-75)); }
   /* Compact drop zone: one row with the message on the left and the buttons on the right, wrapping when narrow */
   sp-dropzone {
     display: flex;
