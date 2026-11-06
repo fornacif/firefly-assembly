@@ -401,9 +401,10 @@ function getStartViewHtml (scriptUrl) {
     border-radius: var(--spectrum-corner-radius-100);
   }
   .field input:focus { outline: none; border-color: var(--spectrum-gray-800); }
-  /* Languages chosen, as tags that can be removed, then the picker of the other languages */
-  .languages { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spectrum-spacing-100); }
-  .languages sp-picker { width: 200px; }
+  /* The picker of the languages, in place, then the languages chosen as tags that can be removed, wrapping next to it */
+  .languages { display: flex; align-items: flex-start; gap: var(--spectrum-spacing-200); }
+  .languages sp-picker { flex: 0 0 200px; width: 200px; }
+  .languages sp-tags { flex: 1; min-width: 0; }
   /* Compact drop zone: one row with the message on the left and the buttons on the right, wrapping when narrow */
   sp-dropzone {
     display: flex;
@@ -432,8 +433,8 @@ function getStartViewHtml (scriptUrl) {
 <div class="field">
   <label>Languages</label>
   <div class="languages">
-    <sp-tags id="languages"></sp-tags>
     <sp-picker id="add-language" label="Add a language"></sp-picker>
+    <sp-tags id="languages"></sp-tags>
   </div>
   <sp-help-text id="total"></sp-help-text>
 </div>
