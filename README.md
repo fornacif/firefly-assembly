@@ -17,21 +17,23 @@ Widgets return what the user confirmed through a short reference that the assist
 
 Adobe I/O Runtime ends a web request after about 60 seconds, and Photoshop jobs on large files can take longer. The operations that run Photoshop jobs (reading a template and rendering its preview, framing an image, generating variants) run as tasks: the tool starts an activation of the same action without waiting for it (5 minutes, the action timeout), signed with a secret of the action, and answers at once with a task id. The task writes its progress and result in App Builder state; the widgets poll `get-task` and show what is ready: the layers then the preview, each variant as soon as it is rendered. `get-psd-manifest` still waits up to 50 seconds for the layers, as the assistant needs them.
 
+The Photoshop jobs are polled from 3 seconds, then up to every 8 seconds: each status request counts against the rate limit of Firefly Services, as the jobs do. On a 429 answer, all the requests of the container to the API wait for its Retry-After (up to 2 minutes); a longer Retry-After (a quota used up, e.g. until midnight UTC) is not waited for: the requests fail at once until then, with the time it ends. A job not finished after 60 seconds is submitted again, unless the API was rate limited within the last minute.
+
 ## Text checks
 
 The assistant checks the texts of the generated variants by looking at them, right after create-variant, in the same turn: the user has nothing to ask (the Check the texts button of the widget asks for it, when it was not done, e.g. in a conversation opened again). The assistant calls:
 
-1. `review-variants`: once the generation is done (it waits for it, and answers that it is not finished after about 35 seconds, the assistant then calls it again), the visuals of the generation, reduced to 1000 px on their longest side and given as images (the assistant reads images in a tool result, not their URLs; `actions/mcp-server/review.js`), with the texts sent and the layers of the template with their positions.
-2. `report-variant-issues`: per variant, the problems found (a text cut or past an edge, hidden, overlapping another element, hard to read, badly broken, or not the text sent), each with its layer, a fix proposed to the user and the rectangle of the text on the visual; without a rectangle, the area of the layer in the template is marked, and where it overlaps the layers named.
+1. `review-variants`: once the generation is done (it waits for it, and answers that it is not finished after about 35 seconds, the assistant then calls it again), the visuals of the generation, reduced to 1000 px on their longest side and given as images (the assistant reads images in a tool result, not their URLs; `actions/mcp-server/review.js`), with the texts sent, the language of each variant and the layers of the template with their positions. An action answer is at most 1 MB: the visuals are given in parts (about 750 KB of images each, 4 to 6 visuals), each naming the variants left for the next call.
+2. `report-variant-issues`, after each part: per variant, the problems found (a text cut or past an edge, hidden, overlapping another element, hard to read, badly broken, in another language, or not the text sent), each with its layer, a fix proposed to the user and the rectangle of the text on the visual; without a rectangle, the area of the layer in the template is marked, and where it overlaps the layers named.
 
-The problems are stored with the generation; the widget reads them (`get-variant-review`), marks them on the visuals, numbered, and pre-fills the changes of each variant with the fixes proposed.
+The problems are stored with the generation; the widget waits for them (`get-variant-review`, up to 5 minutes, then shows the Check the texts button), marks them on the visuals, numbered, and pre-fills the changes of each variant with the fixes proposed.
 
 ## Best practices for templates
 
 - **Use point text, not paragraph text**, for the texts to vary. A paragraph text keeps its box: a longer text is hidden past its last line or has its words broken across lines. A point text only breaks lines where its text does, and grows from its anchor.
 - **Align the texts from the side they should grow from**: centered texts grow on both sides, left-aligned texts to the right.
 - **Leave room around the texts** that will be translated or rewritten: localized texts are often longer.
-- **Keep each element in its own layer** (logo, button, badge), not merged into a background: the overlap check compares layers.
+- **Keep each element in its own layer** (logo, button, badge), not merged into a background: the review is given the positions of the layers, and marks the overlaps from them.
 - **Use smart object layers for the images to replace**, with the frame of the image at the size it should fill: images are cropped to the ratio of their frame.
 - **Do not lock the layers to vary**: locked layers are not offered in the layer picker.
 - **Name the layers** (e.g. "headline", "cta"): the names are shown to the user and to the assistant.
@@ -51,6 +53,7 @@ The problems are stored with the generation; the widget reads them (`get-variant
 | `actions/mcp-server/tools.js` | MCP tools, resources and prompt, Photoshop API and storage calls |
 | `actions/mcp-server/views.js` | HTML of the widgets |
 | `actions/mcp-server/review.js` | Visuals of the generated variants reduced for the review by the assistant |
+| `actions/mcp-server/state.js` | App Builder state (tasks, widget results, reviews), values kept as JSON |
 | `actions/mcp-server/zip.js` | ZIP archives of the files of a generation |
 | `actions/mcp-server/aem-picker.js` | Sessions of the AEM Asset Selector page |
 | `actions/mcp-server/validator.js` | IMS token validation |
