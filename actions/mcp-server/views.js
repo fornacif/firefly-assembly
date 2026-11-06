@@ -1893,13 +1893,13 @@ function getVariantViewHtml (scriptUrl) {
     else if (e.key === 'ArrowRight') step(1);
   });
 
-  // Texts checked by the assistant (review-variants, report-variant-issues): once the generation is done, the widget asks it in
-  // a message, then shows the problems it reports (get-variant-review) as those measured by the server
+  // Texts checked by the assistant (review-variants, report-variant-issues), which create-variant tells to do it in the same
+  // turn: once the generation is done, the widget waits for the problems it reports (get-variant-review) and shows them. The
+  // Check the texts button asks it in a message, when it did not (e.g. a conversation opened again)
   var reviewBtn = document.getElementById('review');
   var REVIEW_POLL_MS = 3000;
-  var REVIEW_WAIT_MS = 10 * 60 * 1000;
-  // A generation done longer ago than this (e.g. the conversation opened again) is not sent for review by itself: the button
-  // asks for it
+  var REVIEW_WAIT_MS = 5 * 60 * 1000;
+  // A generation done longer ago than this (e.g. the conversation opened again) is not waited for: the button asks for the review
   var REVIEW_ASK_WITHIN_MS = 2 * 60 * 1000;
   var reviewedGeneration = null;
   var polling = false;
@@ -1966,7 +1966,7 @@ function getVariantViewHtml (scriptUrl) {
     return callTool('get-variant-review', { taskId: generationTaskId }).then(function (review) {
       if (review.reviewed && applyReview(review.issues)) return;
       if (Date.now() - (generation.doneAt || 0) >= REVIEW_ASK_WITHIN_MS) { reviewBtn.hidden = false; return; }
-      askReview();
+      waitForReview(generationTaskId);
     }, function () { reviewBtn.hidden = false; });
   }
 

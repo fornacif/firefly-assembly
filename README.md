@@ -19,9 +19,9 @@ Adobe I/O Runtime ends a web request after about 60 seconds, and Photoshop jobs 
 
 ## Text checks
 
-The assistant checks the texts of the generated variants by looking at them. When a generation is done, its widget asks the assistant in a message to check its texts (or, when the generation was done a while ago, e.g. in a conversation opened again, the Check the texts button does). The assistant then calls:
+The assistant checks the texts of the generated variants by looking at them, right after create-variant, in the same turn: the user has nothing to ask (the Check the texts button of the widget asks for it, when it was not done, e.g. in a conversation opened again). The assistant calls:
 
-1. `review-variants`: the visuals of the generation, reduced to 1000 px on their longest side and given as images (the assistant reads images in a tool result, not their URLs; `actions/mcp-server/review.js`), with the texts sent and the layers of the template with their positions.
+1. `review-variants`: once the generation is done (it waits for it, and answers that it is not finished after about 35 seconds, the assistant then calls it again), the visuals of the generation, reduced to 1000 px on their longest side and given as images (the assistant reads images in a tool result, not their URLs; `actions/mcp-server/review.js`), with the texts sent and the layers of the template with their positions.
 2. `report-variant-issues`: per variant, the problems found (a text cut or past an edge, hidden, overlapping another element, hard to read, badly broken, or not the text sent), each with its layer, a fix proposed to the user and the rectangle of the text on the visual; without a rectangle, the area of the layer in the template is marked, and where it overlaps the layers named.
 
 The problems are stored with the generation; the widget reads them (`get-variant-review`), marks them on the visuals, numbered, and pre-fills the changes of each variant with the fixes proposed.
