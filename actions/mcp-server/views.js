@@ -199,7 +199,8 @@ const ADOBE_ICON = '<svg slot="icon" viewBox="0 10.22 16.86 14.94" width="18" he
 // Keep in sync with MAX_VARIANTS in tools.js
 const MAX_VARIANTS_UI = 50
 // Languages offered in the start widget: ISO 639-1 code and name
-const LANGUAGES = [['en', 'English'], ['fr', 'French'], ['it', 'Italian'], ['de', 'German'], ['es', 'Spanish'], ['pt', 'Portuguese']]
+const LANGUAGES = [['en', 'English'], ['fr', 'French'], ['it', 'Italian'], ['de', 'German'], ['es', 'Spanish'], ['pt', 'Portuguese'],
+  ['nl', 'Dutch'], ['pl', 'Polish'], ['sv', 'Swedish'], ['da', 'Danish'], ['no', 'Norwegian'], ['fi', 'Finnish']]
 
 // Uploads a file to App Builder storage through a presigned URL from create-upload-url; resolves to { name, url }.
 const UPLOAD_SCRIPT = `

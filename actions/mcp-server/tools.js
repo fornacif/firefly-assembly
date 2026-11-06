@@ -23,7 +23,7 @@ const EDITABLE_LAYER_TYPES = ['text_layer', 'smart_object_layer']
 const MAX_VARIANTS = 50
 const MAX_VARIANTS_PER_GENERATION = 10
 // Languages offered in the start widget (see LANGUAGES in views.js)
-const LANGUAGES = ['en', 'fr', 'it', 'de', 'es', 'pt']
+const LANGUAGES = ['en', 'fr', 'it', 'de', 'es', 'pt', 'nl', 'pl', 'sv', 'da', 'no', 'fi']
 const WIDGET_RESULT_TTL_SECONDS = 24 * 3600
 // Short reference shown at the end of the user's message: "r" and 6 base-36 characters (2 billion values per user)
 const WIDGET_RESULT_REF = /^r[0-9a-z]{6}$/
