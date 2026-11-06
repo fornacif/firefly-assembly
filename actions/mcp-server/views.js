@@ -401,7 +401,9 @@ function getStartViewHtml (scriptUrl) {
     border-radius: var(--spectrum-corner-radius-100);
   }
   .field input:focus { outline: none; border-color: var(--spectrum-gray-800); }
-  .languages { display: flex; flex-wrap: wrap; gap: var(--spectrum-spacing-100) var(--spectrum-spacing-300); }
+  /* Languages chosen, as tags that can be removed, then the picker of the other languages */
+  .languages { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spectrum-spacing-100); }
+  .languages sp-picker { width: 200px; }
   /* Compact drop zone: one row with the message on the left and the buttons on the right, wrapping when narrow */
   sp-dropzone {
     display: flex;
@@ -429,8 +431,9 @@ function getStartViewHtml (scriptUrl) {
 </div>
 <div class="field">
   <label>Languages</label>
-  <div class="languages" id="languages">
-    ${LANGUAGES.map(([code, name]) => `<sp-checkbox data-code="${code}"${code === 'en' ? ' checked' : ''}>${name}</sp-checkbox>`).join('\n    ')}
+  <div class="languages">
+    <sp-tags id="languages"></sp-tags>
+    <sp-picker id="add-language" label="Add a language"></sp-picker>
   </div>
   <sp-help-text id="total"></sp-help-text>
 </div>
@@ -459,7 +462,10 @@ ${AEM_SCRIPT}
   var messageDescription = document.getElementById('message-description');
   var continueBtn = document.getElementById('continue');
   var aemBtn = document.getElementById('aem');
-  var languageBoxes = Array.prototype.slice.call(document.querySelectorAll('#languages sp-checkbox'));
+  var languageTags = document.getElementById('languages');
+  var languagePicker = document.getElementById('add-language');
+  // Codes of the languages chosen, in the order of LANGUAGE_NAMES
+  var chosen = ['en'];
   var totalText = document.getElementById('total');
   var template = null;
 
@@ -469,7 +475,20 @@ ${AEM_SCRIPT}
   }
 
   function languages() {
-    return languageBoxes.filter(function (box) { return box.checked; }).map(function (box) { return box.dataset.code; });
+    return Object.keys(LANGUAGE_NAMES).filter(function (code) { return chosen.indexOf(code) >= 0; });
+  }
+
+  // The tags of the languages chosen, and the other languages in the picker
+  function renderLanguages() {
+    languageTags.innerHTML = languages().map(function (code) {
+      return '<sp-tag deletable data-code="' + code + '">' + escapeHtml(LANGUAGE_NAMES[code]) + '</sp-tag>';
+    }).join('');
+    languagePicker.innerHTML = Object.keys(LANGUAGE_NAMES).filter(function (code) { return chosen.indexOf(code) < 0; }).map(function (code) {
+      return '<sp-menu-item value="' + code + '">' + escapeHtml(LANGUAGE_NAMES[code]) + '</sp-menu-item>';
+    }).join('');
+    languagePicker.disabled = chosen.length === Object.keys(LANGUAGE_NAMES).length;
+    updateButton();
+    reportSize();
   }
 
   // Each variant is created in each language: the total is at most ${MAX_VARIANTS_UI}
@@ -486,7 +505,8 @@ ${AEM_SCRIPT}
   onToolInput(function (args) {
     if (args.variantCount) countInput.value = args.variantCount;
     if (args.languages && args.languages.length) {
-      languageBoxes.forEach(function (box) { box.checked = args.languages.indexOf(box.dataset.code) >= 0; });
+      chosen = args.languages.filter(function (code) { return LANGUAGE_NAMES[code]; });
+      renderLanguages();
     }
     updateButton();
   });
@@ -549,10 +569,19 @@ ${AEM_SCRIPT}
   loadAemConfig().then(function (config) { aemBtn.hidden = !config; reportSize(); });
 
   countInput.addEventListener('input', updateButton);
-  languageBoxes.forEach(function (box) { box.addEventListener('change', updateButton); });
-  // The boxes say whether they are checked once the Spectrum bundle has defined them
-  updateButton();
-  customElements.whenDefined('sp-checkbox').then(updateButton);
+  languagePicker.addEventListener('change', function () {
+    var code = languagePicker.value;
+    if (code && chosen.indexOf(code) < 0) chosen.push(code);
+    // The picker offers to add another one
+    languagePicker.value = '';
+    renderLanguages();
+  });
+  languageTags.addEventListener('delete', function (e) {
+    var code = e.target.getAttribute('data-code');
+    chosen = chosen.filter(function (c) { return c !== code; });
+    renderLanguages();
+  });
+  renderLanguages();
   document.getElementById('browse').addEventListener('click', function () { input.value = ''; input.click(); });
   input.addEventListener('change', function () { upload(input.files[0]); });
   drop.addEventListener('sp-dropzone-should-accept', function (e) { e.detail.dataTransfer.dropEffect = 'copy'; });

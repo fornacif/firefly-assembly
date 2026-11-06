@@ -29,8 +29,11 @@
     "@spectrum-web-components/dropzone": "^1.12.5",
     "@spectrum-web-components/help-text": "^1.12.5",
     "@spectrum-web-components/illustrated-message": "^1.12.5",
+    "@spectrum-web-components/menu": "^1.12.5",
+    "@spectrum-web-components/picker": "^1.12.5",
     "@spectrum-web-components/progress-bar": "^1.12.5",
     "@spectrum-web-components/progress-circle": "^1.12.5",
+    "@spectrum-web-components/tags": "^1.12.5",
     "@spectrum-web-components/theme": "^1.12.5",
     "esbuild": "^0.25.12"
   }
