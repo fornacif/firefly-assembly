@@ -44,8 +44,8 @@ const WORKFLOW = `Variant creation workflow. When the user asks to create varian
 1. Start: call start-variant-creation (pass variantCount and languages if the user already gave them). The user sets the number of variants per language, the languages and uploads the PSD template (from their computer or AEM Assets) in the widget, then says to continue. The widget gives you the template name and URL in your context (or through get-widget-result, see below): use that URL. Never ask for the file or its URL in chat.
 2. Layer selection: immediately call get-psd-manifest with the template URL. The user picks the layers to vary in the widget. Then wait.
 3. Texts: right after the layer selection, if text layers were selected, get the texts of each variant: the user provides them, or you write them from a brief (subject, tone, language). The user's requests always come first (length, number of words or lines, wording): follow them exactly, even if the text may not fit, and never shorten or change a text the user asked for to make it fit. Otherwise, write each text about as long as the original text of its layer (given by get-psd-manifest): the same number of lines and about the same number of characters per line (within 10%), so that it fits the layout. Write the line breaks yourself (\\n), where the original text has them: a point text layer does not wrap its lines by itself (a text without any line break is spread over the lines of the original text, by length). Each variant is created in each language chosen in the start widget (the total is the number of variants times the number of languages): write the texts of each variant in each language (the same message, translated and adapted, not word for word), and give each a short label ending with its language code (e.g. "Winter sale FR"), in the order variant by variant then language by language. Then call review-variant-texts with the texts and the original text of each layer. Then wait.
-4. Images: if smart object layers were selected, call upload-variant-images ONCE with the variant labels and the selected smart object layers (id, name and frame width and height from get-psd-manifest), so the user drops (or picks from AEM Assets) one image per variant and layer in a grid and adjusts how each one is cropped to its frame. When the user confirms, the widget gives you the URL, size and crop of each image the same way. Never ask for image URLs in chat. Then wait.
-5. Generation: as soon as the images are confirmed (or the texts, without smart object layers), call create-variant ONCE with all variants (with more than ${MAX_VARIANTS_PER_GENERATION}, in calls of ${MAX_VARIANTS_PER_GENERATION} at most, one after the other, without waiting for the renders), passing for each image the crop chosen in the grid and for each variant its language; do not recap the variants or ask for another approval. The widget shows the generated files with download buttons.
+4. Images: if smart object layers were selected, call upload-variant-images ONCE with the labels of the variants without their languages (one row per variant, e.g. "Winter sale" for "Winter sale FR" and "Winter sale DE": all the languages of a variant share its images) and the selected smart object layers (id, name and frame width and height from get-psd-manifest), so the user drops (or picks from AEM Assets) one image per variant and layer in a grid and adjusts how each one is cropped to its frame. When the user confirms, the widget gives you the URL, size and crop of each image the same way. Never ask for image URLs in chat. Then wait.
+5. Generation: as soon as the images are confirmed (or the texts, without smart object layers), call create-variant ONCE with all variants (with more than ${MAX_VARIANTS_PER_GENERATION}, in calls of ${MAX_VARIANTS_PER_GENERATION} at most, one after the other, without waiting for the renders), passing for each image the crop chosen in the grid (each language of a variant gets the images and crops of its row of the grid, and its label in the grid as group) and for each variant its language; do not recap the variants or ask for another approval. The widget shows the generated files with download buttons.
 6. Review: right after create-variant, in the same turn and without asking the user, check the texts of the generated files: call review-variants with the task id create-variant gives (it waits for the generation; while it answers that it is not finished, call it again): it shows you each visual with the texts sent. Look at each edited text on its visual: cut or past an edge of the visual or of its panel, letters or words hidden, overlapping another element (logo, image, other text) more than in the template, too small or hard to read on its background, lines broken badly, or not the text sent. Then call report-variant-issues with every variant reviewed (no issues for those that are fine; when review-variants shows the variants in several parts, after each part): per problem, the layer, a short description, the fix you propose (e.g. Reduce the font size of "headline" to 85%.) and the rectangle of the text on the visual, in pixels of the canvas. The widget marks each problem on the visual, with your proposed fix. Each variant has a field of changes, pre-filled with its proposed fixes, that the user edits, then sends to you: nothing is generated again before. Do not list the problems in chat: briefly say that the widget shows them and takes the changes. When the user asks for changes (in the widget or in chat), make exactly the changes asked, nothing else: change a font size only when asked; to change the words of a text, rewrite it as asked (e.g. twice as many words, at most two lines) and keep its font size, even if it may not fit; then call create-variant again with the variants to change only, with the same file names and the same edits except the changes (a font size of N% is fontScale N/100): the new widget shows only these variants, the others stay in the earlier widgets. The texts are checked once generated: do not adjust them beforehand. If a text the user asked for does not fit, you may then suggest a fix (a smaller font size or a shorter text), without applying it.
 Changes after generation: to re-crop or swap images, call upload-variant-images again with images pre-filled from the previous confirmation (never ask to upload again the images you already have, unless their URLs expired); to change texts, call create-variant again with the variants to change only (same file names).
 Widgets send their result (template URL, layers, texts, images) in your context and end the user's message with a reference in parentheses like "(r7k2p9)": if you do not have that result in your context, call get-widget-result with this ref before going on; never ask the user to redo a step because a result seems missing.
@@ -54,7 +54,7 @@ The URLs from the widgets are temporary presigned URLs: use them in tool calls, 
 const NEXT_STEPS_AFTER_SELECTION = 'Wait for the user to pick layers in the widget. Then: (1) if text layers were selected, get the ' +
   'texts of each variant (from the user, or written from a brief: subject, tone, language), each with the same number of lines and ' +
   'about the same number of characters (within 10%) as the original text of its layer, give each variant a short label, then ' +
-  'call review-variant-texts with the texts and the original texts; (2) if smart object layers were selected, call upload-variant-images ONCE with all variant labels and ' +
+  'call review-variant-texts with the texts and the original texts; (2) if smart object layers were selected, call upload-variant-images ONCE with the labels of the variants without their languages (their languages share their images) and ' +
   'the selected smart object layers (id, name, and frame width and height): it shows a single grid, one image per variant and layer, ' +
   'where the user adjusts each crop. Never call upload-file per image and never ask for image URLs; (3) then call create-variant ONCE ' +
   'with all variants, passing each image crop as given by the grid, without a recap or another approval.'
@@ -794,17 +794,20 @@ async function createVariants (params, { templateUrl, formats, variants, deadlin
   return results
 }
 
-// Smart object layers that get the same image in several variants: usually a mix-up in the image mapping.
+// Smart object layers that get the same image in several variants, other than the languages of a variant: usually a mix-up in
+// the image mapping.
 function findSharedImages (variants) {
   const byLayerAndUrl = new Map()
   variants.forEach((variant, index) => variant.layers
     .filter(layer => layer.type === 'smart_object_layer')
     .forEach(layer => {
       const key = `${layer.id}|${layer.imageUrl}`
-      byLayerAndUrl.set(key, [...(byLayerAndUrl.get(key) || []), variant.fileName || `variant ${index + 1}`])
+      const name = variant.fileName || `variant ${index + 1}`
+      byLayerAndUrl.set(key, [...(byLayerAndUrl.get(key) || []), { name, group: variant.group || name }])
     }))
-  return [...byLayerAndUrl.entries()].filter(([, names]) => names.length > 1)
-    .map(([key, names]) => ({ layerId: Number(key.split('|')[0]), variants: names }))
+  // The languages of a variant (same group) share its images by design
+  return [...byLayerAndUrl.entries()].filter(([, users]) => new Set(users.map(user => user.group)).size > 1)
+    .map(([key, users]) => ({ layerId: Number(key.split('|')[0]), variants: users.map(user => user.name) }))
 }
 
 // Results of the widgets, stored for 24 hours under a short random reference and readable only by the user who created
@@ -1214,6 +1217,8 @@ function registerTools (server, params) {
           fileName: z.string().optional().describe('Output file name without extension, e.g. "variant-summer"'),
           layers: z.array(layerEditSchema).min(1).describe('Edits to apply, one per layer'),
           language: z.string().optional().describe('Language of the texts of this variant, as an ISO 639-1 code (e.g. "fr"), given to the review'),
+          group: z.string().optional().describe('Label of this variant in upload-variant-images (without its language): the languages ' +
+            'of a variant share its images'),
           formats: z.array(z.enum(VARIANT_FORMATS)).min(1).optional()
             .describe('Formats of this variant only, when they differ between variants (e.g. ["png", "psd"] for one of them); ' +
               'otherwise the formats of the call')
@@ -1458,13 +1463,14 @@ function registerTools (server, params) {
     {
       title: 'Upload Variant Images',
       description: 'Step 4 of the variant workflow. Shows a grid where the user drops one image per variant and smart object layer ' +
-        '(one row per variant, one column per layer). Each image is cropped to the frame of its layer, framed on its subject, and the user ' +
+        '(one row per variant, not per language: the languages of a variant share its images; one column per layer). Each image is cropped to the frame of its layer, framed on its subject, and the user ' +
         'can reposition and zoom the crop. When the user confirms, the widget adds to your context, for each variant and layer, the image ' +
         'file name, its temporary HTTPS URL (valid 24 hours), its size and its crop, and the user says to continue: then call create-variant. ' +
         'To adjust crops or replace some images after a generation, call it again with images (URLs, crops and sizes from the previous ' +
         'confirmation): the grid opens pre-filled, without uploading again; then call create-variant again with the new crops.',
       inputSchema: {
-        variants: z.array(z.string().min(1)).min(1).max(MAX_VARIANTS).describe('Short label of each variant, in order (e.g. their titles)'),
+        variants: z.array(z.string().min(1)).min(1).max(MAX_VARIANTS).describe('Short label of each variant without its language, in ' +
+          'order (e.g. their titles): one row per variant, whose images all its languages share'),
         layers: z.array(z.object({
           id: z.number().int().describe('Layer id from get-psd-manifest'),
           name: z.string().describe('Layer name'),
