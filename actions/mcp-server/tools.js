@@ -46,7 +46,7 @@ const WORKFLOW = `Variant creation workflow. When the user asks to create varian
 3. Texts: right after the layer selection, if text layers were selected, get the texts of each variant: the user provides them, or you write them from a brief (subject, tone, language). The user's requests always come first (length, number of words or lines, wording): follow them exactly, even if the text may not fit, and never shorten or change a text the user asked for to make it fit. Otherwise, write each text about as long as the original text of its layer (given by get-psd-manifest): the same number of lines and about the same number of characters per line (within 10%), so that it fits the layout. Write the line breaks yourself (\\n), where the original text has them: a point text layer does not wrap its lines by itself (a text without any line break is spread over the lines of the original text, by length). Each variant is created in each language chosen in the start widget (the total is the number of variants times the number of languages): write the texts of each variant in each language (the same message, translated and adapted, not word for word), and give each a short label ending with its language code (e.g. "Winter sale FR"), in the order variant by variant then language by language. Then call review-variant-texts with the texts and the original text of each layer. Then wait.
 4. Images: if smart object layers were selected, call upload-variant-images ONCE with the variant labels and the selected smart object layers (id, name and frame width and height from get-psd-manifest), so the user drops (or picks from AEM Assets) one image per variant and layer in a grid and adjusts how each one is cropped to its frame. When the user confirms, the widget gives you the URL, size and crop of each image the same way. Never ask for image URLs in chat. Then wait.
 5. Generation: as soon as the images are confirmed (or the texts, without smart object layers), call create-variant ONCE with all variants (with more than ${MAX_VARIANTS_PER_GENERATION}, in calls of ${MAX_VARIANTS_PER_GENERATION} at most, one after the other, without waiting for the renders), passing for each image the crop chosen in the grid and for each variant its language; do not recap the variants or ask for another approval. The widget shows the generated files with download buttons.
-6. Review: right after create-variant, in the same turn and without asking the user, check the texts of the generated files: call review-variants with the task id create-variant gives (it waits for the generation; while it answers that it is not finished, call it again): it shows you each visual with the texts sent. Look at each edited text on its visual: cut or past an edge of the visual or of its panel, letters or words hidden, overlapping another element (logo, image, other text) more than in the template, too small or hard to read on its background, lines broken badly, or not the text sent. Then call report-variant-issues ONCE with every variant reviewed (no issues for those that are fine): per problem, the layer, a short description, the fix you propose (e.g. Reduce the font size of "headline" to 85%.) and the rectangle of the text on the visual, in pixels of the canvas. The widget marks each problem on the visual, with your proposed fix. Each variant has a field of changes, pre-filled with its proposed fixes, that the user edits, then sends to you: nothing is generated again before. Do not list the problems in chat: briefly say that the widget shows them and takes the changes. When the user asks for changes (in the widget or in chat), make exactly the changes asked, nothing else: change a font size only when asked; to change the words of a text, rewrite it as asked (e.g. twice as many words, at most two lines) and keep its font size, even if it may not fit; then call create-variant again with the variants to change only, with the same file names and the same edits except the changes (a font size of N% is fontScale N/100): the new widget shows only these variants, the others stay in the earlier widgets. The texts are checked once generated: do not adjust them beforehand. If a text the user asked for does not fit, you may then suggest a fix (a smaller font size or a shorter text), without applying it.
+6. Review: right after create-variant, in the same turn and without asking the user, check the texts of the generated files: call review-variants with the task id create-variant gives (it waits for the generation; while it answers that it is not finished, call it again): it shows you each visual with the texts sent. Look at each edited text on its visual: cut or past an edge of the visual or of its panel, letters or words hidden, overlapping another element (logo, image, other text) more than in the template, too small or hard to read on its background, lines broken badly, or not the text sent. Then call report-variant-issues with every variant reviewed (no issues for those that are fine; when review-variants shows the variants in several parts, after each part): per problem, the layer, a short description, the fix you propose (e.g. Reduce the font size of "headline" to 85%.) and the rectangle of the text on the visual, in pixels of the canvas. The widget marks each problem on the visual, with your proposed fix. Each variant has a field of changes, pre-filled with its proposed fixes, that the user edits, then sends to you: nothing is generated again before. Do not list the problems in chat: briefly say that the widget shows them and takes the changes. When the user asks for changes (in the widget or in chat), make exactly the changes asked, nothing else: change a font size only when asked; to change the words of a text, rewrite it as asked (e.g. twice as many words, at most two lines) and keep its font size, even if it may not fit; then call create-variant again with the variants to change only, with the same file names and the same edits except the changes (a font size of N% is fontScale N/100): the new widget shows only these variants, the others stay in the earlier widgets. The texts are checked once generated: do not adjust them beforehand. If a text the user asked for does not fit, you may then suggest a fix (a smaller font size or a shorter text), without applying it.
 Changes after generation: to re-crop or swap images, call upload-variant-images again with images pre-filled from the previous confirmation (never ask to upload again the images you already have, unless their URLs expired); to change texts, call create-variant again with the variants to change only (same file names).
 Widgets send their result (template URL, layers, texts, images) in your context and end the user's message with a reference in parentheses like "(r7k2p9)": if you do not have that result in your context, call get-widget-result with this ref before going on; never ask the user to redo a step because a result seems missing.
 The URLs from the widgets are temporary presigned URLs: use them in tool calls, but never show them to the user. Reply in the user's language.`
@@ -968,29 +968,45 @@ async function generationToReview (params, taskId) {
   return generation
 }
 
-// Content of review-variants: the texts to check, then each visual reduced (the assistant reads images, not their URLs).
+// Visuals of a review-variants answer, at most this many base64 characters in all: an action answer is at most 1 MB (Runtime)
+const REVIEW_MAX_IMAGE_CHARS = 750000
+
+// Content of review-variants: the texts to check, then each visual reduced (the assistant reads images, not their URLs), as many
+// as fit in an answer; the variants left are named, for another call.
 async function reviewContent (generation, fileNames) {
   const { variants, review } = generation.result
   const layerName = id => review.layers.find(layer => layer.id === id)?.name || String(id)
-  const shown = variants.map((variant, index) => ({ variant, texts: review.texts[index] || [] }))
+  const toReview = variants.map((variant, index) => ({ variant, texts: review.texts[index] || [] }))
     .filter(({ variant }) => !variant.error && (!fileNames?.length || fileNames.includes(variant.fileName)))
-  const images = await Promise.all(shown.map(async ({ variant }) => {
+  const downloads = toReview.map(async ({ variant }) => {
     const response = await fetchWithRetry(variant.imageUrl)
     if (!response.ok) throw new Error(`The visual of ${variant.fileName} could not be downloaded (HTTP ${response.status})`)
-    return reviewImage(Buffer.from(await response.arrayBuffer()))
-  }))
-  const intro = `${shown.length} variant(s) to review. Layers of the template (pixels of the canvas: left, top, width, height): ` +
+    return Buffer.from(await response.arrayBuffer())
+  })
+  downloads.forEach(download => download.catch(() => {}))
+  // Reduced one by one, while they fit (the first one always)
+  const shown = []
+  let chars = 0
+  for (let i = 0; i < toReview.length; i++) {
+    const image = reviewImage(await downloads[i])
+    if (shown.length && chars + image.data.length > REVIEW_MAX_IMAGE_CHARS) break
+    chars += image.data.length
+    shown.push({ ...toReview[i], image })
+  }
+  const left = toReview.slice(shown.length).map(({ variant }) => variant.fileName)
+  const intro = `${shown.length} variant(s) to review${left.length ? ` (of ${toReview.length})` : ''}. Layers of the template (pixels of the canvas: left, top, width, height): ` +
     review.layers.map(layer => `"${layer.name}" (id ${layer.id}, ${layer.type}${layer.area ? `, ${['left', 'top', 'width', 'height'].map(k => Math.round(layer.area[k])).join(',')}` : ''})`).join('; ') +
     '. Below, each visual with the texts sent. Check each edited text as the workflow says (step 6), then call report-variant-issues ' +
-    'ONCE with every variant below, with the rectangles in pixels of the canvas (each visual is reduced: multiply its pixels by the factor given).'
-  return [{ type: 'text', text: intro }, ...shown.flatMap(({ variant, texts }, i) => {
-    const canvas = variant.canvas || { width: images[i].width, height: images[i].height }
+    'with every variant below, with the rectangles in pixels of the canvas (each visual is reduced: multiply its pixels by the factor given).' +
+    (left.length ? ` Then, without asking the user, call review-variants again with fileNames ${JSON.stringify(left)} for the variants left, and report them the same way.` : '')
+  return [{ type: 'text', text: intro }, ...shown.flatMap(({ variant, texts, image }) => {
+    const canvas = variant.canvas || { width: image.width, height: image.height }
     return [{
       type: 'text',
-      text: `Variant "${variant.fileName}": canvas ${canvas.width}x${canvas.height} px, visual reduced to ${images[i].width}x${images[i].height} ` +
-        `(factor ${Math.round(canvas.width / images[i].width * 1000) / 1000}). Texts sent: ` +
+      text: `Variant "${variant.fileName}": canvas ${canvas.width}x${canvas.height} px, visual reduced to ${image.width}x${image.height} ` +
+        `(factor ${Math.round(canvas.width / image.width * 1000) / 1000}). Texts sent: ` +
         texts.map(t => `"${layerName(t.layerId)}" (id ${t.layerId}${t.fontScale ? `, font ${Math.round(t.fontScale * 100)}%` : ''}): ${JSON.stringify(t.text)}`).join('; ')
-    }, { type: 'image', data: images[i].data, mimeType: images[i].mimeType }]
+    }, { type: 'image', data: image.data, mimeType: image.mimeType }]
   })]
 }
 
@@ -1267,8 +1283,8 @@ function registerTools (server, params) {
     {
       title: 'Report Variant Issues',
       description: 'Step 6 of the variant workflow, after review-variants: gives the widget of the generation the text problems you ' +
-        'found on the visuals, which it marks with the fixes you propose and lets the user edit and send. Call it ONCE with every ' +
-        'variant reviewed, with no issues for those that are fine.',
+        'found on the visuals, which it marks with the fixes you propose and lets the user edit and send. Call it with every ' +
+        'variant shown by review-variants, with no issues for those that are fine (once per part, when it shows them in several).',
       inputSchema: {
         taskId: z.string().describe('Task id of the generation, as given to review-variants'),
         variants: z.array(z.object({
