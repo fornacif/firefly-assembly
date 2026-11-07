@@ -1779,8 +1779,8 @@ ${IMAGES_CSS}
 `, `
 <h2 class="heading" id="title">Texts per variant</h2>
 <ol class="steps" aria-label="Steps" hidden>
-  <li data-for="1" class="current" role="button" tabindex="-1"><span class="step-kicker">Step 1</span><span class="step-title">Texts</span></li>
-  <li data-for="2" role="button" tabindex="-1"><span class="step-kicker">Step 2</span><span class="step-title">Images</span></li>
+  <li data-for="1" class="current" role="button" tabindex="-1"><span class="step-kicker">Step 3</span><span class="step-title">Texts</span></li>
+  <li data-for="2" role="button" tabindex="-1"><span class="step-kicker">Step 4</span><span class="step-title">Images</span></li>
 </ol>
 <div data-step="1">
 <div class="subtle intro">Click a text to edit it, then confirm. Keep each text about as long as the original, so that it fits the layout.
