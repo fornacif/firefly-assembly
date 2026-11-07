@@ -437,7 +437,7 @@ function getStartViewHtml (scriptUrl) {
   #file { display: none; }
   sp-progress-bar { width: 100%; margin-top: var(--spectrum-spacing-200); }
   /* Two steps: the variants and the template, then the layers; their numbers in a circle, the current one in the accent color */
-  .steps { display: flex; align-items: center; gap: var(--spectrum-spacing-200); margin: 0 0 var(--spectrum-spacing-400); padding: 0; list-style: none; }
+  .steps { display: flex; align-items: center; gap: var(--spectrum-spacing-200); margin: var(--spectrum-spacing-300) 0 var(--spectrum-spacing-400); padding: 0; list-style: none; }
   .steps li { display: flex; align-items: center; gap: var(--spectrum-spacing-100); color: var(--spectrum-neutral-subdued-content-color-default); }
   .steps li + li::before { content: ''; width: 32px; height: 1px; margin-right: var(--spectrum-spacing-100); background: var(--spectrum-gray-300); }
   .step-number {
