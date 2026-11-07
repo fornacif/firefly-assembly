@@ -448,12 +448,15 @@ function getStartViewHtml (scriptUrl) {
   .steps li.current .step-number { color: #fff; background: var(--spectrum-accent-background-color-default); border-color: transparent; }
   .steps li.done .step-number { color: var(--spectrum-accent-content-color-default); border-color: var(--spectrum-accent-background-color-default); }
   [data-step][hidden] { display: none; }
+  /* A step that can be gone to: the done one, or the next one once the current one is complete */
+  .steps li.reachable { cursor: pointer; }
+  .steps li.reachable:hover { color: var(--spectrum-neutral-content-color-default); text-decoration: underline; }
 ${LAYERS_CSS}
 `, `
 <h2 class="heading">Create variants</h2>
 <ol class="steps" aria-label="Steps">
-  <li data-for="1" class="current"><span class="step-number">1</span>Variants and template</li>
-  <li data-for="2"><span class="step-number">2</span>Layers to vary</li>
+  <li data-for="1" class="current" role="button" tabindex="-1"><span class="step-number">1</span>Variants and template</li>
+  <li data-for="2" role="button" tabindex="-1"><span class="step-number">2</span>Layers to vary</li>
 </ol>
 <div data-step="1">
 <div class="subtle intro">Set the number of variants and their languages, and drop the layered PSD template.</div>
@@ -524,8 +527,29 @@ ${LAYERS_SCRIPT}
     backBtn.hidden = step !== 2;
     nextBtn.hidden = step !== 1;
     continueBtn.hidden = step !== 2;
+    currentStep = step;
+    updateSteps();
     reportSize();
   }
+
+  // Which steps can be clicked: the first one from the second, the second one once the first is complete
+  var currentStep = 1;
+  function reachable(step) { return step !== currentStep && (step === 1 ? !backBtn.disabled : !nextBtn.disabled); }
+  function updateSteps() {
+    Array.prototype.forEach.call(document.querySelectorAll('.steps li'), function (li) {
+      var ok = reachable(Number(li.getAttribute('data-for')));
+      li.classList.toggle('reachable', ok);
+      li.tabIndex = ok ? 0 : -1;
+    });
+  }
+  document.querySelector('.steps').addEventListener('click', function (e) {
+    var li = e.target.closest('li');
+    if (li && reachable(Number(li.getAttribute('data-for')))) showStep(Number(li.getAttribute('data-for')));
+  });
+  document.querySelector('.steps').addEventListener('keydown', function (e) {
+    var li = e.target.closest('li');
+    if (li && (e.key === 'Enter' || e.key === ' ') && reachable(Number(li.getAttribute('data-for')))) { e.preventDefault(); showStep(Number(li.getAttribute('data-for'))); }
+  });
   var aemBtn = document.getElementById('aem');
   var languageTags = document.getElementById('languages');
   var languagePicker = document.getElementById('add-language');
@@ -597,6 +621,7 @@ ${LAYERS_SCRIPT}
     updateNaming();
     nextBtn.disabled = !template || !count() || !n || n > ${MAX_VARIANTS_UI} || !!namingError();
     continueBtn.disabled = nextBtn.disabled || !layerCount;
+    if (typeof updateSteps === 'function') updateSteps();
   }
 
   onToolInput(function (args) {
@@ -708,6 +733,7 @@ ${LAYERS_SCRIPT}
     var names = codes.map(function (code) { return LANGUAGE_NAMES[code]; });
     continueBtn.disabled = true;
     backBtn.disabled = true;
+    updateSteps();
     var context = 'Variant creation started. Number of variants per language: ' + n + '. Languages: '
       + codes.map(function (code, i) { return names[i] + ' (' + code + ')'; }).join(', ') + '. Total: ' + n * codes.length
       + ' variants, each of the ' + n + ' variants in each language. PSD template: ' + template.name
@@ -720,6 +746,7 @@ ${LAYERS_SCRIPT}
       .catch(function (error) {
         backBtn.disabled = false;
         updateButton();
+        updateSteps();
         setStatus((error && error.message) || String(error), true);
       });
   });
