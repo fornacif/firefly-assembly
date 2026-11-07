@@ -401,6 +401,7 @@ function getStartViewHtml (scriptUrl) {
     border-radius: var(--spectrum-corner-radius-100);
   }
   .field input:focus { outline: none; border-color: var(--spectrum-gray-800); }
+  .field input.wide { width: 360px; max-width: 100%; }
   /* The picker of the languages, in place, then the languages chosen as tags that can be removed, wrapping next to it */
   .languages { display: flex; align-items: flex-start; gap: var(--spectrum-spacing-200); }
   .languages sp-picker { flex: 0 0 200px; width: 200px; }
@@ -439,6 +440,11 @@ function getStartViewHtml (scriptUrl) {
   </div>
   <sp-help-text id="total"></sp-help-text>
 </div>
+<div class="field">
+  <label for="naming">File names</label>
+  <input type="text" id="naming" class="wide" value="{template}_{variant}_{language}" spellcheck="false">
+  <sp-help-text id="naming-help"></sp-help-text>
+</div>
 <sp-dropzone id="drop">
   <div class="message"><div id="message-heading">Drop your PSD template</div><div class="subtle" id="message-description">Layered .psd file</div></div>
   <div class="browse">
@@ -469,7 +475,37 @@ ${AEM_SCRIPT}
   // Codes of the languages chosen, in the order of LANGUAGE_NAMES
   var chosen = ['en'];
   var totalText = document.getElementById('total');
+  var namingInput = document.getElementById('naming');
+  var namingHelp = document.getElementById('naming-help');
   var template = null;
+
+  // File name of a part of the name: the characters that files do not allow replaced, spaces as dashes
+  function safeName(text) {
+    return String(text).trim().replace(/\\s+/g, '-').replace(/[\\\\/:*?"<>|]+/g, '_');
+  }
+
+  // Model of the file names, with {template} and {date} replaced: {variant} and {language} are replaced by create-variant
+  function fileNamePattern() {
+    var now = new Date();
+    var date = now.getFullYear() + '-' + ('0' + (now.getMonth() + 1)).slice(-2) + '-' + ('0' + now.getDate()).slice(-2);
+    var name = template ? template.name.replace(/\\.psd$/i, '') : 'template';
+    return namingInput.value.trim().split('{template}').join(safeName(name)).split('{date}').join(date);
+  }
+
+  // The model is valid when it names each variant apart: with {variant}, and with {language} for several languages
+  function namingError() {
+    var value = namingInput.value;
+    if (value.indexOf('{variant}') < 0) return 'Add {variant}, so that each variant has its own file.';
+    if (languages().length > 1 && value.indexOf('{language}') < 0) return 'Add {language}, so that each language has its own file.';
+    return '';
+  }
+
+  function updateNaming() {
+    var error = namingError();
+    namingHelp.textContent = error || '{template}, {variant}, {language} and {date}, e.g. '
+      + fileNamePattern().split('{variant}').join('Winter-sale').split('{language}').join(languages()[0] || 'en') + '.jpg';
+    namingHelp.variant = error ? 'negative' : 'neutral';
+  }
 
   function count() {
     var n = Math.round(Number(countInput.value));
@@ -501,7 +537,8 @@ ${AEM_SCRIPT}
     totalText.textContent = !languages().length ? 'Choose at least one language.'
       : n > ${MAX_VARIANTS_UI} ? n + ' variants in total: at most ${MAX_VARIANTS_UI}.' : n + ' variant' + (n > 1 ? 's' : '') + ' in total.';
     totalText.variant = n > ${MAX_VARIANTS_UI} || !languages().length ? 'negative' : 'neutral';
-    continueBtn.disabled = !template || !count() || !n || n > ${MAX_VARIANTS_UI};
+    updateNaming();
+    continueBtn.disabled = !template || !count() || !n || n > ${MAX_VARIANTS_UI} || !!namingError();
   }
 
   onToolInput(function (args) {
@@ -571,6 +608,7 @@ ${AEM_SCRIPT}
   loadAemConfig().then(function (config) { aemBtn.hidden = !config; reportSize(); });
 
   countInput.addEventListener('input', updateButton);
+  namingInput.addEventListener('input', updateButton);
   languagePicker.addEventListener('change', function () {
     var code = languagePicker.value;
     if (code && chosen.indexOf(code) < 0) chosen.push(code);
@@ -597,7 +635,8 @@ ${AEM_SCRIPT}
     var context = 'Variant creation started. Number of variants per language: ' + n + '. Languages: '
       + codes.map(function (code, i) { return names[i] + ' (' + code + ')'; }).join(', ') + '. Total: ' + n * codes.length
       + ' variants, each of the ' + n + ' variants in each language. PSD template: ' + template.name
-      + ', URL (valid 24 hours): ' + template.url + '. Next step: call get-psd-manifest with this URL.';
+      + ', URL (valid 24 hours): ' + template.url + '. File names: pass fileNamePattern "' + fileNamePattern()
+      + '" to every create-variant call. Next step: call get-psd-manifest with this URL.';
     sendToModel(context, 'I want ' + n + ' variant(s) of ' + template.name + ' in ' + names.join(', ') + ', continue.', 'Template sent.')
       .catch(function (error) {
         updateButton();

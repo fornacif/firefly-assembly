@@ -4,7 +4,7 @@ MCP server, deployed as an Adobe I/O Runtime (App Builder) action, that creates 
 
 ## Workflow
 
-1. **Start** (`start-variant-creation`): number of variants per language, languages (English, French, Italian, German, Spanish, Portuguese, Dutch, Polish, Swedish, Danish, Norwegian, Finnish; each variant is created in each language, up to 50 in total) and PSD template, uploaded from the computer or picked in AEM Assets.
+1. **Start** (`start-variant-creation`): number of variants per language, languages (English, French, Italian, German, Spanish, Portuguese, Dutch, Polish, Swedish, Danish, Norwegian, Finnish; each variant is created in each language, up to 50 in total) PSD template, uploaded from the computer or picked in AEM Assets, and model of the file names (`{template}`, `{variant}`, `{language}`, `{date}`; default `{template}_{variant}_{language}`), which `create-variant` applies to each file.
 2. **Layers** (`get-psd-manifest`): the template preview with its editable layers (text and smart object layers); the user picks the ones to change.
 3. **Texts** (`edit-variant-texts`): an editable table with the texts of each variant.
 4. **Images** (`upload-variant-images`): a grid with one image per variant and smart object layer, from the computer or AEM, with crops framed on the subject; the languages of a variant share its images and crops.
