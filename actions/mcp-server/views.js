@@ -493,6 +493,7 @@ ${LAYERS_CSS}
 </div>
 <sp-help-text id="quota" variant="negative" icon hidden></sp-help-text>
 <div class="actions">
+  <sp-button variant="secondary" treatment="outline" id="back" hidden>Back</sp-button>
   <sp-button variant="accent" id="next" disabled>Next</sp-button>
   <sp-button variant="accent" id="continue" hidden disabled>Continue</sp-button>
   <sp-help-text class="status" id="status"></sp-help-text>
@@ -513,8 +514,7 @@ ${LAYERS_SCRIPT}
   var messageDescription = document.getElementById('message-description');
   var continueBtn = document.getElementById('continue');
   var nextBtn = document.getElementById('next');
-  // While the result is sent to the model, the first step cannot be gone back to
-  var sending = false;
+  var backBtn = document.getElementById('back');
 
   // Shows a step: 1, the variants and the template; 2, the layers of the template (read meanwhile, as soon as it is uploaded)
   function showStep(step) {
@@ -524,6 +524,7 @@ ${LAYERS_SCRIPT}
       li.classList.toggle('current', n === step);
       li.classList.toggle('done', n < step);
     });
+    backBtn.hidden = step !== 2;
     nextBtn.hidden = step !== 1;
     continueBtn.hidden = step !== 2;
     currentStep = step;
@@ -533,7 +534,7 @@ ${LAYERS_SCRIPT}
 
   // Which steps can be clicked: the first one from the second, the second one once the first is complete
   var currentStep = 1;
-  function reachable(step) { return step !== currentStep && (step === 1 ? !sending : !nextBtn.disabled); }
+  function reachable(step) { return step !== currentStep && (step === 1 ? !backBtn.disabled : !nextBtn.disabled); }
   function updateSteps() {
     Array.prototype.forEach.call(document.querySelectorAll('.steps li'), function (li) {
       var ok = reachable(Number(li.getAttribute('data-for')));
@@ -724,13 +725,14 @@ ${LAYERS_SCRIPT}
   drop.addEventListener('sp-dropzone-drop', function (e) { upload(e.detail.dataTransfer.files[0]); });
 
   nextBtn.addEventListener('click', function () { showStep(2); });
+  backBtn.addEventListener('click', function () { showStep(1); });
 
   continueBtn.addEventListener('click', function () {
     var n = count();
     var codes = languages();
     var names = codes.map(function (code) { return LANGUAGE_NAMES[code]; });
     continueBtn.disabled = true;
-    sending = true;
+    backBtn.disabled = true;
     updateSteps();
     var context = 'Variant creation started. Number of variants per language: ' + n + '. Languages: '
       + codes.map(function (code, i) { return names[i] + ' (' + code + ')'; }).join(', ') + '. Total: ' + n * codes.length
@@ -742,7 +744,7 @@ ${LAYERS_SCRIPT}
     var picked = selectedForModel().map(function (l) { return l.name; }).join(', ');
     sendToModel(context, 'I want ' + n + ' variant(s) of ' + template.name + ' in ' + names.join(', ') + ', changing ' + picked + ', continue.', 'Template sent.')
       .catch(function (error) {
-        sending = false;
+        backBtn.disabled = false;
         updateButton();
         updateSteps();
         setStatus((error && error.message) || String(error), true);
