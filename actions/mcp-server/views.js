@@ -1689,7 +1689,6 @@ function getVariantViewHtml (scriptUrl) {
 <div class="actions" id="fix-actions" hidden>
   <sp-button variant="accent" id="send-changes" disabled>Send changes</sp-button>
   <sp-button variant="secondary" treatment="outline" id="download-all" hidden disabled>Download all</sp-button>
-  <sp-button variant="secondary" treatment="outline" id="review" hidden>Check the texts</sp-button>
 </div>
 <sp-help-text class="status" id="status"></sp-help-text>
 `, `
@@ -1921,14 +1920,11 @@ function getVariantViewHtml (scriptUrl) {
   });
 
   // Texts checked by the assistant (review-variants, report-variant-issues), which create-variant tells to do it in the same
-  // turn: once the generation is done, the widget waits for the problems it reports (get-variant-review) and shows them. The
-  // Check the texts button asks it in a message, when it did not (e.g. a conversation opened again)
-  var reviewBtn = document.getElementById('review');
+  // turn: once the generation is done, the widget waits for the problems it reports (get-variant-review) and shows them
   var REVIEW_POLL_MS = 3000;
   var REVIEW_WAIT_MS = 5 * 60 * 1000;
-  // A generation done longer ago than this (e.g. the conversation opened again) is not waited for: the button asks for the review
-  var REVIEW_ASK_WITHIN_MS = 2 * 60 * 1000;
-  var reviewedGeneration = null;
+  // A generation done longer ago than this (e.g. the conversation opened again) is not waited for: its review will not come
+  var REVIEW_WAIT_WITHIN_MS = 2 * 60 * 1000;
   var polling = false;
 
   function setChecking(checking) {
@@ -1961,46 +1957,26 @@ function getVariantViewHtml (scriptUrl) {
         if (Date.now() - started > REVIEW_WAIT_MS) {
           polling = false;
           setChecking(false);
-          reviewBtn.hidden = false;
-          return setStatus('The texts were not checked: look at the visuals, or click Check the texts.', true);
+          return setStatus('The texts were not checked: look at the visuals.', true);
         }
         setTimeout(poll, REVIEW_POLL_MS);
       }, function () {
-        if (Date.now() - started > REVIEW_WAIT_MS) { polling = false; setChecking(false); reviewBtn.hidden = false; return; }
+        if (Date.now() - started > REVIEW_WAIT_MS) { polling = false; setChecking(false); return; }
         setTimeout(poll, REVIEW_POLL_MS);
       });
     }
     poll();
   }
 
-  function askReview() {
-    var generation = reviewedGeneration;
-    reviewBtn.hidden = true;
-    setChecking(true);
-    var context = 'Result of create-variant: ' + generation.summary + '\\n\\nCheck the texts of these variants now (step 6 of the '
-      + 'workflow): call review-variants with taskId "' + generationTaskId + '", look at each visual, then call report-variant-issues '
-      + 'ONCE with every variant (no issues for those that are fine). Do not list the problems in chat: the widget shows them.';
-    waitForReview(generationTaskId);
-    sendToModel(context, 'Check the texts of the generated variants.', 'Checking the texts...')
-      .catch(function (error) {
-        reviewBtn.hidden = false;
-        setStatus((error && error.message) || String(error), true);
-      });
-  }
-
   function startReview(generation) {
-    reviewedGeneration = generation;
     return callTool('get-variant-review', { taskId: generationTaskId }).then(function (review) {
       if (review.reviewed && applyReview(review.issues)) return;
-      if (Date.now() - (generation.doneAt || 0) >= REVIEW_ASK_WITHIN_MS) { reviewBtn.hidden = false; return; }
-      waitForReview(generationTaskId);
-    }, function () { reviewBtn.hidden = false; });
+      if (Date.now() - (generation.doneAt || 0) < REVIEW_WAIT_WITHIN_MS) waitForReview(generationTaskId);
+    }, function () {});
   }
 
-  reviewBtn.addEventListener('click', askReview);
-
   // The variants are generated in a task: shown as they are rendered, then checked; when all are done, the model is given
-  // the result (failures, warnings, text problems), or asked to check the texts.
+  // the result (failures, warnings), and the texts are checked.
   onToolResult(function (result) {
     var data = result.structuredContent || {};
     if (result.isError || (!data.taskId && !data.variants)) {
