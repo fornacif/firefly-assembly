@@ -436,9 +436,12 @@ function getStartViewHtml (scriptUrl) {
   sp-dropzone sp-button { font-size: var(--spectrum-font-size-100); line-height: var(--spectrum-line-height-100); }
   #file { display: none; }
   sp-progress-bar { width: 100%; margin-top: var(--spectrum-spacing-200); }
+  /* The layers of the template, picked once it is read */
+  #layers-field { margin-top: var(--spectrum-spacing-300); }
+${LAYERS_CSS}
 `, `
 <h2 class="heading">Create variants</h2>
-<div class="subtle intro">Set the number of variants and their languages, and drop the layered PSD template.</div>
+<div class="subtle intro">Set the number of variants and their languages, drop the layered PSD template, then pick the layers to vary.</div>
 <div class="field">
   <label for="count">Number of variants per language</label>
   <input type="number" id="count" min="1" max="${MAX_VARIANTS_UI}" value="2">
@@ -465,6 +468,10 @@ function getStartViewHtml (scriptUrl) {
   </div>
 </sp-dropzone>
 <sp-progress-bar id="progress" label="Upload" progress="0" side-label hidden></sp-progress-bar>
+<div class="field" id="layers-field" hidden>
+  <label>Layers to vary: click the numbered zones of the template, or the list</label>
+  ${LAYERS_HTML}
+</div>
 <sp-help-text id="quota" variant="negative" icon hidden></sp-help-text>
 <div class="actions">
   <sp-button variant="accent" id="continue" disabled>Continue</sp-button>
@@ -474,6 +481,9 @@ function getStartViewHtml (scriptUrl) {
 ${UPLOAD_SCRIPT}
 ${AEM_SCRIPT}
 ${QUOTA_SCRIPT}
+${LAYERS_SCRIPT}
+  var layerCount = 0;
+  function onLayersChange(count) { layerCount = count; updateButton(); }
   var LANGUAGE_NAMES = ${JSON.stringify(Object.fromEntries(LANGUAGES))};
   var countInput = document.getElementById('count');
   var input = document.getElementById('file');
@@ -551,7 +561,7 @@ ${QUOTA_SCRIPT}
       : n > ${MAX_VARIANTS_UI} ? n + ' variants in total: at most ${MAX_VARIANTS_UI}.' : n + ' variant' + (n > 1 ? 's' : '') + ' in total.';
     totalText.variant = n > ${MAX_VARIANTS_UI} || !languages().length ? 'negative' : 'neutral';
     updateNaming();
-    continueBtn.disabled = !template || !count() || !n || n > ${MAX_VARIANTS_UI} || !!namingError();
+    continueBtn.disabled = !template || !layerCount || !count() || !n || n > ${MAX_VARIANTS_UI} || !!namingError();
   }
 
   onToolInput(function (args) {
@@ -566,6 +576,9 @@ ${QUOTA_SCRIPT}
   // The drop zone shows the file being transferred, the progress bar a short label and the percentage on one line.
   function startTransfer(name, label, indeterminate) {
     template = null;
+    templateRead++;
+    clearTemplate();
+    document.getElementById('layers-field').hidden = true;
     updateButton();
     messageHeading.textContent = name;
     messageHeading.title = name;
@@ -586,8 +599,21 @@ ${QUOTA_SCRIPT}
     messageHeading.textContent = file.name;
     messageHeading.title = file.name;
     messageDescription.textContent = 'Uploaded — drop or choose another file to replace it';
-    setStatus('');
+    setStatus('Reading the template...', false, true);
     updateButton();
+    readTemplate(file);
+  }
+
+  // The template is read as soon as it is uploaded (read-psd-template): its layers, then its preview, in the picker
+  var templateRead = 0;
+  function readTemplate(file) {
+    var read = ++templateRead;
+    var isCurrent = function () { return read === templateRead; };
+    document.getElementById('layers-field').hidden = false;
+    reportSize();
+    callTool('read-psd-template', { url: file.url })
+      .then(function (started) { if (isCurrent()) return showTemplate(started, isCurrent); })
+      .catch(function (error) { if (isCurrent()) setStatus((error && error.message) || String(error), true); });
   }
 
   function fail(error) {
@@ -650,8 +676,11 @@ ${QUOTA_SCRIPT}
       + codes.map(function (code, i) { return names[i] + ' (' + code + ')'; }).join(', ') + '. Total: ' + n * codes.length
       + ' variants, each of the ' + n + ' variants in each language. PSD template: ' + template.name
       + ', URL (valid 24 hours): ' + template.url + '. File names: pass fileNamePattern "' + fileNamePattern()
-      + '" to every create-variant call. Next step: call get-psd-manifest with this URL.';
-    sendToModel(context, 'I want ' + n + ' variant(s) of ' + template.name + ' in ' + names.join(', ') + ', continue.', 'Template sent.')
+      + '" to every create-variant call. Layers selected by the user in the template (with their original texts and frames; '
+      + 'do not call get-psd-manifest): ' + JSON.stringify(selectedForModel()) + '. Next step: step 3 (texts) if text layers were '
+      + 'selected, otherwise step 4 (images).';
+    var picked = selectedForModel().map(function (l) { return l.name; }).join(', ');
+    sendToModel(context, 'I want ' + n + ' variant(s) of ' + template.name + ' in ' + names.join(', ') + ', changing ' + picked + ', continue.', 'Template sent.')
       .catch(function (error) {
         updateButton();
         setStatus((error && error.message) || String(error), true);
@@ -1271,9 +1300,10 @@ ${AEM_SCRIPT}
 `)
 }
 
-function getLayersViewHtml (scriptUrl) {
-  return page(scriptUrl, 'PSD Layers', `
-  .subtle.intro { margin-bottom: var(--spectrum-spacing-200); }
+// Picker of the layers of a template (preview with numbered zones, and list), shared by the start and layers views:
+// showTemplate(data) shows the layers and the preview of a template read in a task (get-psd-manifest, read-psd-template),
+// selectedForModel() gives the layers picked; the view defines onLayersChange(count).
+const LAYERS_CSS = `
   .list { border: 1px solid var(--spectrum-gray-200); border-radius: var(--spectrum-corner-radius-200); overflow: hidden; display: none; }
   .row {
     display: flex;
@@ -1347,10 +1377,9 @@ function getLayersViewHtml (scriptUrl) {
   .num.image { background: var(--spectrum-seafoam-background-color-default); }
   .row .num { justify-self: center; }
   .row .num:empty { visibility: hidden; }
-`, `
-<h2 class="heading" id="title">Editable layers</h2>
-<div class="subtle intro" id="intro">Pick the layers to use for the variants.</div>
-<div class="picker">
+`
+
+const LAYERS_HTML = `<div class="picker">
   <div class="preview" id="preview" hidden>
     <div class="preview-loader" id="preview-loader" hidden><sp-progress-circle size="l" indeterminate label="Rendering the preview"></sp-progress-circle><span class="subtle">Rendering the preview...</span></div>
     <div class="stage" id="stage"><img id="preview-img" alt="Template preview"><div id="zones"></div></div>
@@ -1360,16 +1389,14 @@ function getLayersViewHtml (scriptUrl) {
     <div id="layers"></div>
   </div>
 </div>
-<div class="actions"><sp-button variant="accent" id="confirm" disabled>Use these layers</sp-button></div>
-<sp-help-text class="status" id="status"></sp-help-text>
-`, `
-  setStatus('Reading the template...', false, true);
+`
+
+const LAYERS_SCRIPT = `
   var layers = [];
   // Number of each layer shown on the preview (1, 2...), in the order of the list; none for layers without a zone
   var numbers = [];
   var listEl = document.getElementById('layers');
   var zonesEl = document.getElementById('zones');
-  var confirmBtn = document.getElementById('confirm');
   var selectAll = document.getElementById('select-all');
 
   function selected() {
@@ -1390,12 +1417,13 @@ function getLayersViewHtml (scriptUrl) {
     });
     selectAll.checked = count === layers.length;
     selectAll.indeterminate = count > 0 && count < layers.length;
-    confirmBtn.disabled = !count;
+    onLayersChange(count);
   }
 
   function render(data) {
     layers = data.layers || [];
-    if (data.document && data.document.title) document.getElementById('title').textContent = data.document.title;
+    var titleEl = document.getElementById('title');
+    if (titleEl && data.document && data.document.title) titleEl.textContent = data.document.title;
     if (!layers.length) {
       setStatus('No unlocked text or smart object layer in this file.');
       return;
@@ -1458,7 +1486,8 @@ function getLayersViewHtml (scriptUrl) {
     document.getElementById('preview-loader').hidden = true;
     document.getElementById('stage').hidden = false;
     document.getElementById('preview').hidden = false;
-    document.getElementById('intro').textContent = 'Click the numbered zones of the template, or the list, to pick the layers to use for the variants.';
+    var introEl = document.getElementById('intro');
+    if (introEl) introEl.textContent = 'Click the numbered zones of the template, or the list, to pick the layers to use for the variants.';
   }
 
   // Hovering a row highlights its zone, and the other way around.
@@ -1494,33 +1523,79 @@ function getLayersViewHtml (scriptUrl) {
 
   // The template is read in a task: the layers come with the tool result when read in time, otherwise from the task, then
   // the preview from the task.
-  onToolResult(function (result) {
-    if (result.isError) {
-      setStatus(result.content && result.content[0] ? result.content[0].text : 'Error', true);
-      return;
-    }
-    var data = result.structuredContent || {};
+  // isCurrent(), when given, tells whether the template is still the one shown (another one may be dropped meanwhile).
+  function showTemplate(data, isCurrent) {
+    var current = isCurrent || function () { return true; };
     if (data.layers) render(data);
     if (!data.taskId || data.previewUrl) return;
     setStatus(layers.length ? layers.length + ' editable layer(s). Rendering the preview of the template...' : 'Reading the template...', false, true);
     showPreviewLoader();
-    waitForTask(data.taskId, function (partial) {
-      if (layers.length || !partial.layers) return;
+    return waitForTask(data.taskId, function (partial) {
+      if (!current() || layers.length || !partial.layers) return;
       render(partial);
       setStatus(layers.length + ' editable layer(s). Rendering the preview of the template...', false, true);
       showPreviewLoader();
     })
       .then(function (template) {
+        if (!current()) return;
         if (!layers.length) render(template);
         else if (template.previewUrl) showLatePreview(template.previewUrl, template.document || {});
         if (!template.previewUrl) hidePreviewLoader();
         setStatus(layers.length + ' editable layer(s).' + (template.previewUrl ? '' : ' Preview not available: ' + (template.previewError || 'no preview')));
       })
       .catch(function (error) {
+        if (!current()) return;
         var reason = (error && error.message) || String(error);
         hidePreviewLoader();
         setStatus(layers.length ? layers.length + ' editable layer(s). Preview not available: ' + reason : reason, !layers.length);
       });
+  }
+
+  // Empties the picker, before another template is read
+  function clearTemplate() {
+    layers = [];
+    numbers = [];
+    listEl.innerHTML = '';
+    zonesEl.innerHTML = '';
+    document.getElementById('list').style.display = 'none';
+    document.getElementById('preview').hidden = true;
+    onLayersChange(0);
+  }
+
+  // The selected layers as the model needs them: without their areas on the preview
+  function selectedForModel() {
+    return selected().map(function (l) {
+      var layer = {};
+      Object.keys(l).forEach(function (key) { if (key !== 'area') layer[key] = l[key]; });
+      return layer;
+    });
+  }
+
+`
+
+function getLayersViewHtml (scriptUrl) {
+  return page(scriptUrl, 'PSD Layers', `
+  .subtle.intro { margin-bottom: var(--spectrum-spacing-200); }
+${LAYERS_CSS}
+`, `
+<h2 class="heading" id="title">Editable layers</h2>
+<div class="subtle intro" id="intro">Pick the layers to use for the variants.</div>
+${LAYERS_HTML}<div class="actions"><sp-button variant="accent" id="confirm" disabled>Use these layers</sp-button></div>
+<sp-help-text class="status" id="status"></sp-help-text>
+`, `
+  setStatus('Reading the template...', false, true);
+${LAYERS_SCRIPT}
+  var confirmBtn = document.getElementById('confirm');
+  function onLayersChange(count) { confirmBtn.disabled = !count; }
+
+  // The template is read in a task: the layers come with the tool result when read in time, otherwise from the task, then
+  // the preview from the task.
+  onToolResult(function (result) {
+    if (result.isError) {
+      setStatus(result.content && result.content[0] ? result.content[0].text : 'Error', true);
+      return;
+    }
+    showTemplate(result.structuredContent || {});
   });
 
   confirmBtn.addEventListener('click', function () {
