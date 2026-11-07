@@ -450,7 +450,9 @@ function getStartViewHtml (scriptUrl) {
   [data-step][hidden] { display: none; }
   /* A step that can be gone to: the done one, or the next one once the current one is complete */
   .steps li.reachable { cursor: pointer; }
-  .steps li.reachable:hover { color: var(--spectrum-neutral-content-color-default); text-decoration: underline; }
+  /* On hover, a step that can be gone to looks like the current one, without underline */
+  .steps li.reachable:hover { color: var(--spectrum-neutral-content-color-default); }
+  .steps li.reachable:hover .step-number { color: #fff; background: var(--spectrum-accent-background-color-hover, var(--spectrum-accent-background-color-default)); border-color: transparent; }
 ${LAYERS_CSS}
 `, `
 <h2 class="heading">Create variants</h2>
