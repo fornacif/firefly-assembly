@@ -1539,15 +1539,26 @@ function getTextsViewHtml (scriptUrl) {
   .text-input:focus { outline: none; border-color: var(--spectrum-accent-background-color-default); background: var(--spectrum-background-base-color); }
   /* Original text of a layer under its name */
   .original { font-weight: normal; color: var(--spectrum-neutral-subdued-content-color-default); white-space: pre-line; }
+  /* Import and export of the table as a CSV file, above it */
+  .sheet { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spectrum-spacing-200); margin-bottom: var(--spectrum-spacing-200); }
+  #csv-file { display: none; }
 `, `
 <h2 class="heading" id="title">Texts per variant</h2>
-<div class="subtle intro">Click a text to edit it, then confirm. Keep each text about as long as the original, so that it fits the layout.</div>
+<div class="subtle intro">Click a text to edit it, then confirm. Keep each text about as long as the original, so that it fits the layout.
+You can also paste cells copied from a spreadsheet, or import a CSV file with a column per layer (download this table to get one).</div>
+<div class="sheet">
+  <sp-button size="s" variant="secondary" treatment="outline" id="import">Import CSV</sp-button>
+  <sp-button size="s" variant="secondary" treatment="outline" id="export">Download CSV</sp-button>
+  <input type="file" id="csv-file" accept=".csv,.tsv,.txt,text/csv,text/tab-separated-values">
+  <sp-help-text id="sheet-status"></sp-help-text>
+</div>
 <div class="table-wrap"><table class="texts" id="table"></table></div>
 <div class="actions">
   <sp-button variant="accent" id="confirm" disabled>Use these texts</sp-button>
   <sp-help-text class="status" id="status"></sp-help-text>
 </div>
 `, `
+${UPLOAD_SCRIPT}
   var table = document.getElementById('table');
   var confirmBtn = document.getElementById('confirm');
   var layers = [];
@@ -1625,6 +1636,118 @@ function getTextsViewHtml (scriptUrl) {
     fitAll();
     confirmBtn.disabled = !variants.length;
   }
+
+  // Rows of a CSV or TSV text (cells in quotes may hold the separator, quotes doubled and line breaks): the separator is the
+  // one of tab, semicolon (Excel in many languages) and comma most used in the first line.
+  function parseSheet(text) {
+    text = text.replace(/^\\uFEFF/, '');
+    var first = text.split(/\\r?\\n/)[0];
+    var sep = ['\\t', ';', ','].map(function (c) { return { c: c, n: first.split(c).length }; })
+      .sort(function (a, b) { return b.n - a.n; })[0].c;
+    var rows = [], row = [], cell = '', quoted = false;
+    for (var i = 0; i < text.length; i++) {
+      var ch = text[i];
+      if (quoted) {
+        if (ch === '"' && text[i + 1] === '"') { cell += '"'; i++; }
+        else if (ch === '"') quoted = false;
+        else cell += ch;
+      } else if (ch === '"' && cell === '') quoted = true;
+      else if (ch === sep) { row.push(cell); cell = ''; }
+      else if (ch === '\\n' || ch === '\\r') {
+        if (ch === '\\r' && text[i + 1] === '\\n') i++;
+        row.push(cell); rows.push(row); row = []; cell = '';
+      } else cell += ch;
+    }
+    if (cell !== '' || row.length) { row.push(cell); rows.push(row); }
+    return rows.filter(function (r) { return r.some(function (c) { return c.trim(); }); });
+  }
+
+  var normalize = function (text) { return String(text).trim().toLowerCase(); };
+
+  // Fills the table from rows of a spreadsheet with a header: the first column names the variants, the others the layers (by
+  // name, or by id). The rows are matched to the variants by label, or in order when no label matches.
+  function importRows(rows) {
+    if (rows.length < 2) throw new Error('The file needs a header row (Variant, then the layer names) and a row per variant.');
+    var columns = rows[0].slice(1).map(function (name) {
+      return layers.findIndex(function (l) { return normalize(l.name) === normalize(name) || String(l.id) === name.trim(); });
+    });
+    if (columns.every(function (c) { return c < 0; })) {
+      throw new Error('No column matches a layer: name them ' + layers.map(function (l) { return '"' + l.name + '"'; }).join(', ') + '.');
+    }
+    var body = rows.slice(1);
+    var byLabel = body.some(function (r) { return variants.some(function (v) { return normalize(v.label) === normalize(r[0]); }); });
+    var fields = inputs();
+    var filled = 0, unmatched = [];
+    body.forEach(function (r, i) {
+      var index = byLabel ? variants.findIndex(function (v) { return normalize(v.label) === normalize(r[0]); }) : i;
+      if (index < 0 || index >= variants.length) { unmatched.push(r[0] || 'row ' + (i + 2)); return; }
+      columns.forEach(function (c, k) { if (c >= 0 && r[k + 1] != null) fields[index * layers.length + c].value = r[k + 1]; });
+      filled++;
+    });
+    fit(fields);
+    var ignored = rows[0].slice(1).filter(function (name, k) { return columns[k] < 0; });
+    return filled + ' variant(s) filled' + (unmatched.length ? '; rows not matched to a variant: ' + unmatched.join(', ') : '')
+      + (ignored.length ? '; columns ignored: ' + ignored.join(', ') : '') + '.';
+  }
+
+  function sheetStatus(text, negative) {
+    var status = document.getElementById('sheet-status');
+    status.textContent = text;
+    status.variant = negative ? 'negative' : 'neutral';
+    reportSize();
+  }
+
+  // UTF-8, or Windows-1252 for a file that is not (CSV saved by older versions of Excel)
+  function readText(file) {
+    return file.arrayBuffer().then(function (buffer) {
+      try { return new TextDecoder('utf-8', { fatal: true }).decode(buffer); } catch (e) { return new TextDecoder('windows-1252').decode(buffer); }
+    });
+  }
+
+  var csvInput = document.getElementById('csv-file');
+  document.getElementById('import').addEventListener('click', function () { csvInput.value = ''; csvInput.click(); });
+  csvInput.addEventListener('change', function () {
+    var file = csvInput.files[0];
+    if (!file) return;
+    readText(file)
+      .then(function (text) { sheetStatus(file.name + ': ' + importRows(parseSheet(text))); })
+      .catch(function (error) { sheetStatus((error && error.message) || String(error), true); });
+  });
+
+  // Cells copied from a spreadsheet (tab-separated) and pasted in a text fill the table from this text, to the right and down
+  table.addEventListener('paste', function (e) {
+    var field = e.target;
+    var text = e.clipboardData && e.clipboardData.getData('text/plain');
+    if (!field.classList.contains('text-input') || !text || text.indexOf('\\t') < 0) return;
+    e.preventDefault();
+    var fields = inputs();
+    var start = fields.indexOf(field);
+    var row = Math.floor(start / layers.length), column = start % layers.length;
+    parseSheet(text).forEach(function (cells, r) {
+      cells.forEach(function (cell, c) {
+        if (row + r < variants.length && column + c < layers.length) fields[(row + r) * layers.length + column + c].value = cell;
+      });
+    });
+    fit(fields);
+  });
+
+  // The table as a CSV file, separated by semicolons where Excel expects them (languages with a decimal comma), with a BOM so
+  // that Excel reads it as UTF-8; opened through a temporary link, as the views cannot download files themselves
+  var CSV_SEPARATOR = /^(fr|de|it|es|pt|nl|pl|sv|da|nb|no|fi|ru|tr)/i.test(navigator.language || '') ? ';' : ',';
+  function csvCell(text) {
+    text = String(text);
+    return /[";,\\t\\r\\n]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
+  }
+  document.getElementById('export').addEventListener('click', function () {
+    var rows = [['Variant'].concat(layers.map(function (l) { return l.name; }))].concat(currentTexts().map(function (v) {
+      return [v.label].concat(v.texts.map(function (t) { return t.text; }));
+    }));
+    var csv = '\\uFEFF' + rows.map(function (r) { return r.map(csvCell).join(CSV_SEPARATOR); }).join('\\r\\n') + '\\r\\n';
+    sheetStatus('Preparing the file...');
+    uploadOne(new File([csv], 'texts.csv', { type: 'text/csv' }), function () {})
+      .then(function (file) { sheetStatus(''); return request('ui/open-link', { url: file.url }); })
+      .catch(function (error) { sheetStatus((error && error.message) || String(error), true); });
+  });
 
   onToolInput(function (args) {
     layers = args.layers || [];
