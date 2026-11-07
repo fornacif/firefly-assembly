@@ -2,6 +2,36 @@
 
 MCP server, deployed as an Adobe I/O Runtime (App Builder) action, that creates variants of a Photoshop PSD template with the Photoshop API: versions, adaptations or localizations of a banner, ad, visual or social post. The workflow runs in Claude or ChatGPT through interactive widgets (MCP Apps).
 
+## Connect the server
+
+**Server URL:** `https://85792-155azureplanarian.adobeioruntime.net/api/v1/web/firefly-assembly/mcp-server`
+
+The server works with any MCP client that supports MCP Apps and OAuth, such as Claude and ChatGPT. Use the `adobeioruntime.net` domain, not `adobeio-static.net`: the resource in the OAuth metadata must match the server URL, otherwise sign-in fails (in Claude: "Couldn't register with … sign-in service").
+
+### In Claude
+
+1. Go to **Settings > Connectors > Add custom connector**.
+2. Name it **Firefly Assembly** and enter the server URL.
+3. Leave the OAuth client ID empty, click **Connect**, and sign in with your Adobe ID.
+4. Enable the connector in your conversation.
+
+### In ChatGPT
+
+1. Add the server as a custom app (connector) in your settings.
+2. Enter the server URL and choose **OAuth** authentication.
+3. Leave the OAuth client ID empty and sign in with your Adobe ID.
+4. Enable the app in your conversation.
+
+## Demo flow
+
+1. **Prompt:** Ask your assistant: "Use Firefly Assembly to create 2 variants of a banner in English and French."
+2. **Variants and template (step 1):** Set the number of variants per language and the languages. You can choose among 12 languages, for up to 50 variants in total. Then set the file-naming pattern and upload a layered PSD from your computer or AEM Assets.
+3. **Layers (step 2):** Click the numbered zones on the template preview, or use the list, to pick the text and smart-object layers to vary.
+4. **Texts (step 3):** Give your own copy or a short brief, for example "surfing campaign", and the assistant writes each variant in each language. Edit the table, import a CSV file, or paste cells from a spreadsheet.
+5. **Images (step 4):** Add one image per variant, from your computer or AEM, or generate it with Firefly from the suggested prompt. Then adjust each crop to its frame. All languages of a variant share its images.
+6. **Generate and review (step 5):** Variants are rendered in parallel as JPEG, PNG, and/or layered PSD, with each variant's languages side by side. The assistant checks each text on its visual and marks clipped, overflowing, or overlapping text with a proposed fix.
+7. **Fix and download:** To fix a text, click it on the enlarged visual, change its words or font size, and only that variant is regenerated. Alternatively, write your changes and send them to the assistant. Download the files one by one or all at once as a ZIP.
+
 ## Workflow
 
 1. **Start** (`start-variant-creation`): number of variants per language, languages (English, French, Italian, German, Spanish, Portuguese, Dutch, Polish, Swedish, Danish, Norwegian, Finnish; each variant is created in each language, up to 50 in total) PSD template, uploaded from the computer or picked in AEM Assets, read at once (`read-psd-template`) to pick the layers to change on its preview (editable text and smart object layers), and model of the file names (`{template}`, `{variant}`, `{language}`, `{date}`; default `{template}_{variant}_{language}`), which `create-variant` applies to each file.
@@ -99,12 +129,3 @@ The MCP server is then served at:
 ```
 https://<namespace>.adobeioruntime.net/api/v1/web/firefly-assembly/mcp-server
 ```
-
-## Connecting an assistant
-
-The server works with any MCP client that supports MCP Apps and OAuth, such as Claude and ChatGPT.
-
-- **Claude**: add a custom connector with the URL above.
-- **ChatGPT**: add the server as a custom app (connector) with the URL above and OAuth authentication.
-
-In both cases, use the `adobeioruntime.net` domain, not `adobeio-static.net`: the resource in the OAuth metadata must match the server URL, otherwise sign-in fails (in Claude: "Couldn't register with … sign-in service"). Leave the OAuth client ID empty.
