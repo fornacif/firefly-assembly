@@ -1694,6 +1694,13 @@ function getVariantViewHtml (scriptUrl) {
   .mark-number { position: absolute; top: -9px; left: -9px; }
   .issue-number { margin-right: 4px; }
   .card-name { word-break: break-all; }
+  /* Languages of a variant side by side: one row per variant, one column per language, scrolled when they do not fit */
+  .groups { display: flex; flex-direction: column; gap: var(--spectrum-spacing-400); }
+  .group-name { font-weight: var(--spectrum-bold-font-weight); margin-bottom: var(--spectrum-spacing-100); }
+  .group-row { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(180px, 1fr); gap: var(--spectrum-spacing-300); overflow-x: auto; padding-bottom: var(--spectrum-spacing-100); }
+  .card-head { display: flex; align-items: center; gap: var(--spectrum-spacing-100); min-width: 0; }
+  .card-head .card-name { flex: 1; min-width: 0; }
+  .language { flex: none; padding: 0 6px; border-radius: 4px; background: var(--spectrum-gray-200); font-size: 11px; font-weight: bold; line-height: 18px; text-transform: uppercase; }
   /* In place of the visual of a variant being rendered */
   .rendering {
     display: flex;
@@ -1805,34 +1812,55 @@ function getVariantViewHtml (scriptUrl) {
       + marks + '</div>';
   }
 
+  // Name of a variant, with its language
+  function cardHead(v) {
+    return '<div class="card-head"><span class="subtle card-name">' + escapeHtml(v.fileName) + '</span>'
+      + (v.language ? '<span class="language">' + escapeHtml(v.language) + '</span>' : '') + '</div>';
+  }
+
+  // Card of a variant: being rendered, failed, or its visual with its text problems, its changes and its downloads
+  function cardHtml(v, i) {
+    if (v.pending) {
+      return '<div class="card"><div class="rendering"><sp-progress-circle size="m" indeterminate label="Rendering"></sp-progress-circle>'
+        + '<span class="subtle">Rendering...</span></div>' + cardHead(v) + '</div>';
+    }
+    if (v.error) return '<div class="card">' + cardHead(v) + '<div class="card-error">' + escapeHtml(v.error) + '</div></div>';
+    // Text problems found on the generated file, numbered as their marks on the visual
+    var problems = (v.textIssues || []).map(function (issue, k) {
+      return '<div class="card-warning"><span class="issue-number">' + (k + 1) + '</span>'
+        + escapeHtml('"' + issue.layerName + '" ' + issue.problems.join(', ')) + '</div>';
+    }).join('')
+      + (v.checking ? '<sp-progress-bar size="s" label="Checking the texts" indeterminate></sp-progress-bar>' : '');
+    // Pre-filled once the texts are checked
+    if (requests[v.fileName] == null && !v.checking) requests[v.fileName] = recommendationOf(v);
+    return '<div class="card">' + visualHtml(v, i, 320)
+      + cardHead(v)
+      + problems
+      + '<textarea class="change-request" data-index="' + i + '" placeholder="What should change?">' + escapeHtml(requests[v.fileName] || '') + '</textarea>'
+      + '<div class="downloads">' + downloadButtons(i, 'secondary') + '</div></div>';
+  }
+
   function render() {
     // The field being typed in keeps its focus and caret when the grid is drawn again (variants arrive while the user types)
     var active = document.activeElement && document.activeElement.classList.contains('change-request')
       ? { index: document.activeElement.getAttribute('data-index'), start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd }
       : null;
-    grid.innerHTML = variants.map(function (v, i) {
-      if (v.pending) {
-        return '<div class="card"><div class="rendering"><sp-progress-circle size="m" indeterminate label="Rendering"></sp-progress-circle>'
-          + '<span class="subtle">Rendering...</span></div><div class="subtle card-name">' + escapeHtml(v.fileName) + '</div></div>';
-      }
-      if (v.error) {
-        return '<div class="card"><div class="subtle card-name">' + escapeHtml(v.fileName) + '</div>'
-          + '<div class="card-error">' + escapeHtml(v.error) + '</div></div>';
-      }
-      // Text problems found on the generated file, numbered as their marks on the visual
-      var problems = (v.textIssues || []).map(function (issue, k) {
-        return '<div class="card-warning"><span class="issue-number">' + (k + 1) + '</span>'
-          + escapeHtml('"' + issue.layerName + '" ' + issue.problems.join(', ')) + '</div>';
+    // The languages of each variant side by side, when the variants are in several languages
+    var groups = [];
+    variants.forEach(function (v, i) {
+      var name = v.group || v.fileName;
+      var group = groups.filter(function (g) { return g.name === name; })[0];
+      if (!group) groups.push(group = { name: name, indexes: [] });
+      group.indexes.push(i);
+    });
+    var sideBySide = groups.some(function (g) { return g.indexes.length > 1; });
+    grid.className = sideBySide ? 'groups' : 'grid';
+    grid.innerHTML = sideBySide
+      ? groups.map(function (g) {
+        return '<div><div class="group-name">' + escapeHtml(g.name) + '</div><div class="group-row">'
+          + g.indexes.map(function (i) { return cardHtml(variants[i], i); }).join('') + '</div></div>';
       }).join('')
-        + (v.checking ? '<sp-progress-bar size="s" label="Checking the texts" indeterminate></sp-progress-bar>' : '');
-      // Pre-filled once the texts are checked
-      if (requests[v.fileName] == null && !v.checking) requests[v.fileName] = recommendationOf(v);
-      return '<div class="card">' + visualHtml(v, i, 320)
-        + '<div class="subtle card-name">' + escapeHtml(v.fileName) + '</div>'
-        + problems
-        + '<textarea class="change-request" data-index="' + i + '" placeholder="What should change?">' + escapeHtml(requests[v.fileName] || '') + '</textarea>'
-        + '<div class="downloads">' + downloadButtons(i, 'secondary') + '</div></div>';
-    }).join('');
+      : variants.map(cardHtml).join('');
     if (active) {
       var field = grid.querySelector('.change-request[data-index="' + active.index + '"]');
       if (field) { field.focus(); field.setSelectionRange(active.start, active.end); }
@@ -2043,7 +2071,9 @@ function getVariantViewHtml (scriptUrl) {
     }
     generating = true;
     generationTaskId = data.taskId;
-    variants = (data.pending || []).map(function (fileName) { return { fileName: fileName, pending: true }; });
+    variants = (data.pending || []).map(function (fileName, i) {
+      return Object.assign({ fileName: fileName, pending: true }, (data.labels || [])[i]);
+    });
     render();
     waitForTask(data.taskId, function (partial) {
       variants = partial.variants || variants;

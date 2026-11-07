@@ -780,6 +780,9 @@ function patternFileName (pattern, variant, index) {
     .replace(/[\\/:*?"<>|]+/g, '_').replace(/[-_]{2,}/g, m => m[0]).replace(/^[-_]+|[-_]+$/g, '')
 }
 
+// Group and language of a variant, when given: { group, language }.
+const variantLabels = variant => ({ ...(variant.group ? { group: variant.group } : {}), ...(variant.language ? { language: variant.language } : {}) })
+
 // File names of the variants without extension, made unique (a second "summer" becomes "summer-2").
 function uniqueFileNames (variants) {
   const used = new Set()
@@ -794,11 +797,12 @@ function uniqueFileNames (variants) {
 
 // Runs each variant on its own, in parallel: its crops, then its render as soon as they are done, in its own formats or the
 // formats of the call. A failed or late variant does not prevent the others from being returned. onProgress(list) gets the
-// variants each time one changes: { fileName, pending: true } until rendered, then as returned.
+// variants each time one changes: { fileName, pending: true } until rendered, then as returned. Each has the group and the
+// language of its variant, when given, so that the widget shows the languages of a variant side by side.
 async function createVariants (params, { templateUrl, formats, variants, deadline, onProgress }) {
   const fileNames = uniqueFileNames(variants)
-  const progress = fileNames.map(fileName => ({ fileName, pending: true }))
-  const report = (index, variant) => { progress[index] = variant; onProgress?.([...progress]) }
+  const progress = fileNames.map((fileName, index) => ({ fileName, ...variantLabels(variants[index]), pending: true }))
+  const report = (index, variant) => { progress[index] = { ...variant, ...variantLabels(variants[index]) }; onProgress?.([...progress]) }
   // The crops chosen by the user do not need the template: started during its reading, prepareLayers then gets them cached
   variants.forEach(variant => variant.layers
     .filter(layer => layer.type === 'smart_object_layer' && layer.crop)
@@ -824,12 +828,11 @@ async function createVariants (params, { templateUrl, formats, variants, deadlin
       })
       mark(index, 'render')
       report(index, result)
-      return result
+      return progress[index]
     } catch (error) {
       mark(index, 'failed')
-      const failed = { fileName: fileNames[index], error: error.message }
-      report(index, failed)
-      return failed
+      report(index, { fileName: fileNames[index], error: error.message })
+      return progress[index]
     }
   }))
   console.log(`Variants, seconds since the start: ${fileNames.map((name, i) => `${name} ${JSON.stringify(timings[i])}`).join('; ')}`)
@@ -1297,7 +1300,7 @@ function registerTools (server, params) {
               `user (after the other create-variant calls, if the variants are generated in several): call review-variants with ` +
               `taskId "${taskId}", then report-variant-issues.` + warnings
           }],
-          structuredContent: { taskId, templateUrl, pending: uniqueFileNames(variantList) }
+          structuredContent: { taskId, templateUrl, pending: uniqueFileNames(variantList), labels: variantList.map(variantLabels) }
         }
       } catch (error) {
         return errorResult(error)
