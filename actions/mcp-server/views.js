@@ -1426,7 +1426,7 @@ function getLayersViewHtml (scriptUrl) {
     var context = 'Layers selected by the user for the variants: ' + JSON.stringify(chosen.map(function (l) {
       return { id: l.id, name: l.name, type: l.type };
     })) + '. Next: if text layers were selected, get the texts of each variant (from the user, or written from a brief), each as long as '
-      + 'the original text of its layer, give each variant a short label, then call review-variant-texts'
+      + 'the original text of its layer, give each variant a short label, then call edit-variant-texts'
       + (images.length
         ? '; then call upload-variant-images ONCE with all variant labels and layers ' + JSON.stringify(images.map(function (l) { return { id: l.id, name: l.name, width: l.frame && l.frame.width, height: l.frame && l.frame.height }; }))
           + ' (one grid for all variants; never call upload-file per image)'
