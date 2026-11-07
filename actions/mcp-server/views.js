@@ -436,29 +436,27 @@ function getStartViewHtml (scriptUrl) {
   sp-dropzone sp-button { font-size: var(--spectrum-font-size-100); line-height: var(--spectrum-line-height-100); }
   #file { display: none; }
   sp-progress-bar { width: 100%; margin-top: var(--spectrum-spacing-200); }
-  /* Two steps: the variants and the template, then the layers; their numbers in a circle, the current one in the accent color */
-  .steps { display: flex; align-items: center; gap: var(--spectrum-spacing-200); margin: var(--spectrum-spacing-300) 0 var(--spectrum-spacing-400); padding: 0; list-style: none; }
-  .steps li { display: flex; align-items: center; gap: var(--spectrum-spacing-100); color: var(--spectrum-neutral-subdued-content-color-default); }
-  .steps li + li::before { content: ''; width: 32px; height: 1px; margin-right: var(--spectrum-spacing-100); background: var(--spectrum-gray-300); }
-  .step-number {
-    display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%;
-    font-size: 12px; font-weight: var(--spectrum-bold-font-weight); border: 1px solid var(--spectrum-gray-400);
-  }
-  .steps li.current { color: var(--spectrum-neutral-content-color-default); font-weight: var(--spectrum-bold-font-weight); }
-  .steps li.current .step-number { color: #fff; background: var(--spectrum-accent-background-color-default); border-color: transparent; }
-  .steps li.done .step-number { color: var(--spectrum-accent-content-color-default); border-color: var(--spectrum-accent-background-color-default); }
+  /* Two steps, as segments of a progress bar: the bar of the current and done steps in the accent color, with the number and
+     the name of each step below it */
+  .steps { display: grid; grid-template-columns: 1fr 1fr; gap: var(--spectrum-spacing-200); margin: var(--spectrum-spacing-300) 0 var(--spectrum-spacing-400); padding: 0; list-style: none; }
+  .steps li { display: flex; flex-direction: column; gap: 2px; padding-top: var(--spectrum-spacing-100); border-top: 4px solid var(--spectrum-gray-200); border-radius: 2px 2px 0 0; transition: border-color 0.15s; }
+  .step-kicker { font-size: var(--spectrum-font-size-50, 11px); font-weight: var(--spectrum-bold-font-weight); letter-spacing: 0.04em; text-transform: uppercase; color: var(--spectrum-neutral-subdued-content-color-default); }
+  .step-title { color: var(--spectrum-neutral-subdued-content-color-default); }
+  .steps li.current, .steps li.done { border-top-color: var(--spectrum-accent-background-color-default); }
+  .steps li.current .step-kicker { color: var(--spectrum-accent-content-color-default); }
+  .steps li.current .step-title { color: var(--spectrum-neutral-content-color-default); font-weight: var(--spectrum-bold-font-weight); }
+  .steps li.done .step-kicker::after { content: ' \\2713'; }
   [data-step][hidden] { display: none; }
-  /* A step that can be gone to: the done one, or the next one once the current one is complete */
+  /* A step that can be gone to (the done one, or the next one once the current one is complete), on hover like the current one */
   .steps li.reachable { cursor: pointer; }
-  /* On hover, a step that can be gone to looks like the current one, without underline */
-  .steps li.reachable:hover { color: var(--spectrum-neutral-content-color-default); }
-  .steps li.reachable:hover .step-number { color: #fff; background: var(--spectrum-accent-background-color-hover, var(--spectrum-accent-background-color-default)); border-color: transparent; }
+  .steps li.reachable:hover { border-top-color: var(--spectrum-accent-background-color-hover, var(--spectrum-accent-background-color-default)); }
+  .steps li.reachable:hover .step-title { color: var(--spectrum-neutral-content-color-default); }
 ${LAYERS_CSS}
 `, `
 <h2 class="heading">Create variants</h2>
 <ol class="steps" aria-label="Steps">
-  <li data-for="1" class="current" role="button" tabindex="-1"><span class="step-number">1</span>Variants and template</li>
-  <li data-for="2" role="button" tabindex="-1"><span class="step-number">2</span>Layers to vary</li>
+  <li data-for="1" class="current" role="button" tabindex="-1"><span class="step-kicker">Step 1</span><span class="step-title">Variants and template</span></li>
+  <li data-for="2" role="button" tabindex="-1"><span class="step-kicker">Step 2</span><span class="step-title">Layers to vary</span></li>
 </ol>
 <div data-step="1">
 <div class="subtle intro">Set the number of variants and their languages, and drop the layered PSD template.</div>
