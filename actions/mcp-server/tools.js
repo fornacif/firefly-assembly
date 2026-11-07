@@ -46,7 +46,7 @@ const WORKFLOW = `Variant creation workflow. When the user asks to create varian
 3. Texts: right after the layer selection, if text layers were selected, get the texts of each variant: the user provides them, or you write them from a brief (subject, tone, language). The user's requests always come first (length, number of words or lines, wording): follow them exactly, even if the text may not fit, and never shorten or change a text the user asked for to make it fit. Otherwise, write each text about as long as the original text of its layer (given by get-psd-manifest): the same number of lines and about the same number of characters per line (within 10%), so that it fits the layout. Write the line breaks yourself (\\n), where the original text has them: a point text layer does not wrap its lines by itself (a text without any line break is spread over the lines of the original text, by length). Each variant is created in each language chosen in the start widget (the total is the number of variants times the number of languages): write the texts of each variant in each language (the same message, translated and adapted, not word for word), and give each a short label ending with its language code (e.g. "Winter sale FR"), in the order variant by variant then language by language. Then call edit-variant-texts with the texts and the original text of each layer. Then wait. When the user has the texts in a spreadsheet or a CSV file, do not ask for them in chat: call edit-variant-texts with the labels and the original texts as texts; the user imports the file (a column per layer) or pastes the cells in the widget.
 4. Images: if smart object layers were selected, call upload-variant-images ONCE with the labels of the variants without their languages (one row per variant, e.g. "Winter sale" for "Winter sale FR" and "Winter sale DE": all the languages of a variant share its images) and the selected smart object layers (id, name and frame width and height from get-psd-manifest), so the user drops (or picks from AEM Assets) one image per variant and layer in a grid and adjusts how each one is cropped to its frame. When the user confirms, the widget gives you the URL, size and crop of each image the same way. Never ask for image URLs in chat. Then wait.
 5. Generation: as soon as the images are confirmed (or the texts, without smart object layers), call create-variant ONCE with all variants (with more than ${MAX_VARIANTS_PER_GENERATION}, in calls of ${MAX_VARIANTS_PER_GENERATION} at most, one after the other, without waiting for the renders), passing for each image the crop chosen in the grid (each language of a variant gets the images and crops of its row of the grid, and its label in the grid as group) and for each variant its language and its group (its label without its language, also without images), and the fileNamePattern given by the start widget; do not recap the variants or ask for another approval. The widget shows the generated files with download buttons.
-6. Review: right after create-variant, in the same turn and without asking the user, check the texts of the generated files: call review-variants with the task id create-variant gives (it waits for the generation; while it answers that it is not finished, call it again): it shows you each visual with the texts sent. Look at each edited text on its visual: cut or past an edge of the visual or of its panel, letters or words hidden, overlapping another element (logo, image, other text) more than in the template, too small or hard to read on its background, lines broken badly, or not the text sent. Then call report-variant-issues with every variant reviewed (no issues for those that are fine; when review-variants shows the variants in several parts, after each part): per problem, the layer, a short description, the fix you propose (e.g. Reduce the font size of "headline" to 85%.) and the rectangle of the text on the visual, in pixels of the canvas. The widget marks each problem on the visual, with your proposed fix. Each variant has a field of changes, pre-filled with its proposed fixes, that the user edits, then sends to you: nothing is generated again before. Do not list the problems in chat: briefly say that the widget shows them and takes the changes. When the user asks for changes (in the widget or in chat), make exactly the changes asked, nothing else: change a font size only when asked; to change the words of a text, rewrite it as asked (e.g. twice as many words, at most two lines) and keep its font size, even if it may not fit; then call create-variant again with the variants to change only, with the same file names and the same edits except the changes (a font size of N% is fontScale N/100): the new widget shows only these variants, the others stay in the earlier widgets. The texts are checked once generated: do not adjust them beforehand. If a text the user asked for does not fit, you may then suggest a fix (a smaller font size or a shorter text), without applying it.
+6. Review: right after create-variant, in the same turn and without asking the user, check the texts of the generated files: call review-variants with the task id create-variant gives (it waits for the generation; while it answers that it is not finished, call it again): it shows you each visual with the texts sent. Look at each edited text on its visual: cut or past an edge of the visual or of its panel, letters or words hidden, overlapping another element (logo, image, other text) more than in the template, too small or hard to read on its background, lines broken badly, or not the text sent. Then call report-variant-issues with every variant reviewed (no issues for those that are fine; when review-variants shows the variants in several parts, after each part): per problem, the layer, a short description, the fix you propose (e.g. Reduce the font size of "headline" to 85%.) and the rectangle of the text on the visual, in pixels of the canvas. The widget marks each problem on the visual, with your proposed fix. Each variant has a field of changes, pre-filled with its proposed fixes, that the user edits, then sends to you: nothing is generated again before. Do not list the problems in chat: briefly say that the widget shows them and takes the changes. The user can also click a text on an enlarged visual to change its words or its font size: the widget generates that variant again itself and gives you the edits, to keep in later create-variant calls. When the user asks for changes (in the widget or in chat), make exactly the changes asked, nothing else: change a font size only when asked; to change the words of a text, rewrite it as asked (e.g. twice as many words, at most two lines) and keep its font size, even if it may not fit; then call create-variant again with the variants to change only, with the same file names and the same edits except the changes (a font size of N% is fontScale N/100): the new widget shows only these variants, the others stay in the earlier widgets. The texts are checked once generated: do not adjust them beforehand. If a text the user asked for does not fit, you may then suggest a fix (a smaller font size or a shorter text), without applying it.
 Changes after generation: to re-crop or swap images, call upload-variant-images again with images pre-filled from the previous confirmation (never ask to upload again the images you already have, unless their URLs expired); to change texts, call create-variant again with the variants to change only (same file names, groups, languages and fileNamePattern).
 Widgets send their result (template URL, layers, texts, images) in your context and end the user's message with a reference in parentheses like "(r7k2p9)": if you do not have that result in your context, call get-widget-result with this ref before going on; never ask the user to redo a step because a result seems missing.
 The URLs from the widgets are temporary presigned URLs: use them in tool calls, but never show them to the user. Reply in the user's language.`
@@ -990,7 +990,7 @@ const TASKS = {
 
   // ZIP archive of the files of a generation
   async zip (params, { args, userId }) {
-    return zipGeneration(userId, args.variantsTaskId)
+    return zipGeneration(userId, args.variantsTaskId, args.replacementTaskIds)
   }
 }
 
@@ -1076,11 +1076,16 @@ function reviewIssues (generation, reported) {
 // Files of a generation zipped together: at most this many bytes, held in memory
 const MAX_ZIP_BYTES = 400 * 1024 * 1024
 
-// ZIP archive of the files of a done generation (task variants) of the user of the task: { fileName, url, count }.
-async function zipGeneration (userId, variantsTaskId) {
-  const generation = (await (await initState()).get(taskKey(userId, variantsTaskId)))?.value
-  if (generation?.status !== 'done') throw new Error('The generation is not done, or expired (24 hours).')
-  const files = (generation.result?.variants || []).filter(v => !v.error).flatMap(v => v.files || [])
+// ZIP archive of the files of a done generation (task variants) of the user of the task: { fileName, url, count }. The variants
+// generated again from its widget (replacements, generations of the same user) replace those with the same file name.
+async function zipGeneration (userId, variantsTaskId, replacementTaskIds = []) {
+  const generations = await Promise.all([variantsTaskId, ...replacementTaskIds]
+    .map(async taskId => (await (await initState()).get(taskKey(userId, taskId)))?.value))
+  if (generations[0]?.status !== 'done') throw new Error('The generation is not done, or expired (24 hours).')
+  const byName = new Map()
+  generations.filter(generation => generation?.status === 'done')
+    .forEach(generation => (generation.result?.variants || []).filter(v => !v.error).forEach(v => byName.set(v.fileName, v)))
+  const files = [...byName.values()].flatMap(v => v.files || [])
   if (!files.length) throw new Error('No file to download.')
   let total = 0
   const entries = await Promise.all(files.map(async file => {
@@ -1441,15 +1446,20 @@ function registerTools (server, params) {
       title: 'Create Variants ZIP',
       description: 'Used by the create-variant widget: starts a task (see get-task) whose result is the URL of a ZIP archive of ' +
         'all the files of a generation.',
-      inputSchema: { taskId: z.string().describe('Task id of the generation, returned by create-variant') },
+      inputSchema: {
+        taskId: z.string().describe('Task id of the generation, returned by create-variant'),
+        replacementTaskIds: z.array(z.string()).max(MAX_VARIANTS).optional()
+          .describe('Generations of variants generated again from the widget, replacing those with the same file names')
+      },
       _meta: { ui: { visibility: ['app'] } }
     },
-    async ({ taskId }) => {
+    async ({ taskId, replacementTaskIds }) => {
       try {
         // A generation of the current user, done
         const generation = await readTask(params, taskId)
         if (generation?.status !== 'done') throw new Error('The generation is not done, or expired (24 hours).')
-        return jsonResult({ taskId: await startTask(params, 'zip', { variantsTaskId: taskId }) })
+        if ((replacementTaskIds || []).some(id => !TASK_ID.test(String(id)))) throw new Error('Invalid task id')
+        return jsonResult({ taskId: await startTask(params, 'zip', { variantsTaskId: taskId, replacementTaskIds }) })
       } catch (error) {
         return errorResult(error)
       }
