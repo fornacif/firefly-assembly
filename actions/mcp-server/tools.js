@@ -44,7 +44,7 @@ const WORKFLOW = `Variant creation workflow. When the user asks to create varian
 1. Start: call start-variant-creation (pass variantCount and languages if the user already gave them). The user sets the number of variants per language, the languages and uploads the PSD template (from their computer or AEM Assets) in the widget, then says to continue. The widget gives you the template name and URL in your context (or through get-widget-result, see below): use that URL. Never ask for the file or its URL in chat.
 2. Layer selection: immediately call get-psd-manifest with the template URL. The user picks the layers to vary in the widget. Then wait.
 3. Texts: right after the layer selection, if text layers were selected, get the texts of each variant: the user provides them, or you write them from a brief (subject, tone, language). The user's requests always come first (length, number of words or lines, wording): follow them exactly, even if the text may not fit, and never shorten or change a text the user asked for to make it fit. Otherwise, write each text about as long as the original text of its layer (given by get-psd-manifest): the same number of lines and about the same number of characters per line (within 10%), so that it fits the layout. Write the line breaks yourself (\\n), where the original text has them: a point text layer does not wrap its lines by itself (a text without any line break is spread over the lines of the original text, by length). Each variant is created in each language chosen in the start widget (the total is the number of variants times the number of languages): write the texts of each variant in each language (the same message, translated and adapted, not word for word), and give each a short label ending with its language code (e.g. "Winter sale FR"), in the order variant by variant then language by language. Then call edit-variant-texts with the texts and the original text of each layer. Then wait. When the user has the texts in a spreadsheet or a CSV file, do not ask for them in chat: call edit-variant-texts with the labels and the original texts as texts; the user imports the file (a column per layer) or pastes the cells in the widget.
-4. Images: if smart object layers were selected, call upload-variant-images ONCE with the labels of the variants without their languages (one row per variant, e.g. "Winter sale" for "Winter sale FR" and "Winter sale DE": all the languages of a variant share its images) and the selected smart object layers (id, name and frame width and height from get-psd-manifest), so the user drops (or picks from AEM Assets) one image per variant and layer in a grid and adjusts how each one is cropped to its frame. When the user confirms, the widget gives you the URL, size and crop of each image the same way. Never ask for image URLs in chat. Then wait.
+4. Images: if smart object layers were selected, call upload-variant-images ONCE with the labels of the variants without their languages (one row per variant, e.g. "Winter sale" for "Winter sale FR" and "Winter sale DE": all the languages of a variant share its images) and the selected smart object layers (id, name and frame width and height from get-psd-manifest), so the user drops (or picks from AEM Assets, or generates with Firefly) one image per variant and layer in a grid and adjusts how each one is cropped to its frame. When the user has no images or wants generated ones, pass prompts (one per variant and layer, in English, from the brief): each slot then offers to generate its image, with the prompt that the user can edit. When the user confirms, the widget gives you the URL, size and crop of each image the same way. Never ask for image URLs in chat. Then wait.
 5. Generation: as soon as the images are confirmed (or the texts, without smart object layers), call create-variant ONCE with all variants (with more than ${MAX_VARIANTS_PER_GENERATION}, in calls of ${MAX_VARIANTS_PER_GENERATION} at most, one after the other, without waiting for the renders), passing for each image the crop chosen in the grid (each language of a variant gets the images and crops of its row of the grid, and its label in the grid as group) and for each variant its language and its group (its label without its language, also without images), and the fileNamePattern given by the start widget; do not recap the variants or ask for another approval. The widget shows the generated files with download buttons.
 6. Review: right after create-variant, in the same turn and without asking the user, check the texts of the generated files: call review-variants with the task id create-variant gives (it waits for the generation; while it answers that it is not finished, call it again): it shows you each visual with the texts sent. Look at each edited text on its visual: cut or past an edge of the visual or of its panel, letters or words hidden, overlapping another element (logo, image, other text) more than in the template, too small or hard to read on its background, lines broken badly, or not the text sent. Then call report-variant-issues with every variant reviewed (no issues for those that are fine; when review-variants shows the variants in several parts, after each part): per problem, the layer, a short description, the fix you propose (e.g. Reduce the font size of "headline" to 85%.) and the rectangle of the text on the visual, in pixels of the canvas. The widget marks each problem on the visual, with your proposed fix. Each variant has a field of changes, pre-filled with its proposed fixes, that the user edits, then sends to you: nothing is generated again before. Do not list the problems in chat: briefly say that the widget shows them and takes the changes. The user can also click a text on an enlarged visual to change its words or its font size: the widget generates that variant again itself and gives you the edits, to keep in later create-variant calls. When the user asks for changes (in the widget or in chat), make exactly the changes asked, nothing else: change a font size only when asked; to change the words of a text, rewrite it as asked (e.g. twice as many words, at most two lines) and keep its font size, even if it may not fit; then call create-variant again with the variants to change only, with the same file names and the same edits except the changes (a font size of N% is fontScale N/100): the new widget shows only these variants, the others stay in the earlier widgets. The texts are checked once generated: do not adjust them beforehand. If a text the user asked for does not fit, you may then suggest a fix (a smaller font size or a shorter text), without applying it.
 Changes after generation: to re-crop or swap images, call upload-variant-images again with images pre-filled from the previous confirmation (never ask to upload again the images you already have, unless their URLs expired); to change texts, call create-variant again with the variants to change only (same file names, groups, languages and fileNamePattern).
@@ -112,7 +112,7 @@ const RATE_LIMIT_MAX_WAIT_MS = 120000
 const quotaUsedUntil = new Map()
 
 // Names of the APIs, in the messages about their quota
-const API_NAMES = { 'photoshop-api.adobe.io': 'the Photoshop API', 'image.adobe.io': 'the Firefly Services image API' }
+const API_NAMES = { 'photoshop-api.adobe.io': 'the Photoshop API', 'image.adobe.io': 'the Firefly Services image API', 'firefly-api.adobe.io': 'the Firefly API' }
 
 // Message about the quota of a host used up until a time.
 function quotaMessage (host, until) {
@@ -228,7 +228,8 @@ async function fireflyHeaders (params) {
 
 // Calls a Firefly Services API; on 401 (token revoked or expired early), once again with a new token.
 async function callFirefly (params, label, url, options = {}, renewed = false) {
-  const response = await fetchWithRetry(url, { ...options, headers: await fireflyHeaders(params) })
+  const headers = { ...(await fireflyHeaders(params)), ...(options.body ? { 'Content-Type': 'application/json' } : {}) }
+  const response = await fetchWithRetry(url, { ...options, headers })
   if (response.status === 401 && !renewed) {
     cachedToken = null
     await response.body?.cancel().catch(() => {})
@@ -671,6 +672,48 @@ function cropBounds (image, ratio, subject) {
 
 // Suggested crop of an image for a frame ratio, framed on the subject detected by auto-crop (centered if none, or if the
 // detection does not finish by the deadline).
+// Firefly API (image generation): sizes it generates, width x height
+const FIREFLY_GENERATE_API = 'https://firefly-api.adobe.io/v3/images/generate-async'
+const FIREFLY_SIZES = [[2048, 2048], [1024, 1024], [2304, 1792], [1152, 896], [1792, 2304], [896, 1152], [2688, 1536], [1344, 768],
+  [2688, 1512], [1344, 756]]
+
+// Size generated for a frame: the closest ratio, the largest of this ratio (the image is then cropped to the frame).
+function fireflySize (width, height) {
+  const ratio = width && height ? width / height : 1
+  const distance = ([w, h]) => Math.abs(Math.log(w / h / ratio))
+  const best = Math.min(...FIREFLY_SIZES.map(distance))
+  const [w, h] = FIREFLY_SIZES.filter(size => distance(size) === best).sort((a, b) => b[0] - a[0])[0]
+  return { width: w, height: h }
+}
+
+// Image generated by Firefly from a prompt, at the ratio of a frame, copied to storage (its URL valid 24 hours, from the origin
+// the widgets may show): { name, url, width, height }.
+async function generateImage (params, { prompt, width, height }, deadline) {
+  const size = fireflySize(width, height)
+  const job = await callFirefly(params, 'Firefly API', FIREFLY_GENERATE_API, {
+    method: 'POST',
+    body: JSON.stringify({ prompt, numVariations: 1, size, contentClass: 'photo' })
+  })
+  if (!job.statusUrl) throw new Error(`Firefly API: no job in the answer (${JSON.stringify(job).slice(0, 200)})`)
+  const result = await pollJob(async () => {
+    const status = await callFirefly(params, 'Firefly API', job.statusUrl)
+    if (status.status === 'succeeded') return status.result
+    if (status.status === 'failed' || status.status === 'canceled') {
+      throw new Error(`The image could not be generated: ${status.message || status.error_code || status.status}`)
+    }
+  }, 'Firefly image generation', Math.max(10000, deadline - Date.now()))
+  const imageUrl = result?.outputs?.[0]?.image?.url
+  if (!imageUrl) throw new Error('Firefly API: no image in the result')
+  const response = await fetchWithRetry(imageUrl)
+  if (!response.ok) throw new Error(`The generated image could not be downloaded (HTTP ${response.status})`)
+  const type = response.headers.get('content-type') || ''
+  const name = `firefly-${result.outputs[0].seed || Date.now()}.${/png/.test(type) ? 'png' : 'jpg'}`
+  const storage = await initFiles()
+  const path = newStoragePath('generated', name)
+  await storage.write(path, Buffer.from(await response.arrayBuffer()))
+  return { name, url: await storage.generatePresignURL(path, { expiryInSeconds: URL_EXPIRY_SECONDS, permissions: 'r' }), ...size }
+}
+
 async function suggestCrop (params, imageUrl, ratio, deadline) {
   const [manifest, subject] = await Promise.all([
     beforeDeadline(getManifest(params, imageUrl), deadline, tooLate('Reading the image')),
@@ -961,6 +1004,11 @@ const TASKS = {
     await update({ partial: data })
     const previewUrl = await preview
     return { ...data, previewUrl, previewError }
+  },
+
+  // Image generated by Firefly for a smart object frame
+  async image (params, { args }, update, deadline) {
+    return generateImage(params, args, deadline)
   },
 
   // Size of an image and a crop framed on its subject
@@ -1566,6 +1614,12 @@ function registerTools (server, params) {
           height: z.number().positive().optional().describe('Image height in pixels (size from the previous confirmation)')
         })).optional().describe('Images already uploaded, to pre-fill the grid (e.g. to adjust crops after a generation without uploading ' +
           'again): pass the "images" JSON of the previous confirmation as is'),
+        prompts: z.array(z.object({
+          variant: z.union([z.string(), z.number().int().min(0)]).describe('Variant label (as in variants), or its 0-based index'),
+          layerId: z.number().int().describe('Layer id'),
+          prompt: z.string().min(1).max(1024).describe('Description of the image, in English')
+        })).optional().describe('Prompts proposed to generate the images with Firefly (a slot can generate its image), written from the ' +
+          'brief when the user has no images or asks for generated ones; the user edits them in the widget'),
         title: z.string().optional().describe('Heading shown in the widget')
       },
       _meta: uiMeta(VIEWS.variantImages)
@@ -1611,6 +1665,28 @@ function registerTools (server, params) {
     async ({ imageUrl, ratio }) => {
       try {
         return jsonResult({ taskId: await startTask(params, 'crop', { imageUrl, ratio }) })
+      } catch (error) {
+        return errorResult(error)
+      }
+    }
+  )
+
+  server.registerTool(
+    'generate-image',
+    {
+      title: 'Generate Image',
+      description: 'Used by the upload-variant-images widget: starts a task (see get-task) whose result is an image generated by ' +
+        'Firefly from a prompt, at the ratio closest to the frame, in storage: { name, url, width, height }.',
+      inputSchema: {
+        prompt: z.string().min(1).max(1024).describe('Description of the image'),
+        width: z.number().positive().optional().describe('Width of the frame, for its ratio'),
+        height: z.number().positive().optional().describe('Height of the frame, for its ratio')
+      },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    async ({ prompt, width, height }) => {
+      try {
+        return jsonResult({ taskId: await startTask(params, 'image', { prompt, width, height }) })
       } catch (error) {
         return errorResult(error)
       }
