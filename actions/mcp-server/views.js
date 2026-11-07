@@ -387,6 +387,17 @@ ${UPLOAD_SCRIPT}
 `)
 }
 
+// Shows in an element the APIs whose quota is used up (get-quota), e.g. until midnight UTC: the generations fail until then.
+const QUOTA_SCRIPT = `
+  function showQuota(element) {
+    return callTool('get-quota').then(function (quota) {
+      element.textContent = quota.usedUp.map(function (api) { return api.message; }).join(' ');
+      element.hidden = !quota.usedUp.length;
+      reportSize();
+    }, function () {});
+  }
+`
+
 function getStartViewHtml (scriptUrl) {
   return page(scriptUrl, 'Create Variants', `
   .field { display: flex; flex-direction: column; gap: var(--spectrum-spacing-75); margin-bottom: var(--spectrum-spacing-300); }
@@ -454,6 +465,7 @@ function getStartViewHtml (scriptUrl) {
   </div>
 </sp-dropzone>
 <sp-progress-bar id="progress" label="Upload" progress="0" side-label hidden></sp-progress-bar>
+<sp-help-text id="quota" variant="negative" icon hidden></sp-help-text>
 <div class="actions">
   <sp-button variant="accent" id="continue" disabled>Continue</sp-button>
   <sp-help-text class="status" id="status"></sp-help-text>
@@ -461,6 +473,7 @@ function getStartViewHtml (scriptUrl) {
 `, `
 ${UPLOAD_SCRIPT}
 ${AEM_SCRIPT}
+${QUOTA_SCRIPT}
   var LANGUAGE_NAMES = ${JSON.stringify(Object.fromEntries(LANGUAGES))};
   var countInput = document.getElementById('count');
   var input = document.getElementById('file');
@@ -606,6 +619,7 @@ ${AEM_SCRIPT}
       .catch(fail);
   });
   loadAemConfig().then(function (config) { aemBtn.hidden = !config; reportSize(); });
+  showQuota(document.getElementById('quota'));
 
   countInput.addEventListener('input', updateButton);
   namingInput.addEventListener('input', updateButton);

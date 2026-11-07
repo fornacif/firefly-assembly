@@ -111,12 +111,44 @@ const RATE_LIMIT_MAX_WAIT_MS = 120000
 // Until when each host refuses the requests (quota used up), from the Retry-After of its 429 answer
 const quotaUsedUntil = new Map()
 
-// Error of a request to a host whose quota is used up until a time.
-function quotaError (host, until) {
+// Names of the APIs, in the messages about their quota
+const API_NAMES = { 'photoshop-api.adobe.io': 'the Photoshop API', 'image.adobe.io': 'the Firefly Services image API' }
+
+// Message about the quota of a host used up until a time.
+function quotaMessage (host, until) {
   const minutes = Math.ceil((until - Date.now()) / 60000)
   const delay = minutes >= 60 ? `${Math.floor(minutes / 60)} h ${minutes % 60} min` : `${minutes} min`
-  return new Error(`The quota of ${host} for this server is used up until ${new Date(until).toISOString().slice(11, 16)} UTC ` +
-    `(in ${delay}): try again then.`)
+  return `The quota of ${API_NAMES[host] || host} for this server is used up until ${new Date(until).toISOString().slice(11, 16)} UTC ` +
+    `(in ${delay}): try again then.`
+}
+
+// Error of a request to a host whose quota is used up until a time.
+const quotaError = (host, until) => new Error(quotaMessage(host, until))
+
+// The quotas used up are shared with the other containers in App Builder state ({ host: until }), read again at most this often
+const QUOTA_KEY = 'quota'
+const QUOTA_READ_EVERY_MS = 60000
+let quotaReadAt = 0
+
+// Hosts whose quota is used up, with the time it ends, from this container and the others: { host: until }.
+async function usedUpQuotas () {
+  if (Date.now() - quotaReadAt > QUOTA_READ_EVERY_MS) {
+    quotaReadAt = Date.now()
+    const shared = (await stateStore.get(QUOTA_KEY).catch(() => undefined))?.value || {}
+    for (const [host, until] of Object.entries(shared)) {
+      if (until > (quotaUsedUntil.get(host) || 0)) quotaUsedUntil.set(host, until)
+    }
+  }
+  return Object.fromEntries([...quotaUsedUntil].filter(([, until]) => until > Date.now()))
+}
+
+// Keeps the quota of a host used up until a time, for this container and the others.
+async function rememberQuota (host, until) {
+  quotaUsedUntil.set(host, until)
+  const shared = { ...(await stateStore.get(QUOTA_KEY).catch(() => undefined))?.value, [host]: until }
+  const ends = Object.values(shared).filter(time => time > Date.now())
+  await stateStore.put(QUOTA_KEY, Object.fromEntries(Object.entries(shared).filter(([, time]) => time > Date.now())),
+    { ttl: Math.ceil((Math.max(...ends) - Date.now()) / 1000) }).catch(error => console.warn(`Quota not shared: ${error.message}`))
 }
 // Until when the requests to each host wait, after a 429 answer of this host: all the requests of the container wait, not only
 // the one that got it, as each request counts against the rate limit
@@ -137,7 +169,8 @@ const recentlyRateLimited = url => (rateLimitedUntil.get(new URL(url).host) || 0
 async function fetchWithRetry (url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
   const host = new URL(url).host
   for (let attempt = 0; ; attempt++) {
-    if ((quotaUsedUntil.get(host) || 0) > Date.now()) throw quotaError(host, quotaUsedUntil.get(host))
+    const usedUp = (await usedUpQuotas())[host]
+    if (usedUp) throw quotaError(host, usedUp)
     const until = rateLimitedUntil.get(host) || 0
     if (until > Date.now()) await wait(until - Date.now())
     let response
@@ -159,7 +192,7 @@ async function fetchWithRetry (url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS
       const header = response.headers.get('retry-after')
       const asked = retryAfterMs(header)
       if (asked > RATE_LIMIT_MAX_WAIT_MS) {
-        quotaUsedUntil.set(host, Date.now() + asked)
+        await rememberQuota(host, Date.now() + asked)
         console.warn(`${host} quota used up on ${options.method || 'GET'} ${new URL(url).pathname} (429, Retry-After ${header}): requests refused until then`)
         throw quotaError(host, Date.now() + asked)
       }
@@ -1335,6 +1368,24 @@ function registerTools (server, params) {
               'with your fixes, for the user to edit and send. Do not list them in chat: say briefly that the widget shows them.'
           }]
         }
+      } catch (error) {
+        return errorResult(error)
+      }
+    }
+  )
+
+  server.registerTool(
+    'get-quota',
+    {
+      title: 'Get Quota',
+      description: 'Used by the widgets: the APIs whose quota is used up, with the time it ends and a message ({ usedUp: [] } when none).',
+      inputSchema: {},
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    async () => {
+      try {
+        const usedUp = Object.entries(await usedUpQuotas()).map(([host, until]) => ({ host, until, message: quotaMessage(host, until) }))
+        return jsonResult({ usedUp })
       } catch (error) {
         return errorResult(error)
       }
