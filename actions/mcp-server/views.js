@@ -1349,8 +1349,11 @@ const IMAGES_SCRIPT = `
 function getVariantImagesViewHtml (scriptUrl) {
   return page(scriptUrl, 'Variant Images', `
 ${IMAGES_CSS}
+${STEPS_CSS}
+  .steps.single { grid-template-columns: 1fr; }
 `, `
 <h2 class="heading" id="title">Drop one image per variant</h2>
+<ol class="steps single" aria-label="Step"><li data-for="4" class="current"><span class="step-kicker">Step 4</span><span class="step-title">Images</span></li></ol>
 <div class="subtle intro">Add images, then drag each one onto the slots that use it (or drop a file on a slot). The bright area is what the banner shows: drag it to reposition the crop, use Zoom to resize it.</div>
 ${IMAGES_HTML}<div class="actions">
   <sp-button variant="accent" id="confirm" disabled>Confirm images</sp-button>
@@ -2155,6 +2158,8 @@ function getVariantViewHtml (scriptUrl) {
   .preview-bar { display: flex; align-items: center; gap: var(--spectrum-spacing-200); margin-bottom: var(--spectrum-spacing-200); }
   .preview-name { flex: 1; min-width: 0; font-weight: var(--spectrum-bold-font-weight); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .preview .visual img { max-height: 640px; cursor: zoom-out; }
+${STEPS_CSS}
+  .steps.single { grid-template-columns: 1fr; }
   /* Texts of the variant on its enlarged visual, to click to edit them */
   .edit-zone { position: absolute; box-sizing: border-box; border: 1px dashed transparent; border-radius: 2px; cursor: text; }
   .edit-zone:hover, .edit-zone.selected { border-color: var(--spectrum-accent-background-color-default); background: rgba(20, 115, 230, 0.08); }
@@ -2175,6 +2180,8 @@ function getVariantViewHtml (scriptUrl) {
   .card-warning[data-layer] { cursor: pointer; }
   .card-warning[data-layer]:hover { text-decoration: underline; }
 `, `
+<h2 class="heading">Generated variants</h2>
+<ol class="steps single" aria-label="Step"><li data-for="5" class="current"><span class="step-kicker">Step 5</span><span class="step-title">Review and download</span></li></ol>
 <div class="preview" id="preview">
   <div class="preview-bar">
     <sp-button size="s" variant="secondary" treatment="outline" data-action="back">All variants</sp-button>
