@@ -436,21 +436,7 @@ function getStartViewHtml (scriptUrl) {
   sp-dropzone sp-button { font-size: var(--spectrum-font-size-100); line-height: var(--spectrum-line-height-100); }
   #file { display: none; }
   sp-progress-bar { width: 100%; margin-top: var(--spectrum-spacing-200); }
-  /* Two steps, as segments of a progress bar: the bar of the current and done steps in the accent color, with the number and
-     the name of each step below it */
-  .steps { display: grid; grid-template-columns: 1fr 1fr; gap: var(--spectrum-spacing-200); margin: var(--spectrum-spacing-300) 0 var(--spectrum-spacing-400); padding: 0; list-style: none; }
-  .steps li { display: flex; flex-direction: column; gap: 2px; padding-top: var(--spectrum-spacing-100); border-top: 4px solid var(--spectrum-gray-200); border-radius: 2px 2px 0 0; transition: border-color 0.15s; }
-  .step-kicker { font-size: var(--spectrum-font-size-50, 11px); font-weight: var(--spectrum-bold-font-weight); letter-spacing: 0.04em; text-transform: uppercase; color: var(--spectrum-neutral-subdued-content-color-default); }
-  .step-title { color: var(--spectrum-neutral-subdued-content-color-default); }
-  .steps li.current, .steps li.done { border-top-color: var(--spectrum-accent-background-color-default); }
-  .steps li.current .step-kicker { color: var(--spectrum-accent-content-color-default); }
-  .steps li.current .step-title { color: var(--spectrum-neutral-content-color-default); font-weight: var(--spectrum-bold-font-weight); }
-  .steps li.done .step-kicker::after { content: ' \\2713'; }
-  [data-step][hidden] { display: none; }
-  /* A step that can be gone to (the done one, or the next one once the current one is complete), on hover like the current one */
-  .steps li.reachable { cursor: pointer; }
-  .steps li.reachable:hover { border-top-color: var(--spectrum-accent-background-color-hover, var(--spectrum-accent-background-color-default)); }
-  .steps li.reachable:hover .step-title { color: var(--spectrum-neutral-content-color-default); }
+${STEPS_CSS}
 ${LAYERS_CSS}
 `, `
 <h2 class="heading">Create variants</h2>
@@ -753,8 +739,10 @@ ${LAYERS_SCRIPT}
 `)
 }
 
-function getVariantImagesViewHtml (scriptUrl) {
-  return page(scriptUrl, 'Variant Images', `
+// Grid of the images of the variants (one per variant and smart object layer, from the computer, AEM or Firefly, cropped to
+// its frame), shared by the images and texts views, in its own scope: imagesPicker.init(args), imagesPicker.result() (the
+// context for the model) and imagesPicker.onChange(handler(done, total)).
+const IMAGES_CSS = `
   /* With several layers, one group per variant; one card per slot (variant and smart object layer), as many per row as fit */
   .grid { display: flex; flex-direction: column; gap: var(--spectrum-spacing-300); }
   /* Group of a variant: a panel headed by its number and name, above the cards of its layers */
@@ -866,10 +854,9 @@ function getVariantImagesViewHtml (scriptUrl) {
   .library-item img { width: 100%; height: 64px; object-fit: contain; border-radius: var(--spectrum-corner-radius-100); background: var(--spectrum-gray-200); }
   .library-item sp-progress-bar { width: 100%; }
   .grid.armed sp-dropzone { cursor: copy; }
-`, `
-<h2 class="heading" id="title">Drop one image per variant</h2>
-<div class="subtle intro">Add images, then drag each one onto the slots that use it (or drop a file on a slot). The bright area is what the banner shows: drag it to reposition the crop, use Zoom to resize it.</div>
-<div class="library">
+`
+
+const IMAGES_HTML = `<div class="library">
   <div class="library-header">
     <sp-button size="s" variant="secondary" treatment="outline" id="browse">Add images from your computer</sp-button>
     <sp-button size="s" variant="secondary" treatment="outline" id="aem" hidden>${ADOBE_ICON}Add images from AEM</sp-button>
@@ -879,18 +866,16 @@ function getVariantImagesViewHtml (scriptUrl) {
 </div>
 <div class="grid" id="grid"></div>
 <input type="file" id="file" accept="image/*" multiple>
-<div class="actions">
-  <sp-button variant="accent" id="confirm" disabled>Confirm images</sp-button>
-  <sp-help-text class="status" id="status"></sp-help-text>
-</div>
-`, `
-${UPLOAD_SCRIPT}
-${AEM_SCRIPT}
+`
+
+const IMAGES_SCRIPT = `
+  var imagesPicker = (function () {
+  // onChange(done, total) is called when the images of the slots change
+  var onChange = null;
   var CROP_MAX_HEIGHT = 160;
   var MAX_ZOOM = 4;
   var grid = document.getElementById('grid');
   var input = document.getElementById('file');
-  var confirmBtn = document.getElementById('confirm');
   var variants = [];
   var layers = [];
   var slots = [];
@@ -1041,8 +1026,7 @@ ${AEM_SCRIPT}
   function updateStatus() {
     var done = slots.filter(function (s) { return s.status === 'done'; }).length;
     var busy = slots.some(function (s) { return BUSY_LABELS[s.status]; });
-    confirmBtn.disabled = done !== slots.length || !slots.length;
-    confirmBtn.textContent = 'Confirm images (' + done + '/' + slots.length + ')';
+    if (onChange) onChange(done, slots.length);
     setStatus(busy ? 'Uploading and framing...' : '', false, busy);
   }
 
@@ -1188,10 +1172,10 @@ ${AEM_SCRIPT}
       .then(render);
   }
 
-  onToolInput(function (args) {
+  // Shows the grid of the variants and layers given ({ variants, layers, images, prompts }, as upload-variant-images gets them)
+  function init(args) {
     variants = (args.variants || []).map(String);
     layers = (args.layers && args.layers.length) ? args.layers : [{ name: 'Image' }];
-    if (args.title) document.getElementById('title').textContent = args.title;
     slots = [];
     for (var i = 0; i < variants.length * layers.length; i++) slots.push({ status: 'empty' });
     prompts = {};
@@ -1211,7 +1195,7 @@ ${AEM_SCRIPT}
       prefillSlot(variantIndex * layers.length + layerIndex, image);
     });
     render();
-  });
+  }
   // Shows the AEM button once the AEM configuration is known
   loadAemConfig().then(function (config) { aemBtn.hidden = !config; reportSize(); });
 
@@ -1331,8 +1315,8 @@ ${AEM_SCRIPT}
     positionFrame(index);
   });
 
-  confirmBtn.addEventListener('click', function () {
-    confirmBtn.disabled = true;
+  // The images chosen, for the model: what each variant and layer gets, and the JSON to pass again to re-crop them
+  function result() {
     var mapping = slots.map(function (slot, i) {
       var layer = layerOf(i);
       var crop = slot.crop && {
@@ -1355,7 +1339,41 @@ ${AEM_SCRIPT}
       + '(smart_object_layer edit = { id: layerId, type: "smart_object_layer", imageUrl: url, crop }). '
       + 'To re-crop later, pass this "images" array as is to upload-variant-images:\\n'
       + JSON.stringify({ images: images });
-    sendToModel(context, 'I added and framed the images for the ' + variants.length + ' variant(s), continue.', 'Images sent.')
+    return context;
+  }
+
+  return { init: init, onChange: function (handler) { onChange = handler; }, result: result, count: function () { return variants.length; } };
+  })();
+`
+
+function getVariantImagesViewHtml (scriptUrl) {
+  return page(scriptUrl, 'Variant Images', `
+${IMAGES_CSS}
+`, `
+<h2 class="heading" id="title">Drop one image per variant</h2>
+<div class="subtle intro">Add images, then drag each one onto the slots that use it (or drop a file on a slot). The bright area is what the banner shows: drag it to reposition the crop, use Zoom to resize it.</div>
+${IMAGES_HTML}<div class="actions">
+  <sp-button variant="accent" id="confirm" disabled>Confirm images</sp-button>
+  <sp-help-text class="status" id="status"></sp-help-text>
+</div>
+`, `
+${UPLOAD_SCRIPT}
+${AEM_SCRIPT}
+${IMAGES_SCRIPT}
+  var confirmBtn = document.getElementById('confirm');
+  imagesPicker.onChange(function (done, total) {
+    confirmBtn.disabled = done !== total || !total;
+    confirmBtn.textContent = 'Confirm images (' + done + '/' + total + ')';
+  });
+
+  onToolInput(function (args) {
+    if (args.title) document.getElementById('title').textContent = args.title;
+    imagesPicker.init(args);
+  });
+
+  confirmBtn.addEventListener('click', function () {
+    confirmBtn.disabled = true;
+    sendToModel(imagesPicker.result(), 'I added and framed the images for the ' + imagesPicker.count() + ' variant(s), continue.', 'Images sent.')
       .catch(function (error) {
         confirmBtn.disabled = false;
         setStatus((error && error.message) || String(error), true);
@@ -1363,6 +1381,26 @@ ${AEM_SCRIPT}
   });
 `)
 }
+
+// Steps of a view (start, texts and images), as segments of a progress bar: <ol class="steps"> of <li data-for="N"> with a
+// .step-kicker and a .step-title; the view marks them current, done and reachable, and shows the element [data-step="N"].
+const STEPS_CSS = `
+  /* Two steps, as segments of a progress bar: the bar of the current and done steps in the accent color, with the number and
+     the name of each step below it */
+  .steps { display: grid; grid-template-columns: 1fr 1fr; gap: var(--spectrum-spacing-200); margin: var(--spectrum-spacing-300) 0 var(--spectrum-spacing-400); padding: 0; list-style: none; }
+  .steps li { display: flex; flex-direction: column; gap: 2px; padding-top: var(--spectrum-spacing-100); border-top: 4px solid var(--spectrum-gray-200); border-radius: 2px 2px 0 0; transition: border-color 0.15s; }
+  .step-kicker { font-size: var(--spectrum-font-size-50, 11px); font-weight: var(--spectrum-bold-font-weight); letter-spacing: 0.04em; text-transform: uppercase; color: var(--spectrum-neutral-subdued-content-color-default); }
+  .step-title { color: var(--spectrum-neutral-subdued-content-color-default); }
+  .steps li.current, .steps li.done { border-top-color: var(--spectrum-accent-background-color-default); }
+  .steps li.current .step-kicker { color: var(--spectrum-accent-content-color-default); }
+  .steps li.current .step-title { color: var(--spectrum-neutral-content-color-default); font-weight: var(--spectrum-bold-font-weight); }
+  .steps li.done .step-kicker::after { content: ' \\2713'; }
+  [data-step][hidden] { display: none; }
+  /* A step that can be gone to (the done one, or the next one once the current one is complete), on hover like the current one */
+  .steps li.reachable { cursor: pointer; }
+  .steps li.reachable:hover { border-top-color: var(--spectrum-accent-background-color-hover, var(--spectrum-accent-background-color-default)); }
+  .steps li.reachable:hover .step-title { color: var(--spectrum-neutral-content-color-default); }
+`
 
 // Picker of the layers of a template (preview with numbered zones, and list), shared by the start and layers views:
 // showTemplate(data) shows the layers and the preview of a template read in a task (get-psd-manifest, read-psd-template),
@@ -1672,7 +1710,8 @@ ${LAYERS_SCRIPT}
     })) + '. Next: if text layers were selected, get the texts of each variant (from the user, or written from a brief), each as long as '
       + 'the original text of its layer, give each variant a short label, then call edit-variant-texts'
       + (images.length
-        ? '; then call upload-variant-images ONCE with all variant labels and layers ' + JSON.stringify(images.map(function (l) { return { id: l.id, name: l.name, width: l.frame && l.frame.width, height: l.frame && l.frame.height }; }))
+        ? (chosen.length > images.length ? ' with images (the grid of these smart object layers, as a second step)' : '')
+          + '; with smart object layers only, call upload-variant-images ONCE with all variant labels and layers ' + JSON.stringify(images.map(function (l) { return { id: l.id, name: l.name, width: l.frame && l.frame.width, height: l.frame && l.frame.height }; }))
           + ' (one grid for all variants; never call upload-file per image)'
         : '')
       + '; then call create-variant ONCE with all variants, without a recap.';
@@ -1733,8 +1772,17 @@ function getTextsViewHtml (scriptUrl) {
   /* Import and export of the table as a CSV file, above it */
   .sheet { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spectrum-spacing-200); margin-bottom: var(--spectrum-spacing-200); }
   #csv-file { display: none; }
+  /* With images too: a second step, the grid of the images */
+${STEPS_CSS}
+  .steps[hidden] { display: none; }
+${IMAGES_CSS}
 `, `
 <h2 class="heading" id="title">Texts per variant</h2>
+<ol class="steps" aria-label="Steps" hidden>
+  <li data-for="1" class="current" role="button" tabindex="-1"><span class="step-kicker">Step 1</span><span class="step-title">Texts</span></li>
+  <li data-for="2" role="button" tabindex="-1"><span class="step-kicker">Step 2</span><span class="step-title">Images</span></li>
+</ol>
+<div data-step="1">
 <div class="subtle intro">Click a text to edit it, then confirm. Keep each text about as long as the original, so that it fits the layout.
 You can also paste cells copied from a spreadsheet, or import a CSV file with a column per layer (download this table to get one).</div>
 <div class="sheet">
@@ -1744,12 +1792,20 @@ You can also paste cells copied from a spreadsheet, or import a CSV file with a 
   <sp-help-text id="sheet-status"></sp-help-text>
 </div>
 <div class="table-wrap"><table class="texts" id="table"></table></div>
+</div>
+<div data-step="2" hidden>
+  <div class="subtle intro">Add images, then drag each one onto the slots that use it (or drop a file on a slot, or generate it with Firefly). The bright area is what the banner shows: drag it to reposition the crop, use Zoom to resize it.</div>
+  ${IMAGES_HTML}
+</div>
 <div class="actions">
+  <sp-button variant="secondary" treatment="outline" id="back" hidden>Back</sp-button>
   <sp-button variant="accent" id="confirm" disabled>Use these texts</sp-button>
   <sp-help-text class="status" id="status"></sp-help-text>
 </div>
 `, `
 ${UPLOAD_SCRIPT}
+${AEM_SCRIPT}
+${IMAGES_SCRIPT}
   var table = document.getElementById('table');
   var confirmBtn = document.getElementById('confirm');
   var layers = [];
@@ -1825,7 +1881,7 @@ ${UPLOAD_SCRIPT}
       }).join('')
       + '</tbody>';
     fitAll();
-    confirmBtn.disabled = !variants.length;
+    updateConfirm();
   }
 
   // Rows of a CSV or TSV text (cells in quotes may hold the separator, quotes doubled and line breaks): the separator is the
@@ -1940,21 +1996,72 @@ ${UPLOAD_SCRIPT}
       .catch(function (error) { sheetStatus((error && error.message) || String(error), true); });
   });
 
+  // With smart object layers too (args.images), the images are chosen in a second step, then sent with the texts
+  var backBtn = document.getElementById('back');
+  var withImages = false;
+  var step = 1;
+  var imagesDone = false;
+  imagesPicker.onChange(function (done, total) { imagesDone = done === total && total > 0; updateConfirm(); });
+
+  function updateConfirm() {
+    if (!withImages) { confirmBtn.disabled = !variants.length; return; }
+    confirmBtn.textContent = step === 1 ? 'Next' : 'Use these texts and images';
+    confirmBtn.disabled = !variants.length || (step === 2 && !imagesDone);
+    Array.prototype.forEach.call(document.querySelectorAll('.steps li'), function (li) {
+      var n = Number(li.getAttribute('data-for'));
+      li.classList.toggle('current', n === step);
+      li.classList.toggle('done', n < step);
+      var ok = n !== step && !confirmBtn.hasAttribute('data-sending') && variants.length > 0;
+      li.classList.toggle('reachable', ok);
+      li.tabIndex = ok ? 0 : -1;
+    });
+  }
+
+  function showStep(n) {
+    step = n;
+    Array.prototype.forEach.call(document.querySelectorAll('[data-step]'), function (el) { el.hidden = el.getAttribute('data-step') !== String(n); });
+    backBtn.hidden = n !== 2;
+    updateConfirm();
+    reportSize();
+  }
+
+  backBtn.addEventListener('click', function () { showStep(1); });
+  document.querySelector('.steps').addEventListener('click', function (e) {
+    var li = e.target.closest('li.reachable');
+    if (li) showStep(Number(li.getAttribute('data-for')));
+  });
+  document.querySelector('.steps').addEventListener('keydown', function (e) {
+    var li = e.target.closest('li.reachable');
+    if (li && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); showStep(Number(li.getAttribute('data-for'))); }
+  });
+
   onToolInput(function (args) {
     layers = args.layers || [];
     variants = args.variants || [];
-    if (args.title) document.getElementById('title').textContent = args.title;
+    withImages = Boolean(args.images && args.images.layers && args.images.layers.length);
+    document.querySelector('.steps').hidden = !withImages;
+    document.getElementById('title').textContent = args.title || (withImages ? 'Texts and images per variant' : 'Texts per variant');
     render();
+    if (withImages) imagesPicker.init(args.images);
+    showStep(1);
   });
 
   confirmBtn.addEventListener('click', function () {
+    if (withImages && step === 1) return showStep(2);
     confirmBtn.disabled = true;
+    confirmBtn.setAttribute('data-sending', '');
+    updateConfirm();
     var confirmed = currentTexts();
     var context = 'Texts confirmed by the user for each variant. Use them exactly, as text_layer edits '
-      + '{ id: layerId, type: "text_layer", text, fontScale } in create-variant (fontScale only where given):\\n' + JSON.stringify({ variants: confirmed });
-    sendToModel(context, 'I confirmed the texts of the ' + confirmed.length + ' variant(s), continue.', 'Texts sent.')
+      + '{ id: layerId, type: "text_layer", text, fontScale } in create-variant (fontScale only where given):\\n' + JSON.stringify({ variants: confirmed })
+      + (withImages ? '\\n\\n' + imagesPicker.result() + '\\nThe images are chosen: do not call upload-variant-images, call create-variant now.' : '');
+    var message = withImages
+      ? 'I confirmed the texts and the images of the ' + confirmed.length + ' variant(s), continue.'
+      : 'I confirmed the texts of the ' + confirmed.length + ' variant(s), continue.';
+    sendToModel(context, message, withImages ? 'Texts and images sent.' : 'Texts sent.')
       .catch(function (error) {
-        confirmBtn.disabled = false;
+        confirmBtn.removeAttribute('data-sending');
+        updateConfirm();
         setStatus((error && error.message) || String(error), true);
       });
   });

@@ -43,18 +43,48 @@ const VIEWS = {
 const WORKFLOW = `Variant creation workflow. When the user asks to create variants (or versions, adaptations, localizations...) of a banner, ad, visual, social post or any PSD template, ALWAYS follow these steps in order, one at a time, without skipping any:
 1. Start: call start-variant-creation (pass variantCount and languages if the user already gave them). The user sets the number of variants per language, the languages, uploads the PSD template (from their computer or AEM Assets) and picks the layers to vary in the widget, then says to continue. The widget gives you the template name and URL and the selected layers, with their original texts and frames, in your context (or through get-widget-result, see below): use them. Never ask for the file or its URL in chat.
 2. Layer selection: done in the start widget. Call get-psd-manifest with the template URL only when the user wants to pick other layers later, or did not pick them in the start widget.
-3. Texts: right after the start widget, if text layers were selected, get the texts of each variant: the user provides them, or you write them from a brief (subject, tone, language). The user's requests always come first (length, number of words or lines, wording): follow them exactly, even if the text may not fit, and never shorten or change a text the user asked for to make it fit. Otherwise, write each text about as long as the original text of its layer (given by get-psd-manifest): the same number of lines and about the same number of characters per line (within 10%), so that it fits the layout. Write the line breaks yourself (\\n), where the original text has them: a point text layer does not wrap its lines by itself (a text without any line break is spread over the lines of the original text, by length). Each variant is created in each language chosen in the start widget (the total is the number of variants times the number of languages): write the texts of each variant in each language (the same message, translated and adapted, not word for word), and give each a short label ending with its language code (e.g. "Winter sale FR"), in the order variant by variant then language by language. Then call edit-variant-texts with the texts and the original text of each layer. Then wait. When the user has the texts in a spreadsheet or a CSV file, do not ask for them in chat: call edit-variant-texts with the labels and the original texts as texts; the user imports the file (a column per layer) or pastes the cells in the widget.
-4. Images: if smart object layers were selected, call upload-variant-images ONCE with the labels of the variants without their languages (one row per variant, e.g. "Winter sale" for "Winter sale FR" and "Winter sale DE": all the languages of a variant share its images) and the selected smart object layers (id, name and frame width and height from get-psd-manifest), so the user drops (or picks from AEM Assets, or generates with Firefly) one image per variant and layer in a grid and adjusts how each one is cropped to its frame. When the user has no images or wants generated ones, pass prompts (one per variant and layer, in English, from the brief): each slot then offers to generate its image, with the prompt that the user can edit. When the user confirms, the widget gives you the URL, size and crop of each image the same way. Never ask for image URLs in chat. Then wait.
+3. Texts: right after the start widget, if text layers were selected, get the texts of each variant: the user provides them, or you write them from a brief (subject, tone, language). The user's requests always come first (length, number of words or lines, wording): follow them exactly, even if the text may not fit, and never shorten or change a text the user asked for to make it fit. Otherwise, write each text about as long as the original text of its layer (given by get-psd-manifest): the same number of lines and about the same number of characters per line (within 10%), so that it fits the layout. Write the line breaks yourself (\\n), where the original text has them: a point text layer does not wrap its lines by itself (a text without any line break is spread over the lines of the original text, by length). Each variant is created in each language chosen in the start widget (the total is the number of variants times the number of languages): write the texts of each variant in each language (the same message, translated and adapted, not word for word), and give each a short label ending with its language code (e.g. "Winter sale FR"), in the order variant by variant then language by language. Then call edit-variant-texts with the texts and the original text of each layer; if smart object layers were selected too, pass images as well (as for upload-variant-images in step 4, see there): the widget then asks for the images in a second step, and gives you the texts and the images together. Then wait. When the user has the texts in a spreadsheet or a CSV file, do not ask for them in chat: call edit-variant-texts with the labels and the original texts as texts; the user imports the file (a column per layer) or pastes the cells in the widget.
+4. Images: done in the second step of edit-variant-texts when text layers were selected too. Otherwise (smart object layers only), call upload-variant-images ONCE with the labels of the variants without their languages (one row per variant, e.g. "Winter sale" for "Winter sale FR" and "Winter sale DE": all the languages of a variant share its images) and the selected smart object layers (id, name and frame width and height from get-psd-manifest), so the user drops (or picks from AEM Assets, or generates with Firefly) one image per variant and layer in a grid and adjusts how each one is cropped to its frame. When the user has no images or wants generated ones, pass prompts (one per variant and layer, in English, from the brief): each slot then offers to generate its image, with the prompt that the user can edit. When the user confirms, the widget gives you the URL, size and crop of each image the same way. Never ask for image URLs in chat. Then wait.
 5. Generation: as soon as the images are confirmed (or the texts, without smart object layers), call create-variant ONCE with all variants (with more than ${MAX_VARIANTS_PER_GENERATION}, in calls of ${MAX_VARIANTS_PER_GENERATION} at most, one after the other, without waiting for the renders), passing for each image the crop chosen in the grid (each language of a variant gets the images and crops of its row of the grid, and its label in the grid as group) and for each variant its language and its group (its label without its language, also without images), and the fileNamePattern given by the start widget; do not recap the variants or ask for another approval. The widget shows the generated files with download buttons.
 6. Review: right after create-variant, in the same turn and without asking the user, check the texts of the generated files: call review-variants with the task id create-variant gives (it waits for the generation; while it answers that it is not finished, call it again): it shows you each visual with the texts sent. Look at each edited text on its visual: cut or past an edge of the visual or of its panel, letters or words hidden, overlapping another element (logo, image, other text) more than in the template, too small or hard to read on its background, lines broken badly, or not the text sent. Then call report-variant-issues with every variant reviewed (no issues for those that are fine; when review-variants shows the variants in several parts, after each part): per problem, the layer, a short description, the fix you propose (e.g. Reduce the font size of "headline" to 85%.) and the rectangle of the text on the visual, in pixels of the canvas. The widget marks each problem on the visual, with your proposed fix. Each variant has a field of changes, pre-filled with its proposed fixes, that the user edits, then sends to you: nothing is generated again before. Do not list the problems in chat: briefly say that the widget shows them and takes the changes. The user can also click a text on an enlarged visual to change its words or its font size: the widget generates that variant again itself and gives you the edits, to keep in later create-variant calls. When the user asks for changes (in the widget or in chat), make exactly the changes asked, nothing else: change a font size only when asked; to change the words of a text, rewrite it as asked (e.g. twice as many words, at most two lines) and keep its font size, even if it may not fit; then call create-variant again with the variants to change only, with the same file names and the same edits except the changes (a font size of N% is fontScale N/100): the new widget shows only these variants, the others stay in the earlier widgets. The texts are checked once generated: do not adjust them beforehand. If a text the user asked for does not fit, you may then suggest a fix (a smaller font size or a shorter text), without applying it.
 Changes after generation: to re-crop or swap images, call upload-variant-images again with images pre-filled from the previous confirmation (never ask to upload again the images you already have, unless their URLs expired); to change texts, call create-variant again with the variants to change only (same file names, groups, languages and fileNamePattern).
 Widgets send their result (template URL, layers, texts, images) in your context and end the user's message with a reference in parentheses like "(r7k2p9)": if you do not have that result in your context, call get-widget-result with this ref before going on; never ask the user to redo a step because a result seems missing.
 The URLs from the widgets are temporary presigned URLs: use them in tool calls, but never show them to the user. Reply in the user's language.`
 
+// Input of the image grid (upload-variant-images, and edit-variant-texts with images): variants, layers, images, prompts
+const IMAGES_INPUT = {
+  variants: z.array(z.string().min(1)).min(1).max(MAX_VARIANTS).describe('Short label of each variant without its language, in ' +
+    'order (e.g. their titles): one row per variant, whose images all its languages share'),
+  layers: z.array(z.object({
+    id: z.number().int().describe('Layer id from get-psd-manifest'),
+    name: z.string().describe('Layer name'),
+    width: z.number().positive().optional().describe('Frame width of the layer, from get-psd-manifest (frame.width)'),
+    height: z.number().positive().optional().describe('Frame height of the layer, from get-psd-manifest (frame.height)')
+  })).min(1).describe('Selected smart object layers'),
+  images: z.array(z.object({
+    variant: z.union([z.string(), z.number().int().min(0)])
+      .describe('Variant label (as in variants), or its 0-based index; copy it from the JSON of the previous confirmation'),
+    layerId: z.number().int().describe('Layer id'),
+    url: z.string().url().describe('Image URL from a previous confirmation of this grid'),
+    fileName: z.string().optional(),
+    crop: z.object({ left: z.number(), top: z.number(), right: z.number(), bottom: z.number() }).optional(),
+    width: z.number().positive().optional().describe('Image width in pixels (size from the previous confirmation)'),
+    height: z.number().positive().optional().describe('Image height in pixels (size from the previous confirmation)')
+  })).optional().describe('Images already uploaded, to pre-fill the grid (e.g. to adjust crops after a generation without uploading ' +
+    'again): pass the "images" JSON of the previous confirmation as is'),
+  prompts: z.array(z.object({
+    variant: z.union([z.string(), z.number().int().min(0)]).describe('Variant label (as in variants), or its 0-based index'),
+    layerId: z.number().int().describe('Layer id'),
+    prompt: z.string().min(1).max(1024).describe('Description of the image, in English')
+  })).optional().describe('Prompts proposed to generate the images with Firefly (a slot can generate its image), written from the ' +
+    'brief when the user has no images or asks for generated ones; the user edits them in the widget')
+}
+
 const NEXT_STEPS_AFTER_SELECTION = 'Wait for the user to pick layers in the widget. Then: (1) if text layers were selected, get the ' +
   'texts of each variant (from the user, or written from a brief: subject, tone, language), each with the same number of lines and ' +
   'about the same number of characters (within 10%) as the original text of its layer, give each variant a short label, then ' +
-  'call edit-variant-texts with the texts and the original texts; (2) if smart object layers were selected, call upload-variant-images ONCE with the labels of the variants without their languages (their languages share their images) and ' +
+  'call edit-variant-texts with the texts and the original texts, and, if smart object layers were selected too, with images (the grid of step 4, ' +
+  'shown as a second step of the same widget); (2) if only smart object layers were selected, call upload-variant-images ONCE with the labels of the variants without their languages (their languages share their images) and ' +
   'the selected smart object layers (id, name, and frame width and height): it shows a single grid, one image per variant and layer, ' +
   'where the user adjusts each crop. Never call upload-file per image and never ask for image URLs; (3) then call create-variant ONCE ' +
   'with all variants, passing each image crop as given by the grid, without a recap or another approval.'
@@ -1594,12 +1624,16 @@ function registerTools (server, params) {
             fontScale: z.number().min(0.5).max(1.5).optional().describe('Font size relative to the template, e.g. 0.9 (default 1)')
           })).describe('One text per text layer')
         })).min(1).max(MAX_VARIANTS).describe('Variants, in order'),
+        images: z.object(IMAGES_INPUT).optional().describe('When smart object layers were selected too: the image grid, as for ' +
+          'upload-variant-images (variant labels without their languages, smart object layers with their frames, prompts if any), ' +
+          'shown as a second step of the widget, so that the texts and the images are confirmed together'),
         title: z.string().optional().describe('Heading shown in the widget')
       },
       _meta: uiMeta(VIEWS.texts)
     },
-    async ({ layers, variants }) => ({
-      content: [{ type: 'text', text: `Texts table displayed (${variants.length} variant(s) x ${layers.length} text layer(s)). Wait for the user to confirm.` }]
+    async ({ layers, variants, images }) => ({
+      content: [{ type: 'text', text: `Texts table displayed (${variants.length} variant(s) x ${layers.length} text layer(s))` +
+        (images ? `, then the image grid (${images.variants.length} variant(s) x ${images.layers.length} layer(s))` : '') + '. Wait for the user to confirm.' }]
     })
   )
 
@@ -1614,31 +1648,7 @@ function registerTools (server, params) {
         'To adjust crops or replace some images after a generation, call it again with images (URLs, crops and sizes from the previous ' +
         'confirmation): the grid opens pre-filled, without uploading again; then call create-variant again with the new crops.',
       inputSchema: {
-        variants: z.array(z.string().min(1)).min(1).max(MAX_VARIANTS).describe('Short label of each variant without its language, in ' +
-          'order (e.g. their titles): one row per variant, whose images all its languages share'),
-        layers: z.array(z.object({
-          id: z.number().int().describe('Layer id from get-psd-manifest'),
-          name: z.string().describe('Layer name'),
-          width: z.number().positive().optional().describe('Frame width of the layer, from get-psd-manifest (frame.width)'),
-          height: z.number().positive().optional().describe('Frame height of the layer, from get-psd-manifest (frame.height)')
-        })).min(1).describe('Selected smart object layers'),
-        images: z.array(z.object({
-          variant: z.union([z.string(), z.number().int().min(0)])
-            .describe('Variant label (as in variants), or its 0-based index; copy it from the JSON of the previous confirmation'),
-          layerId: z.number().int().describe('Layer id'),
-          url: z.string().url().describe('Image URL from a previous confirmation of this grid'),
-          fileName: z.string().optional(),
-          crop: z.object({ left: z.number(), top: z.number(), right: z.number(), bottom: z.number() }).optional(),
-          width: z.number().positive().optional().describe('Image width in pixels (size from the previous confirmation)'),
-          height: z.number().positive().optional().describe('Image height in pixels (size from the previous confirmation)')
-        })).optional().describe('Images already uploaded, to pre-fill the grid (e.g. to adjust crops after a generation without uploading ' +
-          'again): pass the "images" JSON of the previous confirmation as is'),
-        prompts: z.array(z.object({
-          variant: z.union([z.string(), z.number().int().min(0)]).describe('Variant label (as in variants), or its 0-based index'),
-          layerId: z.number().int().describe('Layer id'),
-          prompt: z.string().min(1).max(1024).describe('Description of the image, in English')
-        })).optional().describe('Prompts proposed to generate the images with Firefly (a slot can generate its image), written from the ' +
-          'brief when the user has no images or asks for generated ones; the user edits them in the widget'),
+        ...IMAGES_INPUT,
         title: z.string().optional().describe('Heading shown in the widget')
       },
       _meta: uiMeta(VIEWS.variantImages)
