@@ -436,12 +436,27 @@ function getStartViewHtml (scriptUrl) {
   sp-dropzone sp-button { font-size: var(--spectrum-font-size-100); line-height: var(--spectrum-line-height-100); }
   #file { display: none; }
   sp-progress-bar { width: 100%; margin-top: var(--spectrum-spacing-200); }
-  /* The layers of the template, picked once it is read */
-  #layers-field { margin-top: var(--spectrum-spacing-300); }
+  /* Two steps: the variants and the template, then the layers; their numbers in a circle, the current one in the accent color */
+  .steps { display: flex; align-items: center; gap: var(--spectrum-spacing-200); margin: 0 0 var(--spectrum-spacing-400); padding: 0; list-style: none; }
+  .steps li { display: flex; align-items: center; gap: var(--spectrum-spacing-100); color: var(--spectrum-neutral-subdued-content-color-default); }
+  .steps li + li::before { content: ''; width: 32px; height: 1px; margin-right: var(--spectrum-spacing-100); background: var(--spectrum-gray-300); }
+  .step-number {
+    display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%;
+    font-size: 12px; font-weight: var(--spectrum-bold-font-weight); border: 1px solid var(--spectrum-gray-400);
+  }
+  .steps li.current { color: var(--spectrum-neutral-content-color-default); font-weight: var(--spectrum-bold-font-weight); }
+  .steps li.current .step-number { color: #fff; background: var(--spectrum-accent-background-color-default); border-color: transparent; }
+  .steps li.done .step-number { color: var(--spectrum-accent-content-color-default); border-color: var(--spectrum-accent-background-color-default); }
+  [data-step][hidden] { display: none; }
 ${LAYERS_CSS}
 `, `
 <h2 class="heading">Create variants</h2>
-<div class="subtle intro">Set the number of variants and their languages, drop the layered PSD template, then pick the layers to vary.</div>
+<ol class="steps" aria-label="Steps">
+  <li data-for="1" class="current"><span class="step-number">1</span>Variants and template</li>
+  <li data-for="2"><span class="step-number">2</span>Layers to vary</li>
+</ol>
+<div data-step="1">
+<div class="subtle intro">Set the number of variants and their languages, and drop the layered PSD template.</div>
 <div class="field">
   <label for="count">Number of variants per language</label>
   <input type="number" id="count" min="1" max="${MAX_VARIANTS_UI}" value="2">
@@ -468,13 +483,16 @@ ${LAYERS_CSS}
   </div>
 </sp-dropzone>
 <sp-progress-bar id="progress" label="Upload" progress="0" side-label hidden></sp-progress-bar>
-<div class="field" id="layers-field" hidden>
-  <label>Layers to vary: click the numbered zones of the template, or the list</label>
+</div>
+<div data-step="2" hidden>
+  <div class="subtle intro" id="layers-intro">Click the numbered zones of the template, or the list, to pick the layers to change in the variants.</div>
   ${LAYERS_HTML}
 </div>
 <sp-help-text id="quota" variant="negative" icon hidden></sp-help-text>
 <div class="actions">
-  <sp-button variant="accent" id="continue" disabled>Continue</sp-button>
+  <sp-button variant="secondary" treatment="outline" id="back" hidden>Back</sp-button>
+  <sp-button variant="accent" id="next" disabled>Next</sp-button>
+  <sp-button variant="accent" id="continue" hidden disabled>Continue</sp-button>
   <sp-help-text class="status" id="status"></sp-help-text>
 </div>
 `, `
@@ -492,6 +510,22 @@ ${LAYERS_SCRIPT}
   var messageHeading = document.getElementById('message-heading');
   var messageDescription = document.getElementById('message-description');
   var continueBtn = document.getElementById('continue');
+  var nextBtn = document.getElementById('next');
+  var backBtn = document.getElementById('back');
+
+  // Shows a step: 1, the variants and the template; 2, the layers of the template (read meanwhile, as soon as it is uploaded)
+  function showStep(step) {
+    Array.prototype.forEach.call(document.querySelectorAll('[data-step]'), function (el) { el.hidden = el.getAttribute('data-step') !== String(step); });
+    Array.prototype.forEach.call(document.querySelectorAll('.steps li'), function (li) {
+      var n = Number(li.getAttribute('data-for'));
+      li.classList.toggle('current', n === step);
+      li.classList.toggle('done', n < step);
+    });
+    backBtn.hidden = step !== 2;
+    nextBtn.hidden = step !== 1;
+    continueBtn.hidden = step !== 2;
+    reportSize();
+  }
   var aemBtn = document.getElementById('aem');
   var languageTags = document.getElementById('languages');
   var languagePicker = document.getElementById('add-language');
@@ -561,7 +595,8 @@ ${LAYERS_SCRIPT}
       : n > ${MAX_VARIANTS_UI} ? n + ' variants in total: at most ${MAX_VARIANTS_UI}.' : n + ' variant' + (n > 1 ? 's' : '') + ' in total.';
     totalText.variant = n > ${MAX_VARIANTS_UI} || !languages().length ? 'negative' : 'neutral';
     updateNaming();
-    continueBtn.disabled = !template || !layerCount || !count() || !n || n > ${MAX_VARIANTS_UI} || !!namingError();
+    nextBtn.disabled = !template || !count() || !n || n > ${MAX_VARIANTS_UI} || !!namingError();
+    continueBtn.disabled = nextBtn.disabled || !layerCount;
   }
 
   onToolInput(function (args) {
@@ -578,7 +613,6 @@ ${LAYERS_SCRIPT}
     template = null;
     templateRead++;
     clearTemplate();
-    document.getElementById('layers-field').hidden = true;
     updateButton();
     messageHeading.textContent = name;
     messageHeading.title = name;
@@ -609,8 +643,6 @@ ${LAYERS_SCRIPT}
   function readTemplate(file) {
     var read = ++templateRead;
     var isCurrent = function () { return read === templateRead; };
-    document.getElementById('layers-field').hidden = false;
-    reportSize();
     callTool('read-psd-template', { url: file.url })
       .then(function (started) { if (isCurrent()) return showTemplate(started, isCurrent); })
       .catch(function (error) { if (isCurrent()) setStatus((error && error.message) || String(error), true); });
@@ -667,11 +699,15 @@ ${LAYERS_SCRIPT}
   drop.addEventListener('sp-dropzone-should-accept', function (e) { e.detail.dataTransfer.dropEffect = 'copy'; });
   drop.addEventListener('sp-dropzone-drop', function (e) { upload(e.detail.dataTransfer.files[0]); });
 
+  nextBtn.addEventListener('click', function () { showStep(2); });
+  backBtn.addEventListener('click', function () { showStep(1); });
+
   continueBtn.addEventListener('click', function () {
     var n = count();
     var codes = languages();
     var names = codes.map(function (code) { return LANGUAGE_NAMES[code]; });
     continueBtn.disabled = true;
+    backBtn.disabled = true;
     var context = 'Variant creation started. Number of variants per language: ' + n + '. Languages: '
       + codes.map(function (code, i) { return names[i] + ' (' + code + ')'; }).join(', ') + '. Total: ' + n * codes.length
       + ' variants, each of the ' + n + ' variants in each language. PSD template: ' + template.name
@@ -682,6 +718,7 @@ ${LAYERS_SCRIPT}
     var picked = selectedForModel().map(function (l) { return l.name; }).join(', ');
     sendToModel(context, 'I want ' + n + ' variant(s) of ' + template.name + ' in ' + names.join(', ') + ', changing ' + picked + ', continue.', 'Template sent.')
       .catch(function (error) {
+        backBtn.disabled = false;
         updateButton();
         setStatus((error && error.message) || String(error), true);
       });
