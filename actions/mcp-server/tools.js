@@ -9,7 +9,7 @@ const stateStore = require('./state')
 const { getTokenFromRequest, getUnverifiedClaims, getUnverifiedClientId } = require('./validator.js')
 const { createPickerSession, getPickerResult } = require('./aem-picker.js')
 const { zipFiles } = require('./zip.js')
-const { recordActivity, usageHistory, usageReport } = require('./history.js')
+const { recordActivity, usageHistory, usageReport, userProfile } = require('./history.js')
 const spectrumAsset = require('./spectrum-asset.js')
 
 const IMS_TOKEN_URL = 'https://ims-na1.adobelogin.com/ims/token/v3'
@@ -1168,7 +1168,11 @@ const signTask = (params, taskJson) =>
 
 // Starts a task of the current user; returns its id.
 async function startTask (params, type, args) {
-  const task = { id: crypto.randomUUID(), type, args, userId: currentUserId(params) }
+  const userId = currentUserId(params)
+  // The profile of the user (name, email), for the history of the activity (a zip makes no API call)
+  const token = getTokenFromRequest(params)
+  const profile = type === 'zip' ? null : await userProfile(userId, token, getUnverifiedClaims(token).client_id).catch(() => null)
+  const task = { id: crypto.randomUUID(), type, args, userId, ...(profile ? { profile } : {}) }
   const state = await initState()
   await state.put(taskKey(task.userId, task.id), { status: 'running', startedAt: Date.now() }, { ttl: TASK_TTL_SECONDS })
   const [namespace, ...action] = (process.env.__OW_ACTION_NAME || '').split('/').filter(Boolean)
@@ -1864,7 +1868,7 @@ function registerTools (server, params) {
     {
       title: 'Get Usage Report',
       description: 'Returns the usage of the service by all the users over the last days (or since the start): totals ' +
-        '(users, generations, variants, failures, API calls, average render time), per user (IMS user id), per day, and per kind of API ' +
+        '(users, generations, variants, failures, API calls, average render time), per user (name, email and IMS user id), per day, and per kind of API ' +
         'call (count, failures, average execution time). Reserved to the admins of the service. Call it when the user asks for ' +
         'the overall usage. Covers the environment of this server only (env: Production, Stage...: each one keeps its own history). A ' +
         'widget shows it as a dashboard: do not repeat it, briefly comment on it, naming the environment.',

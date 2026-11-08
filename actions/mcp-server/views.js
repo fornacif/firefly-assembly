@@ -3252,9 +3252,9 @@ ${REPORT_SCRIPT}
       return;
     }
     var table = all
-      ? tableHtml('Users', [{ label: 'User' }, { label: 'Generations', n: true }, { label: 'Variants', n: true }, { label: 'Failed', n: true }, { label: 'API calls', n: true }, { label: 'Avg render', n: true }, { label: 'Last activity' }],
+      ? tableHtml('Users', [{ label: 'User' }, { label: 'Email' }, { label: 'Generations', n: true }, { label: 'Variants', n: true }, { label: 'Failed', n: true }, { label: 'API calls', n: true }, { label: 'Avg render', n: true }, { label: 'Last activity' }],
         (data.users || []).map(function (u) {
-          return [u.user, u.generations, u.variants, u.failed, u.apiCalls, u.averageRenderMs != null ? seconds(u.averageRenderMs) : '', dateTime(u.lastActivity)];
+          return [u.user, u.email || '', u.generations, u.variants, u.failed, u.apiCalls, u.averageRenderMs != null ? seconds(u.averageRenderMs) : '', dateTime(u.lastActivity)];
         }))
       : tableHtml('Latest generations', [{ label: 'Date' }, { label: 'Template' }, { label: 'Variants', n: true }, { label: 'Failed', n: true }, { label: 'Avg render', n: true }, { label: 'Formats' }, { label: 'Languages' }],
         (data.generations || []).map(function (g) {
