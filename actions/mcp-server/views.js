@@ -2600,6 +2600,7 @@ function getVariantViewHtml (scriptUrl) {
   /* With a host that shows the view full screen, the enlarged view is a modal over the whole screen */
   body.fullscreen .preview.open { position: fixed; inset: 0; top: 0 !important; overflow: auto; padding: var(--spectrum-spacing-400); }
   body.fullscreen .preview .visual img { max-height: calc(100vh - 140px); }
+  body.fullscreen #edit-hint { text-align: center; }
   .preview { display: none; }
   .preview.open { display: block; position: absolute; left: 0; right: 0; z-index: 1; background: var(--spectrum-background-base-color); }
   .preview-bar { display: flex; align-items: center; gap: var(--spectrum-spacing-200); margin-bottom: var(--spectrum-spacing-200); }
