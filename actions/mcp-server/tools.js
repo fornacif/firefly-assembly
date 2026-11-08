@@ -845,7 +845,7 @@ function closestAutoCropRatio (ratio) {
 
 // Returns the box auto-crop suggests around the subject, in auto-crop coordinates (see toImageCoordinates).
 function detectSubjectBox (params, imageUrl, ratio) {
-  const call = recordApiCall('Firefly Services', 'Subject detection')
+  const call = recordApiCall('Firefly Services', 'Crop suggestion')
   return recorded(call, limitJob(async () => {
     call.begin()
     call.request()
@@ -951,7 +951,7 @@ async function cropImage (params, imageUrl, bounds) {
     image: { source: { url: imageUrl } },
     edits: { document: { crop: { bounds } } },
     outputs: [{ destination: { url: uploadUrl }, ...(isPng ? { mediaType: 'image/png', compression: 'medium' } : { mediaType: 'image/jpeg', quality: 'photoshop_max' }) }]
-  }, 'Image crop')
+  }, 'Image crop (Photoshop)')
   return readUrl
 }
 
