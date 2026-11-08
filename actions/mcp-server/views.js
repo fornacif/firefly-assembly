@@ -1178,10 +1178,15 @@ const IMAGES_SCRIPT = `
     layers = (args.layers && args.layers.length) ? args.layers : [{ name: 'Image' }];
     slots = [];
     for (var i = 0; i < variants.length * layers.length; i++) slots.push({ status: 'empty' });
+    // Row of a variant label, also given with its language code (e.g. "Winter sale FR" for the row "Winter sale")
+    function rowOf(label) {
+      var index = variants.indexOf(label);
+      return index >= 0 ? index : variants.indexOf(String(label).replace(/[\\s_-]+\\(?[A-Z]{2}\\)?$/, '').trim());
+    }
     prompts = {};
     (args.prompts || []).forEach(function (p) {
       var layerIndex = layers.findIndex(function (l) { return l.id === p.layerId; });
-      var variantIndex = typeof p.variant === 'string' ? variants.indexOf(p.variant) : p.variant;
+      var variantIndex = typeof p.variant === 'string' ? rowOf(p.variant) : p.variant;
       if (layerIndex < 0 || variantIndex < 0 || variantIndex >= variants.length) return;
       // The slot shows its prompt, ready to generate (an image can still be dropped on it)
       prompts[variantIndex * layers.length + layerIndex] = p.prompt;
@@ -1190,7 +1195,7 @@ const IMAGES_SCRIPT = `
     (args.images || []).forEach(function (image) {
       var layerIndex = layers.findIndex(function (l) { return l.id === image.layerId; });
       // The variant is given by label (preferred) or by 0-based index
-      var variantIndex = typeof image.variant === 'string' ? variants.indexOf(image.variant) : image.variant;
+      var variantIndex = typeof image.variant === 'string' ? rowOf(image.variant) : image.variant;
       if (layerIndex < 0 || variantIndex < 0 || variantIndex >= variants.length) return;
       prefillSlot(variantIndex * layers.length + layerIndex, image);
     });
@@ -2195,6 +2200,17 @@ ${IMAGES_SCRIPT}
     if (li && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); showStep(Number(li.getAttribute('data-for'))); }
   });
 
+  // Rows of the image grid when the model does not give them: the labels of the variants without their language code at the
+  // end (e.g. "Winter sale" for "Winter sale FR"), each once, in order
+  function groupLabels(list) {
+    var groups = [];
+    list.forEach(function (v) {
+      var label = String(v.label).replace(/[\\s_-]+\\(?[A-Z]{2}\\)?$/, '').trim() || v.label;
+      if (groups.indexOf(label) < 0) groups.push(label);
+    });
+    return groups;
+  }
+
   onToolInput(function (args) {
     layers = args.layers || [];
     variants = args.variants || [];
@@ -2202,7 +2218,8 @@ ${IMAGES_SCRIPT}
     document.querySelector('.steps').hidden = !withImages;
     document.getElementById('title').textContent = args.title || (withImages ? 'Texts and images per variant' : 'Texts per variant');
     render();
-    if (withImages) imagesPicker.init(args.images);
+    if (withImages) imagesPicker.init(args.images.variants && args.images.variants.length ? args.images
+      : Object.assign({}, args.images, { variants: groupLabels(variants) }));
     showStep(1);
   });
 

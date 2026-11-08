@@ -1644,8 +1644,9 @@ function registerTools (server, params) {
             fontScale: z.number().min(0.5).max(1.5).optional().describe('Font size relative to the template, e.g. 0.9 (default 1)')
           })).describe('One text per text layer')
         })).min(1).max(MAX_VARIANTS).describe('Variants, in order'),
-        images: z.object(IMAGES_INPUT).optional().describe('When smart object layers were selected too: the image grid, as for ' +
-          'upload-variant-images (variant labels without their languages, smart object layers with their frames, prompts if any), ' +
+        images: z.object({ ...IMAGES_INPUT, variants: IMAGES_INPUT.variants.optional() }).optional().describe('When smart object ' +
+          'layers were selected too: the image grid, as for upload-variant-images (variant labels without their languages, by default ' +
+          'the labels of the variants without their language code; smart object layers with their frames; prompts if any), ' +
           'shown as a second step of the widget, so that the texts and the images are confirmed together'),
         title: z.string().optional().describe('Heading shown in the widget')
       },
@@ -1653,7 +1654,7 @@ function registerTools (server, params) {
     },
     async ({ layers, variants, images }) => ({
       content: [{ type: 'text', text: `Texts table displayed (${variants.length} variant(s) x ${layers.length} text layer(s))` +
-        (images ? `, then the image grid (${images.variants.length} variant(s) x ${images.layers.length} layer(s))` : '') + '. Wait for the user to confirm.' }]
+        (images ? `, then the image grid (${images.variants ? `${images.variants.length} variant(s)` : 'one row per variant'} x ${images.layers.length} layer(s))` : '') + '. Wait for the user to confirm.' }]
     })
   )
 
