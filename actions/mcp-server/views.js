@@ -2445,7 +2445,10 @@ const REPORT_CSS = `
   .chart-note { font-size: var(--spectrum-font-size-75); color: var(--spectrum-neutral-subdued-content-color-default); }
   /* Execution time by kind of call: the bar is the average, the thin line the range from the fastest to the slowest */
   .op { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px var(--spectrum-spacing-200); font-size: var(--spectrum-font-size-75); }
+  .op-label { display: flex; align-items: center; gap: var(--spectrum-spacing-100); min-width: 0; }
   .op-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Number of calls, as a pill next to the name */
+  .op-count { flex: none; padding: 1px 8px; border-radius: 999px; background: var(--spectrum-gray-200); color: var(--spectrum-neutral-content-color-default); font-weight: var(--spectrum-bold-font-weight); font-variant-numeric: tabular-nums; }
   .op-value { color: var(--spectrum-neutral-subdued-content-color-default); font-variant-numeric: tabular-nums; text-align: right; }
   .op-track { grid-column: 1 / -1; position: relative; height: 10px; }
   .op-range { position: absolute; top: 4px; height: 2px; background: var(--spectrum-gray-400); border-radius: 1px; }
@@ -2471,6 +2474,10 @@ const REPORT_CSS = `
 
 // Helpers of the dashboards: durations, averages and stat tiles
 const REPORT_SCRIPT = `
+  // Name of a kind of call with the number of calls in a pill
+  function opLabel(name, count) {
+    return '<span class="op-label"><span class="op-name">' + escapeHtml(name) + '</span><span class="op-count">' + count + (count > 1 ? ' calls' : ' call') + '</span></span>';
+  }
   function seconds(ms) {
     var s = ms / 1000;
     if (s < 60) return (s < 10 ? s.toFixed(1) : Math.round(s)) + ' s';
@@ -3072,7 +3079,7 @@ ${REPORT_SCRIPT}
       var min = k.times.length ? Math.min.apply(null, k.times) : 0, max = k.times.length ? Math.max.apply(null, k.times) : 0;
       var tip = k.api + ': ' + count + ' call(s), average ' + seconds(average(k.times)) + ', from ' + seconds(min) + ' to ' + seconds(max)
         + (k.failed ? ', ' + k.failed + ' failed' : '');
-      return '<div class="op" title="' + escapeHtml(tip) + '"><span class="op-name">' + escapeHtml(k.name) + ' ×' + count + '</span>'
+      return '<div class="op" title="' + escapeHtml(tip) + '">' + opLabel(k.name, count)
         + '<span class="op-value">' + (k.times.length ? 'avg ' + seconds(average(k.times)) : 'failed') + '</span>'
         + '<div class="op-track"><span class="op-range" style="left:' + (min / longest * 100) + '%;width:' + ((max - min) / longest * 100) + '%"></span>'
         + '<span class="op-bar" style="width:' + (average(k.times) / longest * 100) + '%"></span></div></div>';
@@ -3259,7 +3266,7 @@ ${REPORT_SCRIPT}
     var longest = Math.max.apply(null, [1].concat(apiCalls.map(function (op) { return op.averageMs || 0; })));
     return '<div class="chart"><span class="chart-title">Execution time by call</span>' + apiCalls.map(function (op) {
       var tip = op.api + ': ' + op.count + ' call(s)' + (op.failed ? ', ' + op.failed + ' failed' : '') + ', ' + op.requests + ' requests with the status checks';
-      return '<div class="op" title="' + escapeHtml(tip) + '"><span class="op-name">' + escapeHtml(op.operation) + ' ×' + op.count + '</span>'
+      return '<div class="op" title="' + escapeHtml(tip) + '">' + opLabel(op.operation, op.count)
         + '<span class="op-value">' + (op.averageMs != null ? 'avg ' + seconds(op.averageMs) : 'failed') + '</span>'
         + '<div class="op-track"><span class="op-bar" style="width:' + ((op.averageMs || 0) / longest * 100) + '%"></span></div></div>';
     }).join('') + '<span class="chart-note">Bar: average time of a call</span></div>';
