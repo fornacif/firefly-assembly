@@ -2974,7 +2974,7 @@ ${STEPS_CSS}
   });
 
 
-  // Report of the last generation (its task result): variants generated, time taken, and the API calls since the template
+  // Report of the last generation (its task result): variants generated, and the API calls since the template
   // was imported, with their execution times by kind
   var reportEl = document.getElementById('report');
 
@@ -3023,7 +3023,6 @@ ${STEPS_CSS}
 
     reportEl.innerHTML = '<div class="report-title">Report of the last generation</div><div class="tiles">'
       + tileHtml('Variants generated', String(report.variants), report.failed ? report.failed + ' failed' : '')
-      + tileHtml('Generation time', seconds(report.durationMs), '')
       + tileHtml('API calls', String(calls.length), since + ', ' + requests + ' requests with the status checks')
       + (ownRenders.length ? tileHtml('Average render', seconds(average(ownRenders)), seconds(average(allRenders)) + ' ' + since) : '')
       + '</div>'
