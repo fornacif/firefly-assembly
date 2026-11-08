@@ -2083,15 +2083,28 @@ ${IMAGES_SCRIPT}
     return name;
   }
 
-  // Workbook of rows of texts: the first row in bold, the texts wrapped on their lines
+  // Workbook of rows of texts, laid out: a header row in white on blue, filtered and frozen with the variant column, thin
+  // borders, the texts wrapped on their lines at the top of their cells, and each column about as wide as its longest line.
+  // Styles (cellXfs): 0 default, 1 text, 2 header, 3 variant label.
   function workbook(rows) {
     var NS = 'http://schemas.openxmlformats.org/';
+    var columns = rows[0].length;
+    var last = columnName(columns - 1) + rows.length;
+    var widths = rows[0].map(function (name, c) {
+      var longest = 0;
+      rows.forEach(function (cells) {
+        String(cells[c] == null ? '' : cells[c]).split('\\n').forEach(function (line) { longest = Math.max(longest, line.length); });
+      });
+      return Math.min(60, Math.max(c ? 20 : 16, longest + 4));
+    });
     var sheetRows = rows.map(function (cells, r) {
-      return '<row r="' + (r + 1) + '">' + cells.map(function (text, c) {
-        return '<c r="' + columnName(c) + (r + 1) + '" t="inlineStr" s="' + (r ? 1 : 2) + '"><is><t xml:space="preserve">'
+      return '<row r="' + (r + 1) + '"' + (r ? '' : ' ht="24" customHeight="1"') + '>' + cells.map(function (text, c) {
+        return '<c r="' + columnName(c) + (r + 1) + '" t="inlineStr" s="' + (r ? (c ? 1 : 3) : 2) + '"><is><t xml:space="preserve">'
           + xmlText(text) + '</t></is></c>';
       }).join('') + '</row>';
     }).join('');
+    var thin = '<left style="thin"><color rgb="FFD5D5D5"/></left><right style="thin"><color rgb="FFD5D5D5"/></right>'
+      + '<top style="thin"><color rgb="FFD5D5D5"/></top><bottom style="thin"><color rgb="FFD5D5D5"/></bottom><diagonal/>';
     var head = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
     return zipFiles({
       '[Content_Types].xml': head + '<Types xmlns="' + NS + 'package/2006/content-types">'
@@ -2103,23 +2116,34 @@ ${IMAGES_SCRIPT}
       '_rels/.rels': head + '<Relationships xmlns="' + NS + 'package/2006/relationships">'
         + '<Relationship Id="rId1" Type="' + NS + 'officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>',
       'xl/workbook.xml': head + '<workbook xmlns="' + NS + 'spreadsheetml/2006/main" xmlns:r="' + NS + 'officeDocument/2006/relationships">'
-        + '<sheets><sheet name="Texts" sheetId="1" r:id="rId1"/></sheets></workbook>',
+        + '<sheets><sheet name="Texts" sheetId="1" r:id="rId1"/></sheets>'
+        + '<definedNames><definedName name="_xlnm._FilterDatabase" localSheetId="0" hidden="1">Texts!$A$1:$' + columnName(columns - 1)
+        + '$' + rows.length + '</definedName></definedNames></workbook>',
       'xl/_rels/workbook.xml.rels': head + '<Relationships xmlns="' + NS + 'package/2006/relationships">'
         + '<Relationship Id="rId1" Type="' + NS + 'officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
         + '<Relationship Id="rId2" Type="' + NS + 'officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>',
       'xl/styles.xml': head + '<styleSheet xmlns="' + NS + 'spreadsheetml/2006/main">'
-        + '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>'
-        + '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>'
-        + '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
+        + '<fonts count="3"><font><sz val="11"/><name val="Calibri"/></font>'
+        + '<font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font>'
+        + '<font><b/><sz val="11"/><name val="Calibri"/></font></fonts>'
+        + '<fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>'
+        + '<fill><patternFill patternType="solid"><fgColor rgb="FF1473E6"/><bgColor indexed="64"/></patternFill></fill>'
+        + '<fill><patternFill patternType="solid"><fgColor rgb="FFF3F3F3"/><bgColor indexed="64"/></patternFill></fill></fills>'
+        + '<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border>' + thin + '</border></borders>'
         + '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
-        + '<cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
-        + '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment wrapText="1" vertical="top"/></xf>'
-        + '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs></styleSheet>',
+        + '<cellXfs count="4"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+        + '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment wrapText="1" vertical="top"/></xf>'
+        + '<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1">'
+        + '<alignment vertical="center"/></xf>'
+        + '<xf numFmtId="0" fontId="2" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1">'
+        + '<alignment wrapText="1" vertical="top"/></xf></cellXfs></styleSheet>',
       'xl/worksheets/sheet1.xml': head + '<worksheet xmlns="' + NS + 'spreadsheetml/2006/main">'
-        + '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>'
-        + '<cols><col min="1" max="1" width="24" customWidth="1"/>'
-        + (rows[0].length > 1 ? '<col min="2" max="' + rows[0].length + '" width="40" customWidth="1"/>' : '') + '</cols>'
-        + '<sheetData>' + sheetRows + '</sheetData></worksheet>'
+        + '<sheetViews><sheetView workbookViewId="0"><pane xSplit="1" ySplit="1" topLeftCell="B2" activePane="bottomRight" state="frozen"/>'
+        + '<selection pane="bottomRight" activeCell="B2" sqref="B2"/></sheetView></sheetViews>'
+        + '<cols>' + widths.map(function (width, c) {
+          return '<col min="' + (c + 1) + '" max="' + (c + 1) + '" width="' + width + '" customWidth="1"/>';
+        }).join('') + '</cols>'
+        + '<sheetData>' + sheetRows + '</sheetData><autoFilter ref="A1:' + last + '"/></worksheet>'
     });
   }
 
