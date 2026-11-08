@@ -2580,8 +2580,13 @@ function getVariantViewHtml (scriptUrl) {
   .downloads { display: flex; flex-wrap: wrap; gap: var(--spectrum-spacing-100); }
   .card-error { color: var(--spectrum-negative-content-color-default); font-size: var(--spectrum-font-size-75); word-break: break-word; }
   .card-warning { color: var(--spectrum-notice-content-color-default, var(--spectrum-negative-content-color-default)); font-size: var(--spectrum-font-size-75); word-break: break-word; }
+  /* The enlarged view is drawn over the grid, at the height of the card clicked (the widget is as high as its content, the page
+     of the host scrolls): it opens where the user looks, and the card is there again when it closes */
+  .stage { position: relative; }
+  /* The grid keeps its place under the enlarged view (opacity: the Spectrum buttons do not follow visibility) */
+  .stage.enlarged .grid, .stage.enlarged .groups { opacity: 0; pointer-events: none; }
   .preview { display: none; }
-  .preview.open { display: block; }
+  .preview.open { display: block; position: absolute; left: 0; right: 0; z-index: 1; background: var(--spectrum-background-base-color); }
   .preview-bar { display: flex; align-items: center; gap: var(--spectrum-spacing-200); margin-bottom: var(--spectrum-spacing-200); }
   .preview-name { flex: 1; min-width: 0; font-weight: var(--spectrum-bold-font-weight); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .preview .visual img { max-height: 640px; cursor: zoom-out; }
@@ -2595,6 +2600,7 @@ ${STEPS_CSS}
 ${REPORT_CSS}`, `
 <h2 class="heading">Generated variants</h2>
 <ol class="steps single" aria-label="Step"><li data-for="5" class="current"><span class="step-kicker">Step 5</span><span class="step-title">Review and download</span></li></ol>
+<div class="stage" id="stage">
 <div class="preview" id="preview">
   <div class="preview-bar">
     <sp-button size="s" variant="secondary" treatment="outline" data-action="back">All variants</sp-button>
@@ -2607,6 +2613,7 @@ ${REPORT_CSS}`, `
   <div class="subtle" id="edit-hint" hidden>Click a text on the visual to write a change for it.</div>
 </div>
 <div class="grid" id="grid"></div>
+</div>
 <div class="actions" id="fix-actions" hidden>
   <sp-button variant="accent" id="send-changes" disabled>Send changes</sp-button>
   <sp-button variant="secondary" treatment="outline" id="download-all" hidden disabled>Download all</sp-button>
@@ -2619,6 +2626,7 @@ ${REPORT_SCRIPT}
   var grid = document.getElementById('grid');
   var preview = document.getElementById('preview');
   var previewVisual = document.getElementById('preview-visual');
+  var stage = document.getElementById('stage');
   var variants = [];
   var current = -1;
   // Changes of each variant, by file name: pre-filled with the proposed fixes, edited by the user
@@ -2815,19 +2823,35 @@ ${REPORT_SCRIPT}
     return variants.map(function (v, i) { return i; }).filter(function (i) { return !variants[i].error && !variants[i].pending; });
   }
 
-  // Enlarged view of one variant inside the widget; index -1 goes back to the grid.
+  // Enlarged view of one variant inside the widget, over the grid at the height of its card (kept while going to the previous
+  // or next one); index -1 goes back to the grid.
   function showPreview(index) {
+    var wasOpen = current >= 0;
     current = index;
     var open = index >= 0;
+    if (open && !wasOpen) {
+      var image = grid.querySelector('img[data-index="' + index + '"]');
+      var card = image && image.closest('.card');
+      preview.style.top = Math.max(0, card ? card.getBoundingClientRect().top - stage.getBoundingClientRect().top : 0) + 'px';
+    }
     preview.classList.toggle('open', open);
-    grid.style.display = open ? 'none' : '';
+    stage.classList.toggle('enlarged', open);
+    if (!open) stage.style.minHeight = '';
     if (open) {
       previewVisual.innerHTML = visualHtml(variants[index], index, 640);
       addEditZones(index);
       var list = generated();
       document.getElementById('preview-name').textContent = variants[index].fileName + ' (' + (list.indexOf(index) + 1) + '/' + list.length + ')';
       document.getElementById('preview-downloads').innerHTML = downloadButtons(index, 'accent');
+      fitStage();
     }
+    reportSize();
+  }
+
+  // The widget as high as the enlarged view, when it goes past the grid
+  function fitStage() {
+    if (current < 0) return;
+    stage.style.minHeight = (parseFloat(preview.style.top) + preview.offsetHeight) + 'px';
     reportSize();
   }
 
@@ -2952,7 +2976,7 @@ ${REPORT_SCRIPT}
   });
 
   // load does not bubble: listened to in the capture phase
-  preview.addEventListener('load', reportSize, true);
+  preview.addEventListener('load', fitStage, true);
   document.addEventListener('keydown', function (e) {
     if (current < 0) return;
     if (e.key === 'Escape') showPreview(-1);
