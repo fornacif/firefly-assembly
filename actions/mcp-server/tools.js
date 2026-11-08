@@ -1845,7 +1845,7 @@ function registerTools (server, params) {
       title: 'Get Usage History',
       description: 'Returns the generations of variants of the current user over the last days (or since the start), the ' +
         'latest first: date, template, variants generated and failed, time taken, API calls, average render time, formats and ' +
-        'languages, with their totals, per day and per kind of API call, in the environment of this server (env: Production, Stage...: ' +
+        'languages, with their totals, per day and per kind of API call, and the user (IMS user id and profile), in the environment of this server (env: Production, Stage...: ' +
         'each one keeps its own history). Call it when the user asks what they generated, or how much they used the service. A widget ' +
         'shows it as a dashboard: do not repeat it, briefly comment on it, naming the environment.',
       inputSchema: {
@@ -1856,7 +1856,13 @@ function registerTools (server, params) {
     },
     async ({ days, limit }) => {
       try {
-        return jsonResult(await usageHistory(params, currentUserId(params), { days, limit }))
+        const userId = currentUserId(params)
+        const token = getTokenFromRequest(params)
+        const [history, profile] = await Promise.all([
+          usageHistory(params, userId, { days, limit }),
+          userProfile(userId, token, getUnverifiedClaims(token).client_id).catch(() => null)
+        ])
+        return jsonResult({ ...history, user: { userId, ...profile } })
       } catch (error) {
         return errorResult(error)
       }
