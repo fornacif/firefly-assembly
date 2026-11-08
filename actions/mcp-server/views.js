@@ -1772,9 +1772,9 @@ function getTextsViewHtml (scriptUrl) {
   .text-input:focus { outline: none; border-color: var(--spectrum-accent-background-color-default); background: var(--spectrum-background-base-color); }
   /* Original text of a layer under its name */
   .original { font-weight: normal; color: var(--spectrum-neutral-subdued-content-color-default); white-space: pre-line; }
-  /* Import and export of the table as a CSV file, above it */
+  /* Import and export of the table as an Excel file, above it */
   .sheet { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spectrum-spacing-200); margin-bottom: var(--spectrum-spacing-200); }
-  #csv-file { display: none; }
+  #sheet-file { display: none; }
   /* With images too: a second step, the grid of the images */
 ${STEPS_CSS}
   .steps[hidden] { display: none; }
@@ -1787,11 +1787,11 @@ ${IMAGES_CSS}
 </ol>
 <div data-step="1">
 <div class="subtle intro">Click a text to edit it, then confirm. Keep each text about as long as the original, so that it fits the layout.
-You can also paste cells copied from a spreadsheet, or import a CSV file with a column per layer (download this table to get one).</div>
+You can also paste cells copied from a spreadsheet, or import an Excel file (.xlsx) with a column per layer (download this table to get one).</div>
 <div class="sheet">
-  <sp-button size="s" variant="secondary" treatment="outline" id="import">Import CSV</sp-button>
-  <sp-button size="s" variant="secondary" treatment="outline" id="export">Download CSV</sp-button>
-  <input type="file" id="csv-file" accept=".csv,.tsv,.txt,text/csv,text/tab-separated-values">
+  <sp-button size="s" variant="secondary" treatment="outline" id="import">Import Excel</sp-button>
+  <sp-button size="s" variant="secondary" treatment="outline" id="export">Download Excel</sp-button>
+  <input type="file" id="sheet-file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
   <sp-help-text id="sheet-status"></sp-help-text>
 </div>
 <div class="table-wrap"><table class="texts" id="table"></table></div>
@@ -1887,13 +1887,9 @@ ${IMAGES_SCRIPT}
     updateConfirm();
   }
 
-  // Rows of a CSV or TSV text (cells in quotes may hold the separator, quotes doubled and line breaks): the separator is the
-  // one of tab, semicolon (Excel in many languages) and comma most used in the first line.
+  // Rows of cells copied from a spreadsheet: tab-separated, cells in quotes may hold tabs, quotes doubled and line breaks
   function parseSheet(text) {
-    text = text.replace(/^\\uFEFF/, '');
-    var first = text.split(/\\r?\\n/)[0];
-    var sep = ['\\t', ';', ','].map(function (c) { return { c: c, n: first.split(c).length }; })
-      .sort(function (a, b) { return b.n - a.n; })[0].c;
+    var sep = '\\t';
     var rows = [], row = [], cell = '', quoted = false;
     for (var i = 0; i < text.length; i++) {
       var ch = text[i];
@@ -1935,7 +1931,7 @@ ${IMAGES_SCRIPT}
       filled++;
     });
     fit(fields);
-    var ignored = rows[0].slice(1).filter(function (name, k) { return columns[k] < 0; });
+    var ignored = rows[0].slice(1).filter(function (name, k) { return columns[k] < 0 && String(name).trim(); });
     return filled + ' variant(s) filled' + (unmatched.length ? '; rows not matched to a variant: ' + unmatched.join(', ') : '')
       + (ignored.length ? '; columns ignored: ' + ignored.join(', ') : '') + '.';
   }
@@ -1947,20 +1943,188 @@ ${IMAGES_SCRIPT}
     reportSize();
   }
 
-  // UTF-8, or Windows-1252 for a file that is not (CSV saved by older versions of Excel)
-  function readText(file) {
+  // Excel workbooks (.xlsx), read and written in the view: a ZIP archive of XML files. The first sheet is read, its cells as
+  // text; the table is written as a sheet with a header row, a column per layer and the line breaks of the texts kept.
+  function zipEntries(buffer) {
+    var view = new DataView(buffer);
+    var end = buffer.byteLength - 22;
+    while (end >= 0 && view.getUint32(end, true) !== 0x06054b50) end--;
+    if (end < 0) throw new Error('This file is not an Excel workbook (.xlsx).');
+    var count = view.getUint16(end + 10, true), offset = view.getUint32(end + 16, true);
+    var entries = {};
+    for (var i = 0; i < count; i++) {
+      var nameLength = view.getUint16(offset + 28, true);
+      var name = new TextDecoder().decode(new Uint8Array(buffer, offset + 46, nameLength));
+      entries[name] = { method: view.getUint16(offset + 10, true), size: view.getUint32(offset + 20, true), local: view.getUint32(offset + 42, true) };
+      offset += 46 + nameLength + view.getUint16(offset + 30, true) + view.getUint16(offset + 32, true);
+    }
+    return entries;
+  }
+
+  function zipText(buffer, entries, name) {
+    var entry = entries[name];
+    if (!entry) return Promise.resolve(null);
+    var view = new DataView(buffer);
+    var start = entry.local + 30 + view.getUint16(entry.local + 26, true) + view.getUint16(entry.local + 28, true);
+    var data = new Uint8Array(buffer, start, entry.size);
+    if (entry.method === 0) return Promise.resolve(new TextDecoder().decode(data));
+    var stream = new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    return new Response(stream).text();
+  }
+
+  function xmlOf(text) { return new DOMParser().parseFromString(text, 'application/xml'); }
+  function children(node, name) { return Array.prototype.filter.call(node.childNodes, function (c) { return c.localName === name; }); }
+  // Text of a string item: its runs, without their phonetic guides
+  function itemText(node) {
+    return Array.prototype.filter.call(node.getElementsByTagNameNS('*', 't'), function (t) {
+      return !(t.parentNode && t.parentNode.localName === 'rPh');
+    }).map(function (t) { return t.textContent; }).join('');
+  }
+  function columnIndex(ref) {
+    var letters = String(ref || '').replace(/[0-9]/g, ''), index = 0;
+    for (var i = 0; i < letters.length; i++) index = index * 26 + letters.charCodeAt(i) - 64;
+    return index - 1;
+  }
+
+  // Rows of the first sheet of a workbook, as arrays of texts
+  function readWorkbook(file) {
     return file.arrayBuffer().then(function (buffer) {
-      try { return new TextDecoder('utf-8', { fatal: true }).decode(buffer); } catch (e) { return new TextDecoder('windows-1252').decode(buffer); }
+      var entries = zipEntries(buffer);
+      return Promise.all([zipText(buffer, entries, 'xl/workbook.xml'), zipText(buffer, entries, 'xl/_rels/workbook.xml.rels'),
+        zipText(buffer, entries, 'xl/sharedStrings.xml')]).then(function (parts) {
+        if (!parts[0]) throw new Error('This file is not an Excel workbook (.xlsx).');
+        var sheet = xmlOf(parts[0]).getElementsByTagNameNS('*', 'sheet')[0];
+        var relId = sheet && Array.prototype.filter.call(sheet.attributes, function (a) { return a.localName === 'id'; })[0];
+        var path = 'xl/worksheets/sheet1.xml';
+        if (relId && parts[1]) {
+          Array.prototype.forEach.call(xmlOf(parts[1]).getElementsByTagNameNS('*', 'Relationship'), function (r) {
+            if (r.getAttribute('Id') !== relId.value) return;
+            var target = r.getAttribute('Target');
+            path = target.charAt(0) === '/' ? target.slice(1) : 'xl/' + target;
+          });
+        }
+        var strings = parts[2] ? Array.prototype.map.call(xmlOf(parts[2]).getElementsByTagNameNS('*', 'si'), itemText) : [];
+        return zipText(buffer, entries, path).then(function (text) {
+          if (!text) throw new Error('The first sheet of the workbook was not found.');
+          var rows = [];
+          Array.prototype.forEach.call(xmlOf(text).getElementsByTagNameNS('*', 'row'), function (row) {
+            var cells = [];
+            children(row, 'c').forEach(function (c, k) {
+              var type = c.getAttribute('t'), v = children(c, 'v')[0], value;
+              if (type === 'inlineStr') value = children(c, 'is')[0] ? itemText(children(c, 'is')[0]) : '';
+              else if (type === 's') value = v ? strings[Number(v.textContent)] || '' : '';
+              else value = v ? v.textContent : '';
+              var index = c.getAttribute('r') ? columnIndex(c.getAttribute('r')) : k;
+              while (cells.length < index) cells.push('');
+              cells[index] = value;
+            });
+            var number = Number(row.getAttribute('r')) || rows.length + 1;
+            while (rows.length < number - 1) rows.push([]);
+            rows.push(cells);
+          });
+          return rows.filter(function (r) { return r.some(function (c) { return String(c).trim(); }); });
+        });
+      });
     });
   }
 
-  var csvInput = document.getElementById('csv-file');
-  document.getElementById('import').addEventListener('click', function () { csvInput.value = ''; csvInput.click(); });
-  csvInput.addEventListener('change', function () {
-    var file = csvInput.files[0];
+  var CRC_TABLE = (function () {
+    var table = [];
+    for (var n = 0; n < 256; n++) {
+      var c = n;
+      for (var k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      table.push(c >>> 0);
+    }
+    return table;
+  })();
+  function crc32(bytes) {
+    var c = 0xffffffff;
+    for (var i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  }
+
+  // ZIP archive of the files ({ name: text }), stored without compression
+  function zipFiles(files) {
+    var encoder = new TextEncoder(), parts = [], central = [], offset = 0;
+    Object.keys(files).forEach(function (name) {
+      var nameBytes = encoder.encode(name), data = encoder.encode(files[name]), crc = crc32(data);
+      var local = new DataView(new ArrayBuffer(30));
+      local.setUint32(0, 0x04034b50, true); local.setUint16(4, 20, true); local.setUint16(8, 0, true);
+      local.setUint32(14, crc, true); local.setUint32(18, data.length, true); local.setUint32(22, data.length, true);
+      local.setUint16(26, nameBytes.length, true);
+      var entry = new DataView(new ArrayBuffer(46));
+      entry.setUint32(0, 0x02014b50, true); entry.setUint16(4, 20, true); entry.setUint16(6, 20, true);
+      entry.setUint32(16, crc, true); entry.setUint32(20, data.length, true); entry.setUint32(24, data.length, true);
+      entry.setUint16(28, nameBytes.length, true); entry.setUint32(42, offset, true);
+      parts.push(local.buffer, nameBytes, data);
+      central.push(entry.buffer, nameBytes);
+      offset += 30 + nameBytes.length + data.length;
+    });
+    var size = central.reduce(function (sum, part) { return sum + part.byteLength; }, 0);
+    var end = new DataView(new ArrayBuffer(22));
+    end.setUint32(0, 0x06054b50, true);
+    end.setUint16(8, Object.keys(files).length, true); end.setUint16(10, Object.keys(files).length, true);
+    end.setUint32(12, size, true); end.setUint32(16, offset, true);
+    return new Blob(parts.concat(central, [end.buffer]));
+  }
+
+  function xmlText(text) {
+    return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f]/g, '');
+  }
+  function columnName(index) {
+    var name = '';
+    for (index++; index > 0; index = Math.floor((index - 1) / 26)) name = String.fromCharCode(65 + (index - 1) % 26) + name;
+    return name;
+  }
+
+  // Workbook of rows of texts: the first row in bold, the texts wrapped on their lines
+  function workbook(rows) {
+    var NS = 'http://schemas.openxmlformats.org/';
+    var sheetRows = rows.map(function (cells, r) {
+      return '<row r="' + (r + 1) + '">' + cells.map(function (text, c) {
+        return '<c r="' + columnName(c) + (r + 1) + '" t="inlineStr" s="' + (r ? 1 : 2) + '"><is><t xml:space="preserve">'
+          + xmlText(text) + '</t></is></c>';
+      }).join('') + '</row>';
+    }).join('');
+    var head = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+    return zipFiles({
+      '[Content_Types].xml': head + '<Types xmlns="' + NS + 'package/2006/content-types">'
+        + '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        + '<Default Extension="xml" ContentType="application/xml"/>'
+        + '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        + '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        + '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>',
+      '_rels/.rels': head + '<Relationships xmlns="' + NS + 'package/2006/relationships">'
+        + '<Relationship Id="rId1" Type="' + NS + 'officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>',
+      'xl/workbook.xml': head + '<workbook xmlns="' + NS + 'spreadsheetml/2006/main" xmlns:r="' + NS + 'officeDocument/2006/relationships">'
+        + '<sheets><sheet name="Texts" sheetId="1" r:id="rId1"/></sheets></workbook>',
+      'xl/_rels/workbook.xml.rels': head + '<Relationships xmlns="' + NS + 'package/2006/relationships">'
+        + '<Relationship Id="rId1" Type="' + NS + 'officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+        + '<Relationship Id="rId2" Type="' + NS + 'officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>',
+      'xl/styles.xml': head + '<styleSheet xmlns="' + NS + 'spreadsheetml/2006/main">'
+        + '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>'
+        + '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>'
+        + '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
+        + '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+        + '<cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+        + '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment wrapText="1" vertical="top"/></xf>'
+        + '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs></styleSheet>',
+      'xl/worksheets/sheet1.xml': head + '<worksheet xmlns="' + NS + 'spreadsheetml/2006/main">'
+        + '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>'
+        + '<cols><col min="1" max="1" width="24" customWidth="1"/>'
+        + (rows[0].length > 1 ? '<col min="2" max="' + rows[0].length + '" width="40" customWidth="1"/>' : '') + '</cols>'
+        + '<sheetData>' + sheetRows + '</sheetData></worksheet>'
+    });
+  }
+
+  var sheetInput = document.getElementById('sheet-file');
+  document.getElementById('import').addEventListener('click', function () { sheetInput.value = ''; sheetInput.click(); });
+  sheetInput.addEventListener('change', function () {
+    var file = sheetInput.files[0];
     if (!file) return;
-    readText(file)
-      .then(function (text) { sheetStatus(file.name + ': ' + importRows(parseSheet(text))); })
+    readWorkbook(file)
+      .then(function (rows) { sheetStatus(file.name + ': ' + importRows(rows)); })
       .catch(function (error) { sheetStatus((error && error.message) || String(error), true); });
   });
 
@@ -1981,20 +2145,13 @@ ${IMAGES_SCRIPT}
     fit(fields);
   });
 
-  // The table as a CSV file, separated by semicolons where Excel expects them (languages with a decimal comma), with a BOM so
-  // that Excel reads it as UTF-8; opened through a temporary link, as the views cannot download files themselves
-  var CSV_SEPARATOR = /^(fr|de|it|es|pt|nl|pl|sv|da|nb|no|fi|ru|tr)/i.test(navigator.language || '') ? ';' : ',';
-  function csvCell(text) {
-    text = String(text);
-    return /[";,\\t\\r\\n]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
-  }
+  // The table as an Excel file, opened through a temporary link, as the views cannot download files themselves
   document.getElementById('export').addEventListener('click', function () {
     var rows = [['Variant'].concat(layers.map(function (l) { return l.name; }))].concat(currentTexts().map(function (v) {
       return [v.label].concat(v.texts.map(function (t) { return t.text; }));
     }));
-    var csv = '\\uFEFF' + rows.map(function (r) { return r.map(csvCell).join(CSV_SEPARATOR); }).join('\\r\\n') + '\\r\\n';
     sheetStatus('Preparing the file...');
-    uploadOne(new File([csv], 'texts.csv', { type: 'text/csv' }), function () {})
+    uploadOne(new File([workbook(rows)], 'texts.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), function () {})
       .then(function (file) { sheetStatus(''); return request('ui/open-link', { url: file.url }); })
       .catch(function (error) { sheetStatus((error && error.message) || String(error), true); });
   });
