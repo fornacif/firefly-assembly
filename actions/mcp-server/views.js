@@ -2465,10 +2465,11 @@ const REPORT_CSS = `
   .legend i { display: inline-block; width: 10px; height: 10px; margin-right: 4px; border-radius: 2px; vertical-align: -1px; background: var(--spectrum-accent-background-color-default); }
   .legend i.failed { background: var(--spectrum-gray-400); }
   .table { width: 100%; border-collapse: collapse; font-size: var(--spectrum-font-size-75); font-variant-numeric: tabular-nums; }
-  .table th { text-align: left; font-weight: var(--spectrum-bold-font-weight); color: var(--spectrum-neutral-subdued-content-color-default); border-bottom: 1px solid var(--spectrum-gray-300); padding: 4px 8px 4px 0; }
-  .table td { border-bottom: 1px solid var(--spectrum-gray-200); padding: 6px 8px 6px 0; vertical-align: top; }
+  /* Rows of a fixed height: the table shows 10 rows at most, then scrolls under its header */
+  .table th { position: sticky; top: 0; background: var(--spectrum-background-layer-2-color); text-align: left; font-weight: var(--spectrum-bold-font-weight); color: var(--spectrum-neutral-subdued-content-color-default); border-bottom: 1px solid var(--spectrum-gray-300); padding: 4px 8px 4px 0; line-height: 20px; }
+  .table td { border-bottom: 1px solid var(--spectrum-gray-200); padding: 6px 8px 6px 0; vertical-align: top; line-height: 20px; }
   .table .n { text-align: right; }
-  .table-wrap { overflow-x: auto; }
+  .table-wrap { overflow: auto; max-height: calc(29px + 10 * 33px); }
   .env-badge { margin-left: var(--spectrum-spacing-100); padding: 0 6px; border-radius: 4px; background: var(--spectrum-gray-200); font-size: 11px; font-weight: bold; line-height: 18px; text-transform: uppercase; vertical-align: middle; }
 `
 
