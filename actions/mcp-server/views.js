@@ -2441,7 +2441,41 @@ ${STEPS_CSS}
       && textLayers.some(function (l) { return l.id === layerId; }));
   }
 
-  // The texts of the variant that can be edited, as zones over its enlarged visual (where the layer is in the template)
+  function linesOf(text) { return String(text || '').split(/\\r\\n|\\r|\\n/); }
+  function longestLine(lines) { return Math.max.apply(null, lines.map(function (line) { return line.trim().length; })); }
+
+  // Where the text of a variant is drawn, estimated from the layer in the template: a point text grows from its alignment,
+  // as wide as its longest line and as high as its lines, at its font scale. A text without line breaks for a template text
+  // on several lines is spread over as many lines. Joined with the box of the text found by the review, and never smaller
+  // than the layer in the template.
+  function textArea(v, layer, edit) {
+    var a = layer.area, c = v.canvas;
+    var left = a.left, top = a.top, right = a.left + a.width, bottom = a.top + a.height;
+    var before = linesOf(layer.text), after = linesOf(edit.text);
+    if (layer.text != null && longestLine(before) > 0) {
+      var lineCount = after.length === 1 && before.length > 1 ? before.length : after.length;
+      var longest = after.length === 1 && before.length > 1 ? Math.ceil(after[0].trim().length / before.length) : longestLine(after);
+      var scale = edit.fontScale || 1;
+      var width = Math.max(a.width, a.width * longest / longestLine(before) * scale);
+      var height = Math.max(a.height, a.height * lineCount / before.length * scale);
+      var align = String(layer.alignment || 'left');
+      left = align === 'center' ? a.left + (a.width - width) / 2 : align === 'right' ? a.left + a.width - width : a.left;
+      right = left + width;
+      bottom = top + height;
+    }
+    (v.textIssues || []).forEach(function (issue) {
+      if (String(issue.layerId) !== String(layer.id) || !issue.area) return;
+      left = Math.min(left, issue.area.left);
+      top = Math.min(top, issue.area.top);
+      right = Math.max(right, issue.area.left + issue.area.width);
+      bottom = Math.max(bottom, issue.area.top + issue.area.height);
+    });
+    left = Math.max(0, left); top = Math.max(0, top);
+    right = Math.min(c.width, right); bottom = Math.min(c.height, bottom);
+    return { left: left, top: top, width: right - left, height: bottom - top };
+  }
+
+  // The texts of the variant that can be edited, as zones over its enlarged visual (where the text is drawn, estimated)
   function addEditZones(index) {
     var v = variants[index];
     var box = previewVisual.querySelector('.visual');
@@ -2449,7 +2483,7 @@ ${STEPS_CSS}
     document.getElementById('edit-hint').hidden = !zones.length;
     if (!box) return;
     zones.forEach(function (l) {
-      var a = l.area, c = v.canvas;
+      var a = textArea(v, l, layerEdit(index, l.id)), c = v.canvas;
       var zone = document.createElement('div');
       zone.className = 'edit-zone';
       zone.setAttribute('data-layer', l.id);

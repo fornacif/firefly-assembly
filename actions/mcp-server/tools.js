@@ -1072,12 +1072,18 @@ const TASKS = {
   }
 }
 
+// Text of a template text layer and its alignment, from which the widget estimates where a new text is drawn.
+function templateText (layer) {
+  if (layer.type !== 'text_layer' || layer.text?.content == null) return {}
+  return { text: layer.text.content, alignment: layer.text.paragraphStyles?.[0]?.alignment || 'left' }
+}
+
 // What the assistant needs to review a generation: the drawn layers of the template ({ id, name, type, area }, area in pixels of
 // the canvas) and, per variant in order, its edited texts ({ layerId, text, fontScale }), and its languages, when given.
 async function reviewData (params, args) {
   const manifest = await getManifest(params, args.templateUrl).catch(() => null)
   return {
-    layers: manifest ? drawnLayers(manifest.layers).map(layer => ({ id: layer.id, name: layer.name, type: layer.type, area: layerArea(layer) })) : [],
+    layers: manifest ? drawnLayers(manifest.layers).map(layer => ({ id: layer.id, name: layer.name, type: layer.type, area: layerArea(layer), ...templateText(layer) })) : [],
     texts: args.variants.map(variant => variant.layers.filter(layer => layer.type === 'text_layer')
       .map(layer => ({ layerId: layer.id, text: layer.text, ...(layer.fontScale ? { fontScale: layer.fontScale } : {}) }))),
     languages: args.variants.map(variant => variant.language || null)
