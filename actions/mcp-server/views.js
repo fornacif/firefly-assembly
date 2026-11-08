@@ -440,6 +440,13 @@ function getStartViewHtml (scriptUrl) {
   .field.fonts { margin-top: var(--spectrum-spacing-300); }
   .fonts-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--spectrum-spacing-200); }
   #font-files { display: none; }
+  /* Message under the fonts: a warning (missing fonts) has an icon, in the orange of Spectrum notices */
+  .fonts-help { display: flex; align-items: flex-start; gap: var(--spectrum-spacing-75); margin-top: var(--spectrum-spacing-75);
+    font-size: var(--spectrum-font-size-75); color: var(--spectrum-neutral-subdued-content-color-default); }
+  .fonts-help svg { flex: none; margin-top: 1px; }
+  .fonts-help.warning { color: var(--spectrum-orange-1000, #a54b00); }
+  .fonts-help.warning svg { color: var(--spectrum-notice-visual-color, #e68619); }
+  .fonts-help.negative { color: var(--spectrum-negative-content-color-default, #d31510); }
 ${STEPS_CSS}
 ${LAYERS_CSS}
 `, `
@@ -487,7 +494,7 @@ ${LAYERS_CSS}
     <input type="file" id="font-files" accept=".otf,.ttf,font/otf,font/ttf" multiple>
     <sp-tags id="fonts"></sp-tags>
   </div>
-  <sp-help-text id="fonts-help"></sp-help-text>
+  <div id="fonts-help" class="fonts-help" role="status"></div>
 </div>
 </div>
 <sp-help-text id="quota" variant="negative" icon hidden></sp-help-text>
@@ -570,6 +577,16 @@ ${LAYERS_SCRIPT}
   var fontsHelp = document.getElementById('fonts-help');
   var fontInput = document.getElementById('font-files');
 
+  // Alert icon (a triangle with an exclamation mark), in the color of the message
+  var WARNING_ICON = '<svg viewBox="0 0 18 18" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8.56 1.29.2 16.26a.5.5 0 0 0 .44.74h16.72a.5.5 0 0 0 .44-.74L9.44 1.29a.5.5 0 0 0-.88 0ZM10 14.75a.25.25 0 0 1-.25.25h-1.5a.25.25 0 0 1-.25-.25v-1.5a.25.25 0 0 1 .25-.25h1.5a.25.25 0 0 1 .25.25Zm0-3a.25.25 0 0 1-.25.25h-1.5a.25.25 0 0 1-.25-.25v-6a.25.25 0 0 1 .25-.25h1.5a.25.25 0 0 1 .25.25Z"/></svg>';
+
+  // Message under the fonts: kind is 'warning' (with the icon), 'negative' (an error) or neutral
+  function setFontsHelp(text, kind) {
+    fontsHelp.className = 'fonts-help' + (kind ? ' ' + kind : '');
+    fontsHelp.innerHTML = (kind === 'warning' ? WARNING_ICON : '') + '<span>' + escapeHtml(text) + '</span>';
+    reportSize();
+  }
+
   function fontUrls() { return fonts.length ? fonts.map(function (f) { return f.url; }) : undefined; }
 
   function renderFonts() {
@@ -577,13 +594,12 @@ ${LAYERS_SCRIPT}
       return '<sp-tag deletable data-index="' + i + '">' + escapeHtml(f.name) + '</sp-tag>';
     }).join('');
     var missing = missingFonts && missingFonts.length;
-    fontsHelp.textContent = fontsUploading ? 'Uploading ' + fontsUploading + ' font file(s)...'
+    setFontsHelp(fontsUploading ? 'Uploading ' + fontsUploading + ' font file(s)...'
       : missing ? 'Fonts of the template not available: ' + missingFonts.join(', ') + '. Add their files, otherwise they are '
         + 'replaced by a default font.'
       : missingFonts ? 'All the fonts of the template are available. The preview is rendered again when a font is added or removed.'
-      : 'Optional: the .otf or .ttf files of fonts of the template that Photoshop does not have. The preview is rendered again with them.';
-    fontsHelp.variant = missing ? 'negative' : 'neutral';
-    reportSize();
+      : 'Optional: the .otf or .ttf files of fonts of the template that Photoshop does not have. The preview is rendered again with them.',
+      missing && !fontsUploading ? 'warning' : '');
   }
 
   // Missing fonts found by a reading of the template made with the fonts of version
@@ -599,8 +615,7 @@ ${LAYERS_SCRIPT}
     if (!template) return;
     var read = templateRead;
     missingFonts = null;
-    fontsHelp.textContent = 'Rendering the preview again with the fonts...';
-    fontsHelp.variant = 'neutral';
+    setFontsHelp('Rendering the preview again with the fonts...');
     if (document.getElementById('preview-img').getAttribute('src')) showPreviewLoader();
     reportSize();
     callTool('read-psd-template', { url: template.url, fonts: fontUrls() })
@@ -620,15 +635,14 @@ ${LAYERS_SCRIPT}
         // The previous preview is shown again
         document.getElementById('preview-loader').hidden = true;
         document.getElementById('stage').hidden = false;
-        fontsHelp.textContent = 'Preview not rendered again: ' + ((error && error.message) || String(error));
-        fontsHelp.variant = 'negative';
+        setFontsHelp('Preview not rendered again: ' + ((error && error.message) || String(error)), 'negative');
         reportSize();
       });
   }
 
   function addFonts(files) {
     var list = Array.prototype.filter.call(files || [], function (file) { return /\\.(otf|ttf)$/i.test(file.name); });
-    if (!list.length) { fontsHelp.textContent = 'Choose .otf or .ttf font files.'; fontsHelp.variant = 'negative'; return; }
+    if (!list.length) { setFontsHelp('Choose .otf or .ttf font files.', 'negative'); return; }
     list = list.slice(0, Math.max(0, 20 - fonts.length));
     fontsUploading += list.length;
     renderFonts();
@@ -640,7 +654,7 @@ ${LAYERS_SCRIPT}
       failed = failed.filter(Boolean);
       updateButton();
       renderFonts();
-      if (failed.length) { fontsHelp.textContent = 'Not uploaded: ' + failed.join(', '); fontsHelp.variant = 'negative'; }
+      if (failed.length) setFontsHelp('Not uploaded: ' + failed.join(', '), 'negative');
       if (failed.length < list.length) checkFonts();
     });
   }
