@@ -914,7 +914,7 @@ function fireflySize (width, height) {
 // the widgets may show): { name, url, width, height }.
 async function generateImage (params, { prompt, width, height }, deadline) {
   const size = fireflySize(width, height)
-  const call = recordApiCall('Firefly API', 'Image generation')
+  const call = recordApiCall('Firefly API', 'Image generation (Firefly)')
   const result = await recorded(call, (async () => {
     call.begin()
     call.request()

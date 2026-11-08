@@ -94,6 +94,21 @@ const SUMS = { generations: { $sum: '$generations' }, variants: { $sum: '$varian
 const numbers = object => Object.fromEntries(Object.entries(object).map(([key, value]) => [key, typeof value === 'string' ? value : num(value)]))
 const withAverage = ({ renders, renderMs, ...rest }) => ({ ...numbers(rest), averageRenderMs: average(renderMs, renders) })
 
+// Names of the kinds of calls kept by earlier versions, read under their current name
+const RENAMED_OPERATIONS = { 'Image generation': 'Image generation (Firefly)', 'Subject detection': 'Crop suggestion', 'Image crop': 'Image crop (Photoshop)' }
+
+// Kinds of calls with their earlier names merged into their current one, the most made first
+function mergeRenamed (operations) {
+  const merged = new Map()
+  operations.forEach(({ _id, api, ...sums }) => {
+    const name = RENAMED_OPERATIONS[_id] || _id
+    const kind = merged.get(name) || { _id: name, api, count: 0, failed: 0, totalMs: 0, requests: 0 }
+    Object.keys(sums).forEach(key => { kind[key] += num(sums[key]) })
+    merged.set(name, kind)
+  })
+  return [...merged.values()].sort((a, b) => b.count - a.count)
+}
+
 // Usage of the activity matching a filter: totals, per day and per kind of API call.
 async function usage (activity, filter) {
   const match = { $match: filter }
@@ -108,7 +123,7 @@ async function usage (activity, filter) {
   return {
     totals: withAverage({ users: users.length, ...Object.fromEntries(Object.keys(SUMS).map(key => [key, total[key]])) }),
     perDay: perDay.map(({ _id, users, ...day }) => withAverage({ day: _id, users: users.length, ...day })),
-    apiCalls: operations.map(({ _id, totalMs, ...op }) => ({ operation: _id, ...numbers(op), averageMs: average(totalMs, num(op.count) - num(op.failed)) }))
+    apiCalls: mergeRenamed(operations).map(({ _id, totalMs, ...op }) => ({ operation: _id, ...numbers(op), averageMs: average(totalMs, num(op.count) - num(op.failed)) }))
   }
 }
 
@@ -169,9 +184,9 @@ async function callAverages (params, userId, operations, days = 30) {
     const averages = async filter => Object.fromEntries((await activity.aggregate([
       { $match: { ...filter, ...period(days) } },
       { $unwind: '$calls' },
-      { $match: { 'calls.operation': { $in: operations } } },
+      { $match: { 'calls.operation': { $in: [...operations, ...Object.keys(RENAMED_OPERATIONS)] } } },
       { $group: { _id: '$calls.operation', count: { $sum: '$calls.count' }, failed: { $sum: '$calls.failed' }, totalMs: { $sum: '$calls.totalMs' } } }
-    ]).toArray()).map(op => [op._id, average(op.totalMs, num(op.count) - num(op.failed))]).filter(([, ms]) => ms))
+    ]).toArray().then(mergeRenamed)).map(op => [op._id, average(op.totalMs, op.count - op.failed)]).filter(([, ms]) => ms))
     const [own, all] = await Promise.all([averages({ userId }), averages({})])
     return Object.fromEntries(operations.filter(op => own[op] || all[op])
       .map(op => [op, own[op] ? { averageMs: own[op], source: 'user' } : { averageMs: all[op], source: 'all' }]))
