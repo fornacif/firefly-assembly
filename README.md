@@ -56,7 +56,7 @@ At the end of each generation, the widget shows a report: the variants generated
 Each task (template reading, crop, image generation, generation of variants) is also recorded in the database of the workspace ([App Builder Database Storage](https://developer.adobe.com/app-builder/docs/guides/app_builder_guides/storage/database), region `emea`, collection `activity`, `actions/mcp-server/history.js`): the user (IMS id and email, read from the IMS profile), its duration, its API calls by kind, and for a generation its template, variants, formats and languages. The activity is kept without limit of time (a document of about 1 KB per task, within the 40 GB of storage of an App Builder pack). The assistant answers with two tools, over the last days or the whole history:
 
 - `get-usage-history`: the generations of the user, with their totals.
-- `get-usage-report`: the usage of all the users (totals, per user, per day, per kind of API call), only for the emails listed in `ADMIN_EMAILS`.
+- `get-usage-report`: the usage of all the users (totals, per user, per day, per kind of API call), only for the IMS user ids listed in `ADMIN_USER_IDS`.
 
 ## Text checks
 
@@ -121,8 +121,8 @@ FIREFLY_SERVICES_API_SCOPES=
 AEM_REPOSITORY_ID=
 # delivery (default, approved assets) or author
 AEM_TIER=
-## Emails of the admins (usage report of all the users), comma-separated
-ADMIN_EMAILS=
+## IMS user ids of the admins (usage report of all the users), comma-separated
+ADMIN_USER_IDS=
 ```
 
 The database needs the **App Builder Data Services** API in the workspace (Developer Console); `aio app use` then adds its server-to-server credentials (`IMS_OAUTH_S2S_*`) to `.env`, which the action gets with the `include-ims-credentials` annotation. `aio app deploy` provisions the database when missing (`database` in `app.config.yaml`).

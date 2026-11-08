@@ -1876,9 +1876,8 @@ function registerTools (server, params) {
     },
     async ({ days }) => {
       try {
-        const admins = String(params.ADMIN_EMAILS || '').split(',').map(email => email.trim().toLowerCase()).filter(Boolean)
-        const email = await userEmail(currentUserId(params), getTokenFromRequest(params)).catch(() => null)
-        if (!email || !admins.includes(email.toLowerCase())) {
+        const admins = String(params.ADMIN_USER_IDS || '').split(',').map(id => id.trim()).filter(Boolean)
+        if (!admins.includes(currentUserId(params))) {
           return errorResult(new Error('The usage report is reserved to the admins of the service. The user can ask for their own history instead.'))
         }
         return jsonResult(await usageReport(params, { days }))

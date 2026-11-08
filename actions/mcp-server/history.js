@@ -43,6 +43,8 @@ async function userEmail (userId, token) {
   const stored = (await stateStore.get(profileKey(userId)).catch(() => undefined))?.value
   if (stored?.email) return stored.email
   const { client_id: clientId, scope } = getUnverifiedClaims(token)
+  // What IMS answered (status and fields, without their values), logged when no email is given
+  const attempts = []
   for (const url of IMS_PROFILE_URLS) {
     const response = await fetch(`${url}?client_id=${encodeURIComponent(clientId || '')}`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -50,13 +52,14 @@ async function userEmail (userId, token) {
     })
     const body = response.ok ? await response.json().catch(() => ({})) : (await response.body?.cancel().catch(() => {}), {})
     // The status and the fields given, without their values
-    console.log(`Email of the user from ${new URL(url).pathname}: HTTP ${response.status}, fields ${Object.keys(body).join(',') || 'none'}, token scopes ${scope}`)
+    attempts.push({ path: new URL(url).pathname, status: response.status, fields: Object.keys(body) })
     const email = body.email || null
     if (email) {
       await stateStore.put(profileKey(userId), { email }, { ttl: PROFILE_TTL_SECONDS }).catch(() => {})
       return email
     }
   }
+  console.warn(`No email for the user from IMS: ${JSON.stringify(attempts)}, token scopes ${scope}`)
   return null
 }
 
