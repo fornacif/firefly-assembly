@@ -9,7 +9,7 @@ const stateStore = require('./state')
 const { getTokenFromRequest, getUnverifiedClaims, getUnverifiedClientId } = require('./validator.js')
 const { createPickerSession, getPickerResult } = require('./aem-picker.js')
 const { zipFiles } = require('./zip.js')
-const { recordActivity, usageHistory, usageReport, isProduction } = require('./history.js')
+const { recordActivity, usageHistory, usageReport } = require('./history.js')
 const spectrumAsset = require('./spectrum-asset.js')
 
 const IMS_TOKEN_URL = 'https://ims-na1.adobelogin.com/ims/token/v3'
@@ -1507,8 +1507,6 @@ const layerEditSchema = z.discriminatedUnion('type', [
   })
 ])
 
-const NOT_KEPT_OUTSIDE_PRODUCTION = 'The usage history is only kept in Production: this server is a test environment.'
-
 function registerTools (server, params) {
   server.registerTool(
     'start-variant-creation',
@@ -1853,7 +1851,6 @@ function registerTools (server, params) {
     },
     async ({ days, limit }) => {
       try {
-        if (!isProduction()) return errorResult(new Error(NOT_KEPT_OUTSIDE_PRODUCTION))
         return jsonResult(await usageHistory(params, currentUserId(params), { days, limit }))
       } catch (error) {
         return errorResult(error)
@@ -1876,7 +1873,6 @@ function registerTools (server, params) {
     },
     async ({ days }) => {
       try {
-        if (!isProduction()) return errorResult(new Error(NOT_KEPT_OUTSIDE_PRODUCTION))
         const admins = String(params.ADMIN_USER_IDS || '').split(',').map(id => id.trim()).filter(Boolean)
         if (!admins.includes(currentUserId(params))) {
           return errorResult(new Error('The usage report is reserved to the admins of the service. The user can ask for their own history instead.'))

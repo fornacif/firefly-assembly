@@ -8,10 +8,6 @@ const { generateAccessToken } = require('@adobe/aio-lib-core-auth')
 const DB_REGION = 'emea'
 const COLLECTION = 'activity'
 
-// Only the activity of Production is kept: its Runtime namespace is <org>-<project>, those of the other workspaces (Stage)
-// end with the name of the workspace
-const isProduction = () => !String(process.env.__OW_NAMESPACE || '').split('-')[2]
-
 let indexed = false
 
 // Runs fn(collection) on a connection to the database, closed after.
@@ -46,9 +42,8 @@ function callsByKind (calls) {
 }
 
 // Keeps the activity of a task: its kind, duration, API calls, and for a generation its variants, template, formats and
-// languages. The activity is kept without limit of time, in Production only.
+// languages. The activity is kept without limit of time.
 async function recordActivity (params, task, { ok, durationMs, calls, result }) {
-  if (!isProduction()) return
   const at = new Date()
   const day = at.toISOString().slice(0, 10)
   const renders = calls.filter(call => call.operation === 'Variant render' && call.ok)
@@ -157,4 +152,4 @@ async function usageReport (params, { days }) {
   })
 }
 
-module.exports = { recordActivity, usageHistory, usageReport, isProduction }
+module.exports = { recordActivity, usageHistory, usageReport }
