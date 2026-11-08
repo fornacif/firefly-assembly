@@ -42,6 +42,11 @@ const VIEWS = {
   variant: { uri: 'ui://psd-variant/app.html', name: 'PSD Variant App', description: 'Variant preview and download', html: getVariantViewHtml },
   usage: { uri: 'ui://usage/app.html', name: 'Usage App', description: 'Dashboard of the usage of the service', html: getUsageViewHtml }
 }
+// Version of each view in its URI (hash of its HTML): the hosts keep the resources they read by URI, a changed view gets a new one
+for (const view of Object.values(VIEWS)) {
+  const version = crypto.createHash('sha256').update(view.html('')).digest('hex').slice(0, 8)
+  view.uri = view.uri.replace(/\/app\.html$/, `/${version}/app.html`)
+}
 
 const WORKFLOW = `Variant creation workflow. When the user asks to create variants (or versions, adaptations, localizations...) of a banner, ad, visual, social post or any PSD template, ALWAYS follow these steps in order, one at a time, without skipping any:
 1. Start: call start-variant-creation (pass variantCount and languages if the user already gave them). The user sets the number of variants per language, the languages, uploads the PSD template (from their computer or AEM Assets) and picks the layers to vary in the widget, then says to continue. The widget gives you the template name and URL and the selected layers, with their original texts and frames, in your context (or through get-widget-result, see below): use them. Never ask for the file or its URL in chat.
