@@ -53,7 +53,7 @@ const WORKFLOW = `Variant creation workflow. When the user asks to create varian
 4. Images: done in the second step of edit-variant-texts when text layers were selected too. Otherwise (smart object layers only), call upload-variant-images ONCE with the labels of the variants without their languages (one row per variant, e.g. "Winter sale" for "Winter sale FR" and "Winter sale DE": all the languages of a variant share its images) and the selected smart object layers (id, name and frame width and height from get-psd-manifest), so the user drops (or picks from AEM Assets, or generates with Firefly) one image per variant and layer in a grid and adjusts how each one is cropped to its frame. When the user has no images or wants generated ones, pass prompts (one per variant and layer, in English, from the brief): each slot then offers to generate its image, with the prompt that the user can edit. When the user confirms, the widget gives you the URL, size and crop of each image the same way. Never ask for image URLs in chat. Then wait.
 5. Generation: as soon as the images are confirmed (or the texts, without smart object layers), call create-variant ONCE with all variants (up to ${MAX_VARIANTS}), passing for each image the crop chosen in the grid (each language of a variant gets the images and crops of its row of the grid, and its label in the grid as group) and for each variant its language and its group (its label without its language, also without images), and the fileNamePattern and fonts given by the start widget, if any; do not recap the variants or ask for another approval. The widget shows the generated files with download buttons.
 6. Review: right after create-variant, in the same turn and without asking the user, check the texts of the generated files: call review-variants with the task id create-variant gives (it waits for the generation; while it answers that it is not finished, call it again): it shows you each visual with the texts sent. Look at each edited text on its visual: cut or past an edge of the visual or of its panel, letters or words hidden, overlapping another element (logo, image, other text) more than in the template, too small or hard to read on its background, lines broken badly, or not the text sent. Then call report-variant-issues with every variant reviewed (no issues for those that are fine; when review-variants shows the variants in several parts, after each part): per problem, the layer, a short description, the fix you propose (e.g. Reduce the font size of "headline" to 85%.) and the rectangle of the text on the visual, in pixels of the canvas. The widget marks each problem on the visual, with your proposed fix. Each variant has a field of changes, pre-filled with its proposed fixes, that the user edits, then sends to you: nothing is generated again before. Do not list the problems in chat: briefly say that the widget shows them and takes the changes. The user can also click a text on a visual to write a change for it in its field. When the user asks for changes (in the widget or in chat), make exactly the changes asked, nothing else: change a font size only when asked; to change the words of a text, rewrite it as asked (e.g. twice as many words, at most two lines) and keep its font size, even if it may not fit; then call create-variant again with the variants to change only, with the same file names and the same edits except the changes (a font size of N% is fontScale N/100): with previousTaskId, the task id of the generation changed: the new widget shows these variants generated again, and the others of that generation unchanged. The texts are checked once generated: do not adjust them beforehand. If a text the user asked for does not fit, you may then suggest a fix (a smaller font size or a shorter text), without applying it.
-Changes after generation: to re-crop or swap images, call upload-variant-images again with images pre-filled from the previous confirmation (never ask to upload again the images you already have, unless their URLs expired); to change texts, call create-variant again with the variants to change only (same file names, groups, languages, fileNamePattern and fonts), with previousTaskId.
+Changes after generation: to re-crop or swap images, call upload-variant-images again with images pre-filled from the previous confirmation (never ask to upload again the images you already have, unless their URLs expired); to change texts, call create-variant again with the variants to change only (same file names, groups, languages, fileNamePattern and fonts), with previousTaskId. To get other formats of variants already generated (e.g. PSD after JPEG), call create-variant with these variants unchanged (same file names and edits), only the new formats, and previousTaskId: each variant keeps its earlier files in the widget and the ZIP.
 Widgets send their result (template URL, layers, texts, images) in your context and end the user's message with a reference in parentheses like "(r7k2p9)": if you do not have that result in your context, call get-widget-result with this ref before going on; never ask the user to redo a step because a result seems missing.
 The URLs from the widgets are temporary presigned URLs: use them in tool calls, but never show them to the user. Reply in the user's language.`
 
@@ -1113,7 +1113,7 @@ async function createVariants (params, { templateUrl, formats, fonts, variants, 
         fileName: fileNames[index]
       })
       mark(index, 'render')
-      report(index, result)
+      report(index, { ...result, edits: editsHash(variant.layers) })
       return progress[index]
     } catch (error) {
       mark(index, 'failed')
@@ -1263,14 +1263,16 @@ const TASKS = {
   async variants (params, task, update, deadline) {
     const { args } = task
     const started = Date.now()
-    const variants = await createVariants(params, {
+    // The files of the earlier generation kept by the variants generated again in other formats only
+    const withAdded = list => list.map(v => args.addedFiles?.[v.fileName] && v.files ? { ...v, files: [...v.files, ...args.addedFiles[v.fileName]] } : v)
+    const variants = withAdded(await createVariants(params, {
       templateUrl: args.templateUrl,
       formats: args.formats,
       fonts: args.fonts,
       variants: args.variants,
       deadline,
-      onProgress: list => update({ partial: { templateUrl: args.templateUrl, variants: list } })
-    })
+      onProgress: list => update({ partial: { templateUrl: args.templateUrl, variants: withAdded(list) } })
+    }))
     // Reviewed by the assistant: with the layers of the template and the texts sent, for review-variants and report-variant-issues
     const review = variants.some(v => !v.error) &&
       args.variants.some(variant => variant.layers.some(layer => layer.type === 'text_layer'))
@@ -1312,19 +1314,39 @@ async function reviewData (params, args) {
 // Problems reported by the assistant on a generation (report-variant-issues), read by its widget
 const reviewKey = (userId, taskId) => `review-${shortHash(userId)}-${taskId}`
 
+// Hash of the edits of a variant, whatever the order of its layers and of their keys: a variant generated again with the same
+// edits (in other formats) keeps the files of the earlier one
+function editsHash (layers) {
+  const stable = value => Array.isArray(value) ? value.map(stable)
+    : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, stable(value[key])])) : value
+  return shortHash(JSON.stringify(stable([...layers].sort((a, b) => a.id - b.id))))
+}
+
 // Variants of an earlier generation of the user not generated again (file names not in fileNames), shown as they are by the
 // widget of the new one, with the problems found on them, and in its ZIP: { kept: [variant, kept: true], order: file names in
 // the order of the earlier generation, the new variants in place of the earlier ones, others after }.
 async function keptVariants (params, previousTaskId, fileNames) {
-  if (!previousTaskId || !TASK_ID.test(String(previousTaskId))) return { kept: [] }
+  if (!previousTaskId || !TASK_ID.test(String(previousTaskId))) return { kept: [], earlier: [] }
   const previous = await readTask(params, previousTaskId).catch(() => null)
-  if (previous?.status !== 'done') return { kept: [] }
+  if (previous?.status !== 'done') return { kept: [], earlier: [] }
   const issues = (await stateStore.get(reviewKey(currentUserId(params), previousTaskId)).catch(() => undefined))?.value || {}
   const earlier = [...(previous.result.kept || []), ...(previous.result.variants || [])]
   const kept = earlier.filter(v => !v.error && !v.pending && !fileNames.includes(v.fileName))
     .map(v => ({ ...v, kept: true, ...(v.textIssues || issues[v.fileName] ? { textIssues: v.textIssues || issues[v.fileName] } : {}) }))
   const earlierOrder = previous.result.order || earlier.map(v => v.fileName)
-  return { kept, order: [...earlierOrder, ...fileNames.filter(name => !earlierOrder.includes(name))] }
+  return { kept, earlier, order: [...earlierOrder, ...fileNames.filter(name => !earlierOrder.includes(name))] }
+}
+
+// Files of the earlier generation of variants generated again with the same edits, in formats not rendered again
+// ({ fileName: [file] }): only the format changes, so they are still those of the variant.
+function earlierFiles (earlier = [], variants, formats) {
+  return Object.fromEntries(variants.map(variant => {
+    const before = earlier.find(v => v.fileName === variant.fileName)
+    if (!before || before.edits !== editsHash(variant.layers)) return null
+    const rendered = variant.formats || formats
+    const files = (before.files || []).filter(file => !rendered.includes(file.format))
+    return files.length ? [variant.fileName, files] : null
+  }).filter(Boolean))
 }
 
 // A generation of the current user, done and to be reviewed by the assistant; throws otherwise.
@@ -1674,14 +1696,18 @@ function registerTools (server, params) {
         const warnings = findSharedImages(variantList).map(shared => `\nWarning: variants ${shared.variants.join(', ')} use the same image for layer ` +
           `${shared.layerId}. If the user chose different images in upload-variant-images, check the image of each variant in its ` +
           'confirmation (one line per variant and layer) and call create-variant again with the right URLs and crops.').join('')
-        const { kept, order } = await keptVariants(params, previousTaskId, uniqueFileNames(variantList))
+        const callFormats = [...new Set(formats || [format || 'jpeg'])]
+        const fileNames = uniqueFileNames(variantList)
+        const { kept, earlier, order } = await keptVariants(params, previousTaskId, fileNames)
+        const addedFiles = earlierFiles(earlier, variantList.map((variant, index) => ({ ...variant, fileName: fileNames[index] })), callFormats)
         const taskId = await startTask(params, 'variants', {
           templateUrl,
-          formats: [...new Set(formats || [format || 'jpeg'])],
+          formats: callFormats,
           variants: variantList,
           fonts,
           warnings,
-          ...(kept.length ? { kept, order } : {})
+          ...(kept.length ? { kept, order } : {}),
+          ...(Object.keys(addedFiles).length ? { addedFiles } : {})
         })
         return {
           content: [{
