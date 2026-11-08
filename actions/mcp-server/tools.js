@@ -972,6 +972,20 @@ async function cropToFrameCenter (params, imageUrl, frame) {
   return cropImage(params, imageUrl, cropBounds(image, ratio, null))
 }
 
+// Crops are also kept in App Builder state for 12 hours (half the life of their URL), so that the tasks run in other containers
+// (another generation, a variant generated again from the widget) do not crop the same image again.
+const CROP_TTL_SECONDS = 12 * 3600
+const cropKey = key => `crop-${shortHash(key)}`
+
+async function sharedCrop (key, crop) {
+  const stored = (await stateStore.get(cropKey(key)).catch(() => undefined))?.value
+  if (stored) return stored
+  const imageUrl = await crop()
+  await stateStore.put(cropKey(key), imageUrl, { ttl: CROP_TTL_SECONDS })
+    .catch(error => console.warn(`Crop not kept in state: ${error.message}`))
+  return imageUrl
+}
+
 // Crops a smart object image so that Photoshop's default "fit" placement fills its frame exactly: with the crop chosen by the
 // user when given, otherwise centered (unless fit is "fit"). Crops are cached: one done for several variants, or in an earlier
 // call, is not done again.
@@ -980,9 +994,9 @@ function cropLayerImage (params, manifest, layer) {
   const frame = layer.crop ? null : findLayer(manifest.layers, layer.id)?.referenceFrame
   if (!layer.crop && !frame) return layer
   const key = `${layer.imageUrl}|${JSON.stringify(layer.crop || boundsSize(frame))}`
-  return cropCache(key, () => layer.crop
+  return cropCache(key, () => sharedCrop(key, () => layer.crop
     ? cropImage(params, layer.imageUrl, layer.crop)
-    : cropToFrameCenter(params, layer.imageUrl, boundsSize(frame)))
+    : cropToFrameCenter(params, layer.imageUrl, boundsSize(frame))))
     .then(imageUrl => ({ ...layer, imageUrl }))
 }
 
