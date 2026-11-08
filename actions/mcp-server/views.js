@@ -483,6 +483,7 @@ ${LAYERS_CSS}
   </div>
 </sp-dropzone>
 <sp-progress-bar id="progress" label="Upload" progress="0" side-label hidden></sp-progress-bar>
+<sp-help-text id="estimate" hidden></sp-help-text>
 </div>
 <div data-step="2" hidden>
   <div class="subtle intro" id="layers-intro">Click the numbered zones of the template, or the list, to pick the layers to change in the variants.</div>
@@ -496,7 +497,6 @@ ${LAYERS_CSS}
   </div>
   <div id="fonts-help" class="fonts-help" role="status"></div>
 </div>
-<sp-help-text id="estimate" hidden></sp-help-text>
 </div>
 <sp-help-text id="quota" variant="negative" icon hidden></sp-help-text>
 <div class="actions">
@@ -734,31 +734,34 @@ ${LAYERS_SCRIPT}
     updateEstimate();
   }
 
-  // Estimate of the generation, from the layers picked: one render per variant, and for each image (the languages of a
-  // variant share its images) a crop suggestion in the grid and a crop. Its time is that of the jobs run at once by
-  // the generation, from the average times of the calls (get-generation-estimate).
+  // Estimate of the generation, shown with the number of variants: one render per variant, and when the template has image
+  // layers, for each image if they vary (the languages of a variant share its images) a crop suggestion in the grid and a crop.
+  // Its time is that of the jobs run at once by the generation, from the average times of the calls (get-generation-estimate).
   var estimate = null;
   callTool('get-generation-estimate').then(function (result) { estimate = result; updateEstimate(); }, function () {});
   function duration(ms) {
     var s = Math.max(1, Math.round(ms / 1000));
-    return s < 60 ? 'about ' + s + ' s' : 'about ' + Math.round(s / 60) + ' min';
+    return 'about ' + (s < 60 ? s + ' s' : Math.round(s / 60) + ' min');
   }
+  function plural(n, word) { return n + ' ' + word + (n > 1 ? 's' : ''); }
   function updateEstimate() {
     var estimateText = document.getElementById('estimate');
     var n = total();
-    var imageLayers = template ? selected().filter(function (l) { return l.type === 'smart_object_layer'; }).length : 0;
-    estimateText.hidden = !estimate || !layerCount || !n || n > ${MAX_VARIANTS_UI};
+    estimateText.hidden = !estimate || !n || n > ${MAX_VARIANTS_UI};
     if (estimateText.hidden) return reportSize();
     var avg = function (operation) { return estimate.averages[operation].averageMs; };
+    var waitMs = function (images) {
+      var crop = images ? avg('Image crop (Photoshop)') : 0;
+      return Math.max(avg('Variant render') + crop, (n * avg('Variant render') + images * avg('Image crop (Photoshop)')) / estimate.parallelJobs);
+    };
+    var imageLayers = template ? layers.filter(function (l) { return l.type === 'smart_object_layer'; }).length : 0;
     var images = (count() || 0) * imageLayers;
-    var jobsMs = n * avg('Variant render') + images * avg('Image crop (Photoshop)');
-    var waitMs = Math.max(avg('Variant render') + (images ? avg('Image crop (Photoshop)') : 0), jobsMs / estimate.parallelJobs);
     var sources = Object.keys(estimate.averages).map(function (operation) { return estimate.averages[operation].source; });
     var basis = sources.indexOf('default') >= 0 ? 'typical times' : sources.indexOf('all') >= 0 ? 'the average times of the service' : 'your average times';
-    estimateText.textContent = 'Estimate: ' + (n + images) + ' Photoshop API call' + (n + images > 1 ? 's' : '') + ' ('
-      + n + ' render' + (n > 1 ? 's' : '') + (images ? ', ' + images + ' image crop' + (images > 1 ? 's' : '') : '') + ')'
-      + (images ? ' and ' + images + ' crop suggestion' + (images > 1 ? 's' : '') + ' (Firefly Services)' : '')
-      + '; the generation takes ' + duration(waitMs) + ' once the ' + (images ? 'images are' : 'texts are') + ' confirmed (from ' + basis + ').';
+    estimateText.textContent = 'Estimate: ' + plural(n, 'Photoshop render') + ', ' + duration(waitMs(0))
+      + (images ? '; if ' + (imageLayers > 1 ? 'the ' + imageLayers + ' image layers of the template vary' : 'the image layer of the template varies') + ', ' + plural(images, 'image crop')
+        + ' and ' + plural(images, 'crop suggestion') + ' more, ' + duration(waitMs(images)) + ' in all' : '')
+      + ' (from ' + basis + ').';
     reportSize();
   }
 
