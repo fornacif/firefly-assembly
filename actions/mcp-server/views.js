@@ -2433,6 +2433,7 @@ const REPORT_CSS = `
   .table td { border-bottom: 1px solid var(--spectrum-gray-200); padding: 6px 8px 6px 0; vertical-align: top; }
   .table .n { text-align: right; }
   .table-wrap { overflow-x: auto; }
+  .env-badge { margin-left: var(--spectrum-spacing-100); padding: 0 6px; border-radius: 4px; background: var(--spectrum-gray-200); font-size: 11px; font-weight: bold; line-height: 18px; text-transform: uppercase; vertical-align: middle; }
 `
 
 // Helpers of the dashboards: durations, averages and stat tiles
@@ -3242,7 +3243,8 @@ ${REPORT_SCRIPT}
   function show(data) {
     var all = data.scope === 'all';
     var totals = data.totals || {};
-    document.getElementById('title').textContent = all ? 'Usage of all the users' : 'My usage';
+    document.getElementById('title').innerHTML = escapeHtml(all ? 'Usage of all the users' : 'My usage')
+      + (data.env ? '<span class="env-badge">' + escapeHtml(data.env) + '</span>' : '');
     var firstDay = ((data.perDay || [])[0] || {}).day;
     document.getElementById('period').textContent = data.days ? 'Last ' + data.days + ' days' : 'Whole history' + (firstDay ? ', since ' + dayLabel(firstDay) : '');
     if (!totals.generations && !totals.apiCalls) {

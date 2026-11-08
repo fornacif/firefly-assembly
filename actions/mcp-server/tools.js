@@ -1841,8 +1841,9 @@ function registerTools (server, params) {
       title: 'Get Usage History',
       description: 'Returns the generations of variants of the current user over the last days (or since the start), the ' +
         'latest first: date, template, variants generated and failed, time taken, API calls, average render time, formats and ' +
-        'languages, with their totals, per day and per kind of API call. Call it when the user asks what they generated, or how much ' +
-        'they used the service. A widget shows it as a dashboard: do not repeat it, briefly comment on it.',
+        'languages, with their totals, per day and per kind of API call, in the environment of this server (env: Production, Stage...: ' +
+        'each one keeps its own history). Call it when the user asks what they generated, or how much they used the service. A widget ' +
+        'shows it as a dashboard: do not repeat it, briefly comment on it, naming the environment.',
       inputSchema: {
         days: z.number().int().min(1).optional().describe('Period, in days up to today; omit it for the whole history'),
         limit: z.number().int().min(1).max(200).default(50).describe('Most generations listed')
@@ -1865,7 +1866,8 @@ function registerTools (server, params) {
       description: 'Returns the usage of the service by all the users over the last days (or since the start): totals ' +
         '(users, generations, variants, failures, API calls, average render time), per user (IMS user id), per day, and per kind of API ' +
         'call (count, failures, average execution time). Reserved to the admins of the service. Call it when the user asks for ' +
-        'the overall usage. A widget shows it as a dashboard: do not repeat it, briefly comment on it.',
+        'the overall usage. Covers the environment of this server only (env: Production, Stage...: each one keeps its own history). A ' +
+        'widget shows it as a dashboard: do not repeat it, briefly comment on it, naming the environment.',
       inputSchema: {
         days: z.number().int().min(1).optional().describe('Period, in days up to today; omit it for the whole history')
       },

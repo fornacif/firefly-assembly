@@ -8,6 +8,13 @@ const { generateAccessToken } = require('@adobe/aio-lib-core-auth')
 const DB_REGION = 'emea'
 const COLLECTION = 'activity'
 
+// Environment of the workspace, from its Runtime namespace (<org>-<project>-<workspace>, without workspace for Production):
+// each workspace has its own database, the dashboards say which one they show
+function environment () {
+  const workspace = String(process.env.__OW_NAMESPACE || '').split('-')[2]
+  return workspace ? workspace.charAt(0).toUpperCase() + workspace.slice(1) : 'Production'
+}
+
 let indexed = false
 
 // Runs fn(collection) on a connection to the database, closed after.
@@ -118,6 +125,7 @@ async function usageHistory (params, userId, { days, limit }) {
     ])
     return {
       scope: 'user',
+      env: environment(),
       days: days || null,
       ...summary,
       generations: generations.map(g => ({
@@ -145,6 +153,7 @@ async function usageReport (params, { days }) {
     ])
     return {
       scope: 'all',
+      env: environment(),
       days: days || null,
       ...summary,
       users: users.map(({ _id, lastAt, ...user }) => withAverage({ user: _id, lastActivity: isoDate(lastAt), ...user }))
