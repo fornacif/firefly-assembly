@@ -2524,12 +2524,7 @@ ${STEPS_CSS}
   .op-track { grid-column: 1 / -1; position: relative; height: 10px; }
   .op-range { position: absolute; top: 4px; height: 2px; background: var(--spectrum-gray-400); border-radius: 1px; }
   .op-bar { position: absolute; top: 0; left: 0; height: 10px; min-width: 2px; background: var(--spectrum-accent-background-color-default); border-radius: 0 4px 4px 0; }
-  /* Renders of the last generation, in the order they started, against the average render since the import */
-  .renders { position: relative; display: flex; align-items: flex-end; gap: 2px; height: 96px; border-bottom: 1px solid var(--spectrum-gray-300); }
-  .render-bar { flex: 1; max-width: 32px; min-height: 2px; background: var(--spectrum-accent-background-color-default); border-radius: 4px 4px 0 0; }
-  .render-bar.failed { background: var(--spectrum-gray-400); }
-  .render-bar:hover, .op:hover .op-bar { background: var(--spectrum-accent-background-color-hover, var(--spectrum-accent-background-color-default)); }
-  .average-line { position: absolute; left: 0; right: 0; border-top: 2px dashed var(--spectrum-neutral-subdued-content-color-default); pointer-events: none; }
+  .op:hover .op-bar { background: var(--spectrum-accent-background-color-hover, var(--spectrum-accent-background-color-default)); }
 `, `
 <h2 class="heading">Generated variants</h2>
 <ol class="steps single" aria-label="Step"><li data-for="5" class="current"><span class="step-kicker">Step 5</span><span class="step-title">Review and download</span></li></ol>
@@ -2980,7 +2975,7 @@ ${STEPS_CSS}
 
 
   // Report of the last generation (its task result): variants generated, time taken, and the API calls since the template
-  // was imported, with their execution times by kind and the renders of the generation against the average render
+  // was imported, with their execution times by kind
   var reportEl = document.getElementById('report');
 
   function seconds(ms) {
@@ -3002,9 +2997,8 @@ ${STEPS_CSS}
     if (!report) return;
     var calls = report.calls || [];
     var isRender = function (c) { return c.operation === 'Variant render'; };
-    var renders = calls.filter(function (c) { return c.generation && isRender(c); });
     var allRenders = calls.filter(function (c) { return isRender(c) && c.ok; }).map(function (c) { return c.ms; });
-    var ownRenders = renders.filter(function (c) { return c.ok; }).map(function (c) { return c.ms; });
+    var ownRenders = calls.filter(function (c) { return c.generation && isRender(c) && c.ok; }).map(function (c) { return c.ms; });
     var requests = calls.reduce(function (total, c) { return total + (c.requests || 0); }, 0);
     var since = report.sinceImport ? 'since the template was imported' : 'of this generation';
 
@@ -3027,18 +3021,6 @@ ${STEPS_CSS}
         + '<span class="op-bar" style="width:' + (average(k.times) / longest * 100) + '%"></span></div></div>';
     }).join('');
 
-    var rendersHtml = '';
-    if (renders.length) {
-      var top = Math.max.apply(null, renders.map(function (c) { return c.ms; }).concat([average(allRenders)])) || 1;
-      rendersHtml = '<div class="chart"><span class="chart-title">Renders of this generation</span><div class="renders">'
-        + renders.map(function (c, i) {
-          return '<span class="render-bar' + (c.ok ? '' : ' failed') + '" style="height:' + (c.ms / top * 100) + '%" title="Render ' + (i + 1) + ': '
-            + seconds(c.ms) + (c.ok ? '' : ' (failed)') + '"></span>';
-        }).join('')
-        + (allRenders.length ? '<span class="average-line" style="bottom:' + (average(allRenders) / top * 100) + '%"></span>' : '')
-        + '</div><span class="chart-note">Dashed line: average render ' + since + ' (' + seconds(average(allRenders)) + ')</span></div>';
-    }
-
     reportEl.innerHTML = '<div class="report-title">Report of the last generation</div><div class="tiles">'
       + tileHtml('Variants generated', String(report.variants), report.failed ? report.failed + ' failed' : '')
       + tileHtml('Generation time', seconds(report.durationMs), '')
@@ -3046,7 +3028,7 @@ ${STEPS_CSS}
       + (ownRenders.length ? tileHtml('Average render', seconds(average(ownRenders)), seconds(average(allRenders)) + ' ' + since) : '')
       + '</div>'
       + (calls.length ? '<div class="charts"><div class="chart"><span class="chart-title">Execution time by call</span>' + opsHtml
-        + '<span class="chart-note">Bar: average time; line: from the fastest to the slowest call</span></div>' + rendersHtml + '</div>' : '');
+        + '<span class="chart-note">Bar: average time; line: from the fastest to the slowest call</span></div></div>' : '');
     reportEl.hidden = false;
   }
 
