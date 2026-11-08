@@ -2587,23 +2587,9 @@ function getVariantViewHtml (scriptUrl) {
   .preview .visual img { max-height: 640px; cursor: zoom-out; }
 ${STEPS_CSS}
   .steps.single { grid-template-columns: 1fr; }
-  /* Texts of the variant on its enlarged visual, to click to edit them */
+  /* Texts of the variant on its enlarged visual, to click to write a change for them */
   .edit-zone { position: absolute; box-sizing: border-box; border: 1px dashed transparent; border-radius: 2px; cursor: text; }
-  .edit-zone:hover, .edit-zone.selected { border-color: var(--spectrum-accent-background-color-default); background: rgba(20, 115, 230, 0.08); }
-  .editor {
-    display: flex; flex-direction: column; gap: var(--spectrum-spacing-200);
-    margin-top: var(--spectrum-spacing-300); padding: var(--spectrum-spacing-300);
-    background: var(--spectrum-background-layer-2-color); border: 1px solid var(--spectrum-gray-200); border-radius: var(--spectrum-corner-radius-500);
-  }
-  .editor-title { font-weight: var(--spectrum-bold-font-weight); }
-  .editor textarea { min-height: 64px; }
-  .editor-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spectrum-spacing-200); }
-  .editor-row label { font-size: var(--spectrum-font-size-75); color: var(--spectrum-neutral-subdued-content-color-default); }
-  .editor-row input {
-    width: 72px; font: inherit; padding: var(--spectrum-spacing-75) var(--spectrum-spacing-100);
-    color: var(--spectrum-neutral-content-color-default); background: var(--spectrum-gray-100);
-    border: 1px solid transparent; border-radius: var(--spectrum-corner-radius-100);
-  }
+  .edit-zone:hover { border-color: var(--spectrum-accent-background-color-default); background: rgba(20, 115, 230, 0.08); }
   .card-warning[data-layer] { cursor: pointer; }
   .card-warning[data-layer]:hover { text-decoration: underline; }
 ${REPORT_CSS}`, `
@@ -2618,17 +2604,7 @@ ${REPORT_CSS}`, `
     <span class="downloads" id="preview-downloads"></span>
   </div>
   <div id="preview-visual"></div>
-  <div class="subtle" id="edit-hint" hidden>Click a text on the visual to edit it.</div>
-  <div class="editor" id="editor" hidden>
-    <div class="editor-title" id="editor-title"></div>
-    <textarea class="change-request" id="editor-text" aria-label="Text"></textarea>
-    <div class="editor-row">
-      <label for="editor-size">Font size (% of the template)</label>
-      <input type="number" id="editor-size" min="50" max="150" step="5">
-      <sp-button size="s" variant="accent" id="editor-apply">Generate again</sp-button>
-      <sp-button size="s" variant="secondary" treatment="outline" id="editor-cancel">Cancel</sp-button>
-    </div>
-  </div>
+  <div class="subtle" id="edit-hint" hidden>Click a text on the visual to write a change for it.</div>
 </div>
 <div class="grid" id="grid"></div>
 <div class="actions" id="fix-actions" hidden>
@@ -2655,14 +2631,10 @@ ${REPORT_SCRIPT}
   // Task of the generation, whose files are zipped by Download all
   var generationTaskId = null;
   var zipping = false;
-  // Arguments of the create-variant call, the variants in the order of the widget: edited and generated again in place
-  var toolArgs = null;
-  // Text layers of the template that can be edited on the visuals ({ id, name, area }), from the review data of the generation
+  // Text layers of the template ({ id, name, area, text, alignment }), from the review data of the generation, and the texts
+  // sent for each variant generated ({ fileName: [{ layerId, text, fontScale }] }): where to click a text on the visuals
   var textLayers = [];
-  // Generations of the variants generated again from the widget, for Download all, and the edits made, for the model
-  var replacementTaskIds = [];
-  var directEdits = {};
-  var editing = null;
+  var sentTexts = {};
   var FORMAT_LABELS = { png: 'PNG', jpeg: 'JPEG', psd: 'PSD' };
   // Download icon (arrow into a tray), in the text color of the button
   var DOWNLOAD_ICON = '<svg slot="icon" viewBox="0 0 18 18" width="16" height="16" aria-hidden="true">'
@@ -2723,7 +2695,7 @@ ${REPORT_SCRIPT}
     if (v.error) return '<div class="card">' + cardHead(v) + '<div class="card-error">' + escapeHtml(v.error) + '</div></div>';
     // Text problems found on the generated file, numbered as their marks on the visual
     var problems = (v.textIssues || []).map(function (issue, k) {
-      return '<div class="card-warning"' + (editable(i, issue.layerId) ? ' data-index="' + i + '" data-layer="' + issue.layerId + '" title="Edit this text"' : '')
+      return '<div class="card-warning"' + (clickable(i, issue.layerId) ? ' data-index="' + i + '" data-layer="' + issue.layerId + '" title="Write a change for this text"' : '')
         + '><span class="issue-number">' + (k + 1) + '</span>'
         + escapeHtml('"' + issue.layerName + '" ' + issue.problems.join(', ')) + '</div>';
     }).join('')
@@ -2793,7 +2765,7 @@ ${REPORT_SCRIPT}
     zipping = true;
     updateFixActions();
     setStatus('Preparing the ZIP archive...', false, true);
-    callTool('create-variants-zip', { taskId: generationTaskId, replacementTaskIds: replacementTaskIds })
+    callTool('create-variants-zip', { taskId: generationTaskId })
       .then(function (started) { return waitForTask(started.taskId); })
       .then(function (zip) {
         render();
@@ -2849,7 +2821,6 @@ ${REPORT_SCRIPT}
     var open = index >= 0;
     preview.classList.toggle('open', open);
     grid.style.display = open ? 'none' : '';
-    closeEditor();
     if (open) {
       previewVisual.innerHTML = visualHtml(variants[index], index, 640);
       addEditZones(index);
@@ -2860,16 +2831,16 @@ ${REPORT_SCRIPT}
     reportSize();
   }
 
-  // Edit of a text layer of a variant, as sent to create-variant (undefined when it cannot be edited in the widget)
-  function layerEdit(index, layerId) {
-    var variant = toolArgs && toolArgs.variants && toolArgs.variants[index];
-    return variant && variant.layers.filter(function (l) { return l.id === layerId && l.type === 'text_layer'; })[0];
+  // Text sent for a layer of a variant ({ layerId, text, fontScale }), undefined for a text left as in the template or a variant
+  // unchanged from an earlier generation
+  function sentText(index, layerId) {
+    return (sentTexts[variants[index].fileName] || []).filter(function (t) { return t.layerId === layerId; })[0];
   }
 
-  function editable(index, layerId) {
+  // A text of a variant can be clicked, to write a change for it, when the layer is known and the variant shown
+  function clickable(index, layerId) {
     var v = variants[index];
-    return Boolean(v && !v.pending && !v.error && v.canvas && layerEdit(index, layerId)
-      && textLayers.some(function (l) { return l.id === layerId; }));
+    return Boolean(v && !v.pending && !v.error && v.canvas && textLayers.some(function (l) { return l.id === layerId; }));
   }
 
   function linesOf(text) { return String(text || '').split(/\\r\\n|\\r|\\n/); }
@@ -2882,11 +2853,11 @@ ${REPORT_SCRIPT}
   function textArea(v, layer, edit) {
     var a = layer.area, c = v.canvas;
     var left = a.left, top = a.top, right = a.left + a.width, bottom = a.top + a.height;
-    var before = linesOf(layer.text), after = linesOf(edit.text);
+    var before = linesOf(layer.text), after = linesOf(edit ? edit.text : layer.text);
     if (layer.text != null && longestLine(before) > 0) {
       var lineCount = after.length === 1 && before.length > 1 ? before.length : after.length;
       var longest = after.length === 1 && before.length > 1 ? Math.ceil(after[0].trim().length / before.length) : longestLine(after);
-      var scale = edit.fontScale || 1;
+      var scale = (edit && edit.fontScale) || 1;
       var width = Math.max(a.width, a.width * longest / longestLine(before) * scale);
       var height = Math.max(a.height, a.height * lineCount / before.length * scale);
       var align = String(layer.alignment || 'left');
@@ -2906,107 +2877,44 @@ ${REPORT_SCRIPT}
     return { left: left, top: top, width: right - left, height: bottom - top };
   }
 
-  // The texts of the variant that can be edited, as zones over its enlarged visual (where the text is drawn, estimated)
+  // The texts of the variant, as zones over its enlarged visual (where the text is drawn, estimated), to click to write a change
   function addEditZones(index) {
     var v = variants[index];
     var box = previewVisual.querySelector('.visual');
-    var zones = textLayers.filter(function (l) { return l.area && editable(index, l.id); });
+    var zones = textLayers.filter(function (l) { return l.area && clickable(index, l.id); });
     document.getElementById('edit-hint').hidden = !zones.length;
     if (!box) return;
     zones.forEach(function (l) {
-      var a = textArea(v, l, layerEdit(index, l.id)), c = v.canvas;
+      var a = textArea(v, l, sentText(index, l.id)), c = v.canvas;
       var zone = document.createElement('div');
       zone.className = 'edit-zone';
       zone.setAttribute('data-layer', l.id);
-      zone.title = 'Edit "' + l.name + '"';
+      zone.title = 'Write a change for "' + l.name + '"';
       zone.style.cssText = 'left:' + a.left / c.width * 100 + '%;top:' + a.top / c.height * 100 + '%;width:'
         + a.width / c.width * 100 + '%;height:' + a.height / c.height * 100 + '%';
       box.appendChild(zone);
     });
   }
 
-  // Editor of a text of the enlarged variant: its words and its font size, generated again in place
-  function openEditor(layerId) {
-    var edit = layerEdit(current, layerId);
-    if (!edit) return;
+  // Shortcut to write a change for a text: back to the grid, in the changes of its variant, on a line starting with the name of
+  // its layer (added unless there already), the caret after it
+  function writeChange(index, layerId) {
+    var v = variants[index];
     var layer = textLayers.filter(function (l) { return l.id === layerId; })[0];
-    editing = { index: current, layerId: layerId };
-    document.getElementById('editor-title').textContent = 'Edit "' + (layer ? layer.name : edit.name || layerId) + '"';
-    document.getElementById('editor-text').value = edit.text || '';
-    // The font size proposed by the review for this text (e.g. "Reduce the font size of X to 85%"), or the current one
-    var proposed = (variants[current].textIssues || []).map(function (issue) {
-      var match = issue.layerId === layerId && /(\\d{2,3})\\s*%/.exec(issue.fix || '');
-      return match ? Number(match[1]) : null;
-    }).filter(Boolean)[0];
-    document.getElementById('editor-size').value = proposed || Math.round((edit.fontScale || 1) * 100);
-    document.getElementById('editor').hidden = false;
-    Array.prototype.forEach.call(previewVisual.querySelectorAll('.edit-zone'), function (zone) {
-      zone.classList.toggle('selected', Number(zone.getAttribute('data-layer')) === layerId);
-    });
-    document.getElementById('editor-text').focus();
-    reportSize();
-  }
-
-  function closeEditor() {
-    editing = null;
-    document.getElementById('editor').hidden = true;
-    Array.prototype.forEach.call(previewVisual.querySelectorAll('.edit-zone.selected'), function (zone) { zone.classList.remove('selected'); });
-    reportSize();
-  }
-
-  // Generates the variant again with its text edited, from the widget (without the model), and shows it in place; the model is
-  // then given the edits, for the next create-variant calls
-  function regenerate() {
-    var index = editing.index, layerId = editing.layerId;
-    var text = document.getElementById('editor-text').value;
-    var size = Math.round(Number(document.getElementById('editor-size').value));
-    if (!(size >= 50 && size <= 150)) return setStatus('The font size is between 50% and 150%.', true);
-    var before = variants[index];
-    var variant = JSON.parse(JSON.stringify(toolArgs.variants[index]));
-    variant.layers.forEach(function (l) {
-      if (l.id !== layerId || l.type !== 'text_layer') return;
-      l.text = text;
-      if (size === 100) delete l.fontScale; else l.fontScale = size / 100;
-    });
-    variant.fileName = before.fileName;
-    var args = { templateUrl: toolArgs.templateUrl, variants: [variant] };
-    if (toolArgs.fonts) args.fonts = toolArgs.fonts;
-    if (toolArgs.formats) args.formats = toolArgs.formats;
-    else if (toolArgs.format) args.formats = [toolArgs.format];
-    closeEditor();
+    if (!v || !layer) return;
     showPreview(-1);
-    variants[index] = { fileName: before.fileName, group: before.group, language: before.language, pending: true };
+    var prefix = '"' + layer.name + '": ';
+    var text = requests[v.fileName] != null ? requests[v.fileName] : (v.kept ? '' : recommendationOf(v));
+    if (text.indexOf(prefix) < 0) text = (text.replace(/\\s+$/, '') ? text.replace(/\\s+$/, '') + '\\n' : '') + prefix;
+    requests[v.fileName] = text;
     render();
-    callTool('create-variant', args)
-      .then(function (started) { return waitForTask(started.taskId).then(function (generation) { return { taskId: started.taskId, generation: generation }; }); })
-      .then(function (done) {
-        showReport(done.generation.report);
-        var result = (done.generation.variants || [])[0] || { fileName: before.fileName, error: 'Not generated' };
-        variants[index] = Object.assign({}, result, { group: before.group, language: before.language, textIssues: [] });
-        if (result.error) return render();
-        toolArgs.variants[index] = variant;
-        replacementTaskIds.push(done.taskId);
-        delete requests[before.fileName];
-        var layer = textLayers.filter(function (l) { return l.id === layerId; })[0];
-        (directEdits[before.fileName] = directEdits[before.fileName] || {})[layerId] = {
-          layerId: layerId, layerName: layer ? layer.name : undefined, text: text, fontScale: size / 100
-        };
-        render();
-        return request('ui/update-model-context', { content: [{ type: 'text', text: 'The user edited texts on the visuals in the '
-          + 'create-variant widget, which generated these variants again (same file names). Use these texts and font sizes '
-          + '(fontScale) for these layers in any later create-variant call:\\n' + JSON.stringify(Object.keys(directEdits).map(function (fileName) {
-            return { fileName: fileName, texts: Object.keys(directEdits[fileName]).map(function (id) { return directEdits[fileName][id]; }) };
-          })) }] }).catch(function () {});
-      })
-      .catch(function (error) {
-        variants[index] = Object.assign({}, before);
-        render();
-        setStatus((error && error.message) || String(error), true);
-      });
+    var field = grid.querySelector('.change-request[data-index="' + index + '"]');
+    if (!field) return;
+    var caret = text.indexOf(prefix) + prefix.length;
+    field.focus();
+    field.setSelectionRange(caret, caret);
+    field.scrollIntoView({ block: 'center' });
   }
-
-  document.getElementById('editor-apply').addEventListener('click', function () { if (editing) regenerate(); });
-  document.getElementById('editor-cancel').addEventListener('click', closeEditor);
 
   function step(delta) {
     var list = generated();
@@ -3022,10 +2930,7 @@ ${REPORT_SCRIPT}
 
   grid.addEventListener('click', function (e) {
     var issue = e.target.closest('.card-warning[data-layer]');
-    if (issue) {
-      showPreview(Number(issue.getAttribute('data-index')));
-      return openEditor(Number(issue.getAttribute('data-layer')));
-    }
+    if (issue) return writeChange(Number(issue.getAttribute('data-index')), Number(issue.getAttribute('data-layer')));
     var target = e.target.closest('img, sp-button');
     if (!target || !target.hasAttribute('data-index')) return;
     var index = Number(target.getAttribute('data-index'));
@@ -3035,8 +2940,7 @@ ${REPORT_SCRIPT}
 
   preview.addEventListener('click', function (e) {
     var zone = e.target.closest('.edit-zone');
-    if (zone) return openEditor(Number(zone.getAttribute('data-layer')));
-    if (e.target.closest('.editor')) return;
+    if (zone) return writeChange(current, Number(zone.getAttribute('data-layer')));
     if (e.target.closest('.visual')) return showPreview(-1);
     var button = e.target.closest('sp-button');
     if (!button) return;
@@ -3051,7 +2955,6 @@ ${REPORT_SCRIPT}
   preview.addEventListener('load', reportSize, true);
   document.addEventListener('keydown', function (e) {
     if (current < 0) return;
-    if (e.target.closest && e.target.closest('.editor')) { if (e.key === 'Escape') closeEditor(); return; }
     if (e.key === 'Escape') showPreview(-1);
     else if (e.key === 'ArrowLeft') step(-1);
     else if (e.key === 'ArrowRight') step(1);
@@ -3158,8 +3061,6 @@ ${REPORT_SCRIPT}
 
   // The variants are generated in a task: shown as they are rendered, then checked; when all are done, the model is given
   // the result (failures, warnings), and the texts are checked.
-  onToolInput(function (args) { toolArgs = JSON.parse(JSON.stringify(args)); });
-
   onToolResult(function (result) {
     var data = result.structuredContent || {};
     if (result.isError || (!data.taskId && !data.variants)) {
@@ -3193,6 +3094,8 @@ ${REPORT_SCRIPT}
         generating = false;
         variants = generation.variants ? withKept(generation.variants) : variants;
         textLayers = ((generation.review && generation.review.layers) || []).filter(function (l) { return l.type === 'text_layer'; });
+        sentTexts = {};
+        (generation.variants || []).forEach(function (v, i) { sentTexts[v.fileName] = ((generation.review && generation.review.texts) || [])[i] || []; });
         render();
         showReport(generation.report);
         if (generation.review) return startReview(generation);
