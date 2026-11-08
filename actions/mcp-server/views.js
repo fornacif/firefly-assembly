@@ -436,6 +436,10 @@ function getStartViewHtml (scriptUrl) {
   sp-dropzone sp-button { font-size: var(--spectrum-font-size-100); line-height: var(--spectrum-line-height-100); }
   #file { display: none; }
   sp-progress-bar { width: 100%; margin-top: var(--spectrum-spacing-200); }
+  /* Fonts added, as tags that can be removed next to the button */
+  .field.fonts { margin-top: var(--spectrum-spacing-300); }
+  .fonts-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--spectrum-spacing-200); }
+  #font-files { display: none; }
 ${STEPS_CSS}
 ${LAYERS_CSS}
 `, `
@@ -472,6 +476,15 @@ ${LAYERS_CSS}
   </div>
 </sp-dropzone>
 <sp-progress-bar id="progress" label="Upload" progress="0" side-label hidden></sp-progress-bar>
+<div class="field fonts">
+  <label>Fonts</label>
+  <div class="fonts-row">
+    <sp-button size="s" variant="secondary" treatment="outline" id="add-fonts">Add fonts</sp-button>
+    <input type="file" id="font-files" accept=".otf,.ttf,font/otf,font/ttf" multiple>
+    <sp-tags id="fonts"></sp-tags>
+  </div>
+  <sp-help-text id="fonts-help"></sp-help-text>
+</div>
 </div>
 <div data-step="2" hidden>
   <div class="subtle intro" id="layers-intro">Click the numbered zones of the template, or the list, to pick the layers to change in the variants.</div>
@@ -546,6 +559,90 @@ ${LAYERS_SCRIPT}
   var namingHelp = document.getElementById('naming-help');
   var template = null;
 
+  // Fonts added by the user ({ name, url }), given to the reading of the template and to the generation, and the fonts of the
+  // template missing for the render (null until the template is read). fontsVersion counts the changes: an older reading is
+  // ignored.
+  var fonts = [];
+  var missingFonts = null;
+  var fontsUploading = 0;
+  var fontsVersion = 0;
+  var fontTags = document.getElementById('fonts');
+  var fontsHelp = document.getElementById('fonts-help');
+  var fontInput = document.getElementById('font-files');
+
+  function fontUrls() { return fonts.length ? fonts.map(function (f) { return f.url; }) : undefined; }
+
+  function renderFonts() {
+    fontTags.innerHTML = fonts.map(function (f, i) {
+      return '<sp-tag deletable data-index="' + i + '">' + escapeHtml(f.name) + '</sp-tag>';
+    }).join('');
+    var missing = missingFonts && missingFonts.length;
+    fontsHelp.textContent = fontsUploading ? 'Uploading ' + fontsUploading + ' font file(s)...'
+      : missing ? 'Fonts of the template not available: ' + missingFonts.join(', ') + '. Add their files, otherwise they are '
+        + 'replaced by a default font.'
+      : missingFonts ? 'All the fonts of the template are available.'
+      : 'Optional: the .otf or .ttf files of fonts of the template that Photoshop does not have.';
+    fontsHelp.variant = missing ? 'negative' : 'neutral';
+    reportSize();
+  }
+
+  // Missing fonts found by a reading of the template made with the fonts of version
+  function onMissingFonts(list, version) {
+    if (version !== undefined && version !== fontsVersion) return;
+    missingFonts = list;
+    renderFonts();
+  }
+
+  // The fonts changed after the template was read: it is rendered again with them, for its preview and the fonts missing
+  function checkFonts() {
+    var version = ++fontsVersion;
+    if (!template) return;
+    var read = templateRead;
+    missingFonts = null;
+    fontsHelp.textContent = 'Checking the fonts of the template...';
+    fontsHelp.variant = 'neutral';
+    callTool('read-psd-template', { url: template.url, fonts: fontUrls() })
+      .then(function (started) { return waitForTask(started.taskId); })
+      .then(function (result) {
+        if (version !== fontsVersion || read !== templateRead) return;
+        if (result.previewUrl) showLatePreview(result.previewUrl, result.document || {});
+        onMissingFonts(result.missingFonts || [], version);
+      })
+      .catch(function (error) {
+        if (version !== fontsVersion) return;
+        fontsHelp.textContent = (error && error.message) || String(error);
+        fontsHelp.variant = 'negative';
+      });
+  }
+
+  function addFonts(files) {
+    var list = Array.prototype.filter.call(files || [], function (file) { return /\\.(otf|ttf)$/i.test(file.name); });
+    if (!list.length) { fontsHelp.textContent = 'Choose .otf or .ttf font files.'; fontsHelp.variant = 'negative'; return; }
+    list = list.slice(0, Math.max(0, 20 - fonts.length));
+    fontsUploading += list.length;
+    renderFonts();
+    updateButton();
+    Promise.all(list.map(function (file) {
+      return uploadOne(file, function () {}).then(function (uploaded) { fonts.push(uploaded); }, function () { return file.name; });
+    })).then(function (failed) {
+      fontsUploading -= list.length;
+      failed = failed.filter(Boolean);
+      updateButton();
+      checkFonts();
+      renderFonts();
+      if (failed.length) { fontsHelp.textContent = 'Not uploaded: ' + failed.join(', '); fontsHelp.variant = 'negative'; }
+    });
+  }
+
+  document.getElementById('add-fonts').addEventListener('click', function () { fontInput.value = ''; fontInput.click(); });
+  fontInput.addEventListener('change', function () { addFonts(fontInput.files); });
+  fontTags.addEventListener('delete', function (e) {
+    fonts.splice(Number(e.target.getAttribute('data-index')), 1);
+    checkFonts();
+    renderFonts();
+  });
+  renderFonts();
+
   // File name of a part of the name: the characters that files do not allow replaced, spaces as dashes
   function safeName(text) {
     return String(text).trim().replace(/\\s+/g, '-').replace(/[\\\\/:*?"<>|]+/g, '_');
@@ -605,7 +702,7 @@ ${LAYERS_SCRIPT}
       : n > ${MAX_VARIANTS_UI} ? n + ' variants in total: at most ${MAX_VARIANTS_UI}.' : n + ' variant' + (n > 1 ? 's' : '') + ' in total.';
     totalText.variant = n > ${MAX_VARIANTS_UI} || !languages().length ? 'negative' : 'neutral';
     updateNaming();
-    nextBtn.disabled = !template || !count() || !n || n > ${MAX_VARIANTS_UI} || !!namingError();
+    nextBtn.disabled = !template || !count() || !n || n > ${MAX_VARIANTS_UI} || !!namingError() || fontsUploading > 0;
     continueBtn.disabled = nextBtn.disabled || !layerCount;
     if (typeof updateSteps === 'function') updateSteps();
   }
@@ -654,8 +751,11 @@ ${LAYERS_SCRIPT}
   function readTemplate(file) {
     var read = ++templateRead;
     var isCurrent = function () { return read === templateRead; };
-    callTool('read-psd-template', { url: file.url })
-      .then(function (started) { if (isCurrent()) return showTemplate(started, isCurrent); })
+    var version = fontsVersion;
+    missingFonts = null;
+    renderFonts();
+    callTool('read-psd-template', { url: file.url, fonts: fontUrls() })
+      .then(function (started) { if (isCurrent()) return showTemplate(started, isCurrent, function (list) { onMissingFonts(list, version); }); })
       .catch(function (error) { if (isCurrent()) setStatus((error && error.message) || String(error), true); });
   }
 
@@ -726,7 +826,8 @@ ${LAYERS_SCRIPT}
       + ', URL (valid 24 hours): ' + template.url + '. File names: pass fileNamePattern "' + fileNamePattern()
       + '" to every create-variant call. Layers selected by the user in the template (with their original texts and frames; '
       + 'do not call get-psd-manifest): ' + JSON.stringify(selectedForModel()) + '. Next step: step 3 (texts) if text layers were '
-      + 'selected, otherwise step 4 (images).';
+      + 'selected, otherwise step 4 (images).'
+      + (fonts.length ? ' Fonts added by the user: pass fonts ' + JSON.stringify(fontUrls()) + ' to every create-variant call.' : '');
     var picked = selectedForModel().map(function (l) { return l.name; }).join(', ');
     sendToModel(context, 'I want ' + n + ' variant(s) of ' + template.name + ' in ' + names.join(', ') + ', changing ' + picked + ', continue.', 'Template sent.')
       .catch(function (error) {
@@ -1634,7 +1735,8 @@ const LAYERS_SCRIPT = `
   // The template is read in a task: the layers come with the tool result when read in time, otherwise from the task, then
   // the preview from the task.
   // isCurrent(), when given, tells whether the template is still the one shown (another one may be dropped meanwhile).
-  function showTemplate(data, isCurrent) {
+  // onMissingFonts(list), when given, gets the fonts of the template missing for the render.
+  function showTemplate(data, isCurrent, onMissingFonts) {
     var current = isCurrent || function () { return true; };
     if (data.layers) render(data);
     if (!data.taskId || data.previewUrl) return;
@@ -1651,6 +1753,7 @@ const LAYERS_SCRIPT = `
         if (!layers.length) render(template);
         else if (template.previewUrl) showLatePreview(template.previewUrl, template.document || {});
         if (!template.previewUrl) hidePreviewLoader();
+        if (onMissingFonts && template.missingFonts) onMissingFonts(template.missingFonts);
         setStatus(layers.length + ' editable layer(s).' + (template.previewUrl ? '' : ' Preview not available: ' + (template.previewError || 'no preview')));
       })
       .catch(function (error) {
@@ -2733,6 +2836,7 @@ ${STEPS_CSS}
     });
     variant.fileName = before.fileName;
     var args = { templateUrl: toolArgs.templateUrl, variants: [variant] };
+    if (toolArgs.fonts) args.fonts = toolArgs.fonts;
     if (toolArgs.formats) args.formats = toolArgs.formats;
     else if (toolArgs.format) args.formats = [toolArgs.format];
     closeEditor();

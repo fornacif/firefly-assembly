@@ -45,9 +45,9 @@ const WORKFLOW = `Variant creation workflow. When the user asks to create varian
 2. Layer selection: done in the start widget. Call get-psd-manifest with the template URL only when the user wants to pick other layers later, or did not pick them in the start widget.
 3. Texts: right after the start widget, if text layers were selected, get the texts of each variant: the user provides them, or you write them from a brief (subject, tone, language). The user's requests always come first (length, number of words or lines, wording): follow them exactly, even if the text may not fit, and never shorten or change a text the user asked for to make it fit. Otherwise, write each text about as long as the original text of its layer (given by get-psd-manifest): the same number of lines and about the same number of characters per line (within 10%), so that it fits the layout. Write the line breaks yourself (\\n), where the original text has them: a point text layer does not wrap its lines by itself (a text without any line break is spread over the lines of the original text, by length). Each variant is created in each language chosen in the start widget (the total is the number of variants times the number of languages): write the texts of each variant in each language (the same message, translated and adapted, not word for word), and give each a short label ending with its language code (e.g. "Winter sale FR"), in the order variant by variant then language by language. Then call edit-variant-texts with the texts and the original text of each layer; if smart object layers were selected too, pass images as well (as for upload-variant-images in step 4, see there): the widget then asks for the images in a second step, and gives you the texts and the images together. Then wait. When the user has the texts in a spreadsheet or an Excel file, do not ask for them in chat: call edit-variant-texts with the labels and the original texts as texts; the user imports the Excel file (.xlsx, a column per layer) or pastes the cells in the widget.
 4. Images: done in the second step of edit-variant-texts when text layers were selected too. Otherwise (smart object layers only), call upload-variant-images ONCE with the labels of the variants without their languages (one row per variant, e.g. "Winter sale" for "Winter sale FR" and "Winter sale DE": all the languages of a variant share its images) and the selected smart object layers (id, name and frame width and height from get-psd-manifest), so the user drops (or picks from AEM Assets, or generates with Firefly) one image per variant and layer in a grid and adjusts how each one is cropped to its frame. When the user has no images or wants generated ones, pass prompts (one per variant and layer, in English, from the brief): each slot then offers to generate its image, with the prompt that the user can edit. When the user confirms, the widget gives you the URL, size and crop of each image the same way. Never ask for image URLs in chat. Then wait.
-5. Generation: as soon as the images are confirmed (or the texts, without smart object layers), call create-variant ONCE with all variants (with more than ${MAX_VARIANTS_PER_GENERATION}, in calls of ${MAX_VARIANTS_PER_GENERATION} at most, one after the other, without waiting for the renders), passing for each image the crop chosen in the grid (each language of a variant gets the images and crops of its row of the grid, and its label in the grid as group) and for each variant its language and its group (its label without its language, also without images), and the fileNamePattern given by the start widget; do not recap the variants or ask for another approval. The widget shows the generated files with download buttons.
+5. Generation: as soon as the images are confirmed (or the texts, without smart object layers), call create-variant ONCE with all variants (with more than ${MAX_VARIANTS_PER_GENERATION}, in calls of ${MAX_VARIANTS_PER_GENERATION} at most, one after the other, without waiting for the renders), passing for each image the crop chosen in the grid (each language of a variant gets the images and crops of its row of the grid, and its label in the grid as group) and for each variant its language and its group (its label without its language, also without images), and the fileNamePattern and fonts given by the start widget, if any; do not recap the variants or ask for another approval. The widget shows the generated files with download buttons.
 6. Review: right after create-variant, in the same turn and without asking the user, check the texts of the generated files: call review-variants with the task id create-variant gives (it waits for the generation; while it answers that it is not finished, call it again): it shows you each visual with the texts sent. Look at each edited text on its visual: cut or past an edge of the visual or of its panel, letters or words hidden, overlapping another element (logo, image, other text) more than in the template, too small or hard to read on its background, lines broken badly, or not the text sent. Then call report-variant-issues with every variant reviewed (no issues for those that are fine; when review-variants shows the variants in several parts, after each part): per problem, the layer, a short description, the fix you propose (e.g. Reduce the font size of "headline" to 85%.) and the rectangle of the text on the visual, in pixels of the canvas. The widget marks each problem on the visual, with your proposed fix. Each variant has a field of changes, pre-filled with its proposed fixes, that the user edits, then sends to you: nothing is generated again before. Do not list the problems in chat: briefly say that the widget shows them and takes the changes. The user can also click a text on an enlarged visual to change its words or its font size: the widget generates that variant again itself and gives you the edits, to keep in later create-variant calls. When the user asks for changes (in the widget or in chat), make exactly the changes asked, nothing else: change a font size only when asked; to change the words of a text, rewrite it as asked (e.g. twice as many words, at most two lines) and keep its font size, even if it may not fit; then call create-variant again with the variants to change only, with the same file names and the same edits except the changes (a font size of N% is fontScale N/100): the new widget shows only these variants, the others stay in the earlier widgets. The texts are checked once generated: do not adjust them beforehand. If a text the user asked for does not fit, you may then suggest a fix (a smaller font size or a shorter text), without applying it.
-Changes after generation: to re-crop or swap images, call upload-variant-images again with images pre-filled from the previous confirmation (never ask to upload again the images you already have, unless their URLs expired); to change texts, call create-variant again with the variants to change only (same file names, groups, languages and fileNamePattern).
+Changes after generation: to re-crop or swap images, call upload-variant-images again with images pre-filled from the previous confirmation (never ask to upload again the images you already have, unless their URLs expired); to change texts, call create-variant again with the variants to change only (same file names, groups, languages, fileNamePattern and fonts).
 Widgets send their result (template URL, layers, texts, images) in your context and end the user's message with a reference in parentheses like "(r7k2p9)": if you do not have that result in your context, call get-widget-result with this ref before going on; never ask the user to redo a step because a result seems missing.
 The URLs from the widgets are temporary presigned URLs: use them in tool calls, but never show them to the user. Reply in the user's language.`
 
@@ -433,15 +433,49 @@ function getEditableLayers (layers = []) {
   })
 }
 
-// Flattened JPEG of a PSD, on which the layer picker of the views shows the editable layers.
-function renderPreview (params, url) {
-  return previewCache(url, async () => {
-    const { uploadUrl, readUrl } = await createStorageUrls('previews', 'preview.jpg')
-    await runPhotoshopJob(params, '/create-composite', {
-      image: { source: { url } },
-      outputs: [{ destination: { url: uploadUrl }, mediaType: 'image/jpeg', quality: 'high' }]
-    })
-    return readUrl
+// Fonts added by the user (OTF or TTF files in storage), given to each render. A font of the template that the Photoshop API
+// does not have (Adobe Fonts included) and that is not given is replaced by a default font ('use_default', for the variants);
+// with the 'fail' strategy, the job fails instead, naming the fonts missing (to check the template).
+const FONTS_INPUT = z.array(z.string().url()).max(20).optional()
+function fontOptions (fonts, missingFontStrategy) {
+  const options = {
+    ...(fonts?.length ? { additionalFonts: fonts.map(url => ({ source: { url } })) } : {}),
+    ...(missingFontStrategy ? { missingFontStrategy } : {})
+  }
+  return Object.keys(options).length ? { fontOptions: options } : {}
+}
+
+// Fonts named by a job failed with the 'fail' strategy, null for another error
+function missingFontsOf (error) {
+  const names = /Missing fonts detected: (.*?)\. Strategy/.exec(error?.message || '')?.[1]
+  return names ? names.split(',').map(name => name.trim()).filter(Boolean) : null
+}
+
+// Flattened JPEG of a PSD, on which the layer picker of the views shows the editable layers, and the fonts of the template
+// that the render does not have: { url, missingFonts }. A text is only drawn again, with its font, when it is edited: the
+// texts are given their own content, with the 'fail' strategy (the manifest lists as missing the fonts that the render gets
+// from Adobe Fonts). When fonts are missing, the preview is rendered again with a default font in their place, as the variants.
+function renderPreview (params, url, fonts = []) {
+  return previewCache([url, ...fonts].join('|'), async () => {
+    const texts = drawnLayers((await getManifest(params, url)).layers)
+      .filter(layer => layer.type === 'text_layer' && layer.text?.content != null)
+    const render = async (strategy, layers) => {
+      const { uploadUrl, readUrl } = await createStorageUrls('previews', 'preview.jpg')
+      await runPhotoshopJob(params, '/create-composite', {
+        image: { source: { url } },
+        ...(layers.length ? { edits: { layers: layers.map(layer => toLayerEdit({ id: layer.id, type: 'text_layer', text: layer.text.content })) } } : {}),
+        ...fontOptions(fonts, strategy),
+        outputs: [{ destination: { url: uploadUrl }, mediaType: 'image/jpeg', quality: 'high' }]
+      })
+      return readUrl
+    }
+    try {
+      return { url: await render('fail', texts), missingFonts: [] }
+    } catch (error) {
+      const missingFonts = missingFontsOf(error)
+      if (!missingFonts) throw error
+      return { url: await render('use_default', texts), missingFonts }
+    }
   })
 }
 
@@ -567,7 +601,7 @@ const VARIANT_FORMATS = Object.keys(VARIANT_OUTPUTS)
 const PREVIEW_OUTPUT = { mediaType: 'image/jpeg', quality: 'high' }
 
 // Renders one variant in all the requested formats with a single Photoshop job.
-async function createVariant (params, { templateUrl, templateManifest, formats, layers, fileName: baseName, deadline }) {
+async function createVariant (params, { templateUrl, templateManifest, formats, fonts, layers, fileName: baseName, deadline }) {
   const shownFormat = formats.find(format => VARIANT_OUTPUTS[format].displayable)
   const [files, preview] = await Promise.all([
     Promise.all(formats.map(format => createStorageUrls('variants', `${baseName}.${VARIANT_OUTPUTS[format].extension}`))),
@@ -577,6 +611,7 @@ async function createVariant (params, { templateUrl, templateManifest, formats, 
   await beforeDeadline(runPhotoshopJob(params, '/create-composite', {
     image: { source: { url: templateUrl } },
     edits: { layers: layers.map(toLayerEdit) },
+    ...fontOptions(fonts, 'use_default'),
     outputs: [
       ...formats.map((format, i) => ({ destination: { url: files[i].uploadUrl }, ...VARIANT_OUTPUTS[format].output })),
       ...(preview ? [{ destination: { url: preview.uploadUrl }, ...PREVIEW_OUTPUT }] : [])
@@ -886,7 +921,7 @@ function uniqueFileNames (variants) {
 // formats of the call. A failed or late variant does not prevent the others from being returned. onProgress(list) gets the
 // variants each time one changes: { fileName, pending: true } until rendered, then as returned. Each has the group and the
 // language of its variant, when given, so that the widget shows the languages of a variant side by side.
-async function createVariants (params, { templateUrl, formats, variants, deadline, onProgress }) {
+async function createVariants (params, { templateUrl, formats, fonts, variants, deadline, onProgress }) {
   const fileNames = uniqueFileNames(variants)
   const progress = fileNames.map((fileName, index) => ({ fileName, ...variantLabels(variants[index]), pending: true }))
   const report = (index, variant) => { progress[index] = { ...variant, ...variantLabels(variants[index]) }; onProgress?.([...progress]) }
@@ -910,6 +945,7 @@ async function createVariants (params, { templateUrl, formats, variants, deadlin
         templateManifest: manifest,
         deadline,
         formats: variant.formats ? [...new Set(variant.formats)] : formats,
+        fonts,
         layers,
         fileName: fileNames[index]
       })
@@ -1043,11 +1079,11 @@ const TASKS = {
   // Manifest of a template (given as soon as read) and its preview
   async template (params, { args }, update) {
     let previewError = null
-    const preview = renderPreview(params, args.url).catch(error => { previewError = error.message; return null })
+    const preview = renderPreview(params, args.url, args.fonts).catch(error => { previewError = error.message; return null })
     const data = templateData(await getManifest(params, args.url))
     await update({ partial: data })
-    const previewUrl = await preview
-    return { ...data, previewUrl, previewError }
+    const rendered = await preview
+    return { ...data, previewUrl: rendered?.url ?? null, previewError, ...(rendered ? { missingFonts: rendered.missingFonts } : {}) }
   },
 
   // Image generated by Firefly for a smart object frame
@@ -1065,6 +1101,7 @@ const TASKS = {
     const variants = await createVariants(params, {
       templateUrl: args.templateUrl,
       formats: args.formats,
+      fonts: args.fonts,
       variants: args.variants,
       deadline,
       onProgress: list => update({ partial: { templateUrl: args.templateUrl, variants: list } })
@@ -1347,13 +1384,16 @@ function registerTools (server, params) {
     {
       title: 'Read PSD Template',
       description: 'Used by the start-variant-creation widget: starts a task (see get-task) that reads a PSD template, whose result ' +
-        'is its editable layers then its preview, as for get-psd-manifest.',
-      inputSchema: { url: z.string().url().describe('HTTPS URL of the PSD file') },
+        'is its editable layers then its preview, as for get-psd-manifest, and the fonts missing for the render.',
+      inputSchema: {
+        url: z.string().url().describe('HTTPS URL of the PSD file'),
+        fonts: FONTS_INPUT.describe('URLs of the font files (OTF or TTF) added by the user')
+      },
       _meta: { ui: { visibility: ['app'] } }
     },
-    async ({ url }) => {
+    async ({ url, fonts }) => {
       try {
-        return jsonResult({ taskId: await startTask(params, 'template', { url }), templateUrl: url })
+        return jsonResult({ taskId: await startTask(params, 'template', { url, fonts }), templateUrl: url })
       } catch (error) {
         return errorResult(error)
       }
@@ -1395,11 +1435,12 @@ function registerTools (server, params) {
         fileName: z.string().optional().describe('Deprecated: use variants'),
         fileNamePattern: z.string().optional().describe('Model of the file names given by the start widget (e.g. ' +
           '"banner_{variant}_{language}"), passed as is to every call: each file is named from it with the group and the language ' +
-          'of its variant, instead of its fileName')
+          'of its variant, instead of its fileName'),
+        fonts: FONTS_INPUT.describe('URLs of the font files added by the user, given by the start widget: passed as is to every call')
       },
       _meta: uiMeta(VIEWS.variant)
     },
-    async ({ templateUrl, formats, format, variants, layers, fileName, fileNamePattern }) => {
+    async ({ templateUrl, formats, format, variants, layers, fileName, fileNamePattern, fonts }) => {
       try {
         if (!variants && !layers) throw new Error('Missing "variants": pass a list of variants, each with its "layers".')
         const variantList = (variants || [{ fileName, layers }])
@@ -1411,6 +1452,7 @@ function registerTools (server, params) {
           templateUrl,
           formats: [...new Set(formats || [format || 'jpeg'])],
           variants: variantList,
+          fonts,
           warnings
         })
         return {
