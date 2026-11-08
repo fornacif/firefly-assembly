@@ -10,6 +10,8 @@
     "dev": "aio app run"
   },
   "dependencies": {
+    "@adobe/aio-lib-core-auth": "^1.2.0",
+    "@adobe/aio-lib-db": "^1.1.0",
     "@adobe/aio-lib-state": "^5.4.0",
     "@adobe/aio-sdk": "^5.0.0",
     "@modelcontextprotocol/sdk": "^1.24.0",

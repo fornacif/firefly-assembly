@@ -49,6 +49,15 @@ Adobe I/O Runtime ends a web request after about 60 seconds, and Photoshop jobs 
 
 The Photoshop jobs are polled from 3 seconds, then up to every 8 seconds: each status request counts against the rate limit of Firefly Services, as the jobs do. On a 429 answer, all the requests of the container to the API wait for its Retry-After (up to 2 minutes); a longer Retry-After (a quota used up, e.g. until midnight UTC) is not waited for: the requests fail at once until then, with the time it ends. This time is shared with the other containers in App Builder state (read again every minute), and the start widget shows it (`get-quota`), before anything is started. A job not finished after 60 seconds is submitted again, unless the API was rate limited within the last minute.
 
+## Usage reports
+
+At the end of each generation, the widget shows a report: the variants generated, the time taken, and the API calls made since the template was imported (Photoshop jobs, Firefly image generations, subject detections), with their execution times by kind and the renders of the generation against the average render. Each task keeps its calls in App Builder state, under a session of the user that the reading of another template starts again.
+
+Each task (template reading, crop, image generation, generation of variants) is also recorded in the database of the workspace ([App Builder Database Storage](https://developer.adobe.com/app-builder/docs/guides/app_builder_guides/storage/database), region `emea`, collection `activity`, `actions/mcp-server/history.js`): the user (IMS id and email, read from the IMS profile), its duration, its API calls by kind, and for a generation its template, variants, formats and languages. The activity is kept 90 days, the older one deleted (the database has no TTL). The assistant answers with two tools:
+
+- `get-usage-history`: the generations of the user over the last days, with their totals.
+- `get-usage-report`: the usage of all the users (totals, per user, per day, per kind of API call), only for the emails listed in `ADMIN_EMAILS`.
+
 ## Text checks
 
 The assistant checks the texts of the generated variants by looking at them, right after create-variant, in the same turn: the user has nothing to ask. The assistant calls:
@@ -85,6 +94,7 @@ The problems are stored with the generation; the widget waits for them (`get-var
 | `actions/mcp-server/views.js` | HTML of the widgets |
 | `actions/mcp-server/review.js` | Visuals of the generated variants reduced for the review by the assistant |
 | `actions/mcp-server/state.js` | App Builder state (tasks, widget results, reviews), values kept as JSON |
+| `actions/mcp-server/history.js` | History of the activity in the database: recording, history of a user, usage report |
 | `actions/mcp-server/zip.js` | ZIP archives of the files of a generation |
 | `actions/mcp-server/aem-picker.js` | Sessions of the AEM Asset Selector page |
 | `actions/mcp-server/validator.js` | IMS token validation |
@@ -111,7 +121,11 @@ FIREFLY_SERVICES_API_SCOPES=
 AEM_REPOSITORY_ID=
 # delivery (default, approved assets) or author
 AEM_TIER=
+## Emails of the admins (usage report of all the users), comma-separated
+ADMIN_EMAILS=
 ```
+
+The database needs the **App Builder Data Services** API in the workspace (Developer Console); `aio app use` then adds its server-to-server credentials (`IMS_OAUTH_S2S_*`) to `.env`, which the action gets with the `include-ims-credentials` annotation. `aio app deploy` provisions the database when missing (`database` in `app.config.yaml`).
 
 Optional action parameters, with their defaults: `IMS_HOST` (`https://ims-na1.adobelogin.com`), `IMS_SCOPES` (`openid,AdobeID`), `MCP_RESOURCE_URL` (the `adobeioruntime.net` URL of the action), `STATIC_ORIGIN` (`https://<namespace>.adobeio-static.net`), `AEM_IMS_ORG` (picked by the user), `AEM_API_KEY` (the client ID of the user's token).
 

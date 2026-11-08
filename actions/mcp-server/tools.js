@@ -9,6 +9,7 @@ const stateStore = require('./state')
 const { getTokenFromRequest, getUnverifiedClaims, getUnverifiedClientId } = require('./validator.js')
 const { createPickerSession, getPickerResult } = require('./aem-picker.js')
 const { zipFiles } = require('./zip.js')
+const { recordActivity, userEmail, usageHistory, usageReport, RETENTION_DAYS } = require('./history.js')
 const spectrumAsset = require('./spectrum-asset.js')
 
 const IMS_TOKEN_URL = 'https://ims-na1.adobelogin.com/ims/token/v3'
@@ -1067,7 +1068,10 @@ const signTask = (params, taskJson) =>
 
 // Starts a task of the current user; returns its id.
 async function startTask (params, type, args) {
-  const task = { id: crypto.randomUUID(), type, args, userId: currentUserId(params) }
+  const userId = currentUserId(params)
+  // The email of the user, for the history of the activity (a zip makes no API call)
+  const email = type === 'zip' ? null : await userEmail(userId, getTokenFromRequest(params)).catch(() => null)
+  const task = { id: crypto.randomUUID(), type, args, userId, ...(email ? { email } : {}) }
   const state = await initState()
   await state.put(taskKey(task.userId, task.id), { status: 'running', startedAt: Date.now() }, { ttl: TASK_TTL_SECONDS })
   const [namespace, ...action] = (process.env.__OW_ACTION_NAME || '').split('/').filter(Boolean)
@@ -1157,7 +1161,7 @@ const TASKS = {
       variants,
       summary: describeGeneration(variants, args.warnings || ''),
       ...(review ? { review: await reviewData(params, args), doneAt: Date.now() } : {}),
-      report: await generationReport(task, variants, started)
+      report: await generationReport(params, task, variants, started)
         .catch(error => { console.warn(`Generation report not made: ${error.message}`); return null })
     }
   },
@@ -1305,12 +1309,14 @@ async function saveApiCalls (task, calls) {
 
 // Generation report: the variants generated, the time taken, and the API calls since the template was imported, those of
 // this generation marked (generation: true), in the order they started.
-async function generationReport (task, variants, started) {
+async function generationReport (params, task, variants, started) {
   const own = (apiCalls.getStore() || []).map(call => ({ ...call, generation: true }))
   const session = await readApiSession(task.userId)
   const keys = session ? await stateStore.keys(apiCallsKey(task.userId, session.id)) : []
   const earlier = (await Promise.all(keys.map(async key => (await stateStore.get(key))?.value || []))).flat()
+  const manifest = await getManifest(params, task.args.templateUrl).catch(() => null)
   return {
+    template: manifest ? templateData(manifest).document.title : null,
     variants: variants.filter(v => !v.error).length,
     failed: variants.filter(v => v.error).length,
     durationMs: Date.now() - started,
@@ -1330,8 +1336,9 @@ async function runTask (params) {
   const update = taskWriter(task)
   const started = Date.now()
   const calls = []
+  let result = null
   try {
-    const result = await apiCalls.run(calls, () => TASKS[task.type](params, task, update, started + TASK_BUDGET_MS))
+    result = await apiCalls.run(calls, () => TASKS[task.type](params, task, update, started + TASK_BUDGET_MS))
     console.log(`Task ${task.type} ${task.id} done in ${(Date.now() - started) / 1000}s`)
     await update({ status: 'done', result, partial: null })
   } catch (error) {
@@ -1339,6 +1346,10 @@ async function runTask (params) {
     await update({ status: 'failed', error: error.message })
   }
   await saveApiCalls(task, calls).catch(error => console.warn(`API calls of task ${task.id} not kept: ${error.message}`))
+  if (task.type !== 'zip') {
+    await recordActivity(params, task, { ok: Boolean(result), durationMs: Date.now() - started, calls, result })
+      .catch(error => console.warn(`Activity of task ${task.id} not kept: ${error.message}`))
+  }
   return { done: task.id }
 }
 
@@ -1721,6 +1732,53 @@ function registerTools (server, params) {
         const text = await readWidgetResult(params, ref.trim().replace(/^[·(\s]+|[)\s]+$/g, '').toLowerCase())
         if (!text) return errorResult(new Error(`No widget result for ${ref}: it expired (24 hours) or belongs to another user.`))
         return { content: [{ type: 'text', text }] }
+      } catch (error) {
+        return errorResult(error)
+      }
+    }
+  )
+
+  server.registerTool(
+    'get-usage-history',
+    {
+      title: 'Get Usage History',
+      description: `Returns the generations of variants of the current user over the last days (at most ${RETENTION_DAYS}), the ` +
+        'latest first: date, template, variants generated and failed, time taken, API calls, average render time, formats and ' +
+        'languages, with their totals. Call it when the user asks what they generated, or how much they used the service.',
+      inputSchema: {
+        days: z.number().int().min(1).max(RETENTION_DAYS).default(30).describe('Period, in days up to today'),
+        limit: z.number().int().min(1).max(200).default(50).describe('Most generations listed')
+      }
+    },
+    async ({ days, limit }) => {
+      try {
+        return jsonResult(await usageHistory(params, currentUserId(params), { days, limit }))
+      } catch (error) {
+        return errorResult(error)
+      }
+    }
+  )
+
+  server.registerTool(
+    'get-usage-report',
+    {
+      title: 'Get Usage Report',
+      description: `Returns the usage of the service by all the users over the last days (at most ${RETENTION_DAYS}): totals ` +
+        '(users, generations, variants, failures, API calls, average render time), per user (email), per day, and per kind of API ' +
+        'call (count, failures, average execution time). Reserved to the admins of the service. Call it when the user asks for ' +
+        'the overall usage; present it with tables or charts.',
+      inputSchema: {
+        days: z.number().int().min(1).max(RETENTION_DAYS).default(30).describe('Period, in days up to today')
+      }
+    },
+    async ({ days }) => {
+      try {
+        const admins = String(params.ADMIN_EMAILS || '').split(',').map(email => email.trim().toLowerCase()).filter(Boolean)
+        const email = await userEmail(currentUserId(params), getTokenFromRequest(params)).catch(() => null)
+        if (!email || !admins.includes(email.toLowerCase())) {
+          return errorResult(new Error('The usage report is reserved to the admins of the service. The user can ask for their own history instead.'))
+        }
+        return jsonResult(await usageReport(params, { days }))
       } catch (error) {
         return errorResult(error)
       }

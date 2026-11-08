@@ -40,9 +40,17 @@ application:
               AEM_REPOSITORY_ID: $AEM_REPOSITORY_ID
               # Tier browsed by the selector: delivery (default, approved assets) or author
               AEM_TIER: $AEM_TIER
+              # Emails of the admins of the service, comma-separated: only they get the usage report of all the users
+              ADMIN_EMAILS: $ADMIN_EMAILS
             annotations:
               # The action validates the Adobe IMS token itself (validator.js) and serves the OAuth metadata
               require-adobe-auth: false
               final: true
               # Raw request body, as the MCP transport expects
               raw-http: true
+              # Server-to-server credentials of the workspace, for the database (history of the generations)
+              include-ims-credentials: true
+    # Database of the workspace (history of the generations), in the EU; provisioned by aio app deploy when missing
+    database:
+      auto-provision: true
+      region: emea
