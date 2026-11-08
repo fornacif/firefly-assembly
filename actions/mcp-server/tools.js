@@ -367,9 +367,23 @@ const manifestCache = createCache(50)
 const previewCache = createCache(20)
 const cropCache = createCache(100)
 
-// Manifest of a template or image, from the cache.
+// Manifests are also kept in App Builder state for an hour, so that the tasks run in other containers (parallel generations,
+// edits from the widget) do not read the same template again; a manifest too large for the state is only kept in memory.
+const MANIFEST_TTL_SECONDS = 3600
+const manifestKey = url => `manifest-${shortHash(url)}`
+
+async function sharedManifest (params, url) {
+  const stored = (await stateStore.get(manifestKey(url)).catch(() => undefined))?.value
+  if (stored?.document?.bounds) return stored
+  const manifest = await generateManifest(params, url)
+  await stateStore.put(manifestKey(url), manifest, { ttl: MANIFEST_TTL_SECONDS })
+    .catch(error => console.warn(`Manifest not kept in state: ${error.message}`))
+  return manifest
+}
+
+// Manifest of a template or image, from the cache of the container, then from state.
 function getManifest (params, url) {
-  return manifestCache(url, () => generateManifest(params, url))
+  return manifestCache(url, () => sharedManifest(params, url))
 }
 
 // Adobe I/O Runtime ends a web request after about 60 seconds, whatever the action timeout: tools that can take longer
