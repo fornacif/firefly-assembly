@@ -127,7 +127,7 @@ ADMIN_EMAILS=
 
 The database needs the **App Builder Data Services** API in the workspace (Developer Console); `aio app use` then adds its server-to-server credentials (`IMS_OAUTH_S2S_*`) to `.env`, which the action gets with the `include-ims-credentials` annotation. `aio app deploy` provisions the database when missing (`database` in `app.config.yaml`).
 
-Optional action parameters, with their defaults: `IMS_HOST` (`https://ims-na1.adobelogin.com`), `IMS_SCOPES` (`openid,AdobeID`), `MCP_RESOURCE_URL` (the `adobeioruntime.net` URL of the action), `STATIC_ORIGIN` (`https://<namespace>.adobeio-static.net`), `AEM_IMS_ORG` (picked by the user), `AEM_API_KEY` (the client ID of the user's token).
+Optional action parameters, with their defaults: `IMS_HOST` (`https://ims-na1.adobelogin.com`), `IMS_SCOPES` (`openid,AdobeID,email`: the email gives the user in the usage reports), `MCP_RESOURCE_URL` (the `adobeioruntime.net` URL of the action), `STATIC_ORIGIN` (`https://<namespace>.adobeio-static.net`), `AEM_IMS_ORG` (picked by the user), `AEM_API_KEY` (the client ID of the user's token).
 
 ## Deployment
 

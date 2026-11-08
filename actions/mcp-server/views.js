@@ -2393,6 +2393,67 @@ ${IMAGES_SCRIPT}
 `)
 }
 
+// Dashboards (report of a generation, usage history): tiles, then bar charts and tables
+const REPORT_CSS = `
+  .report {
+    display: flex; flex-direction: column; gap: var(--spectrum-spacing-300);
+    margin-top: var(--spectrum-spacing-400); padding: var(--spectrum-spacing-300);
+    background: var(--spectrum-background-layer-2-color); border: 1px solid var(--spectrum-gray-200); border-radius: var(--spectrum-corner-radius-500);
+  }
+  .report[hidden] { display: none; }
+  .report-title { font-weight: var(--spectrum-bold-font-weight); }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: var(--spectrum-spacing-200); }
+  .tile { display: flex; flex-direction: column; gap: 2px; padding: var(--spectrum-spacing-200); background: var(--spectrum-background-base-color); border-radius: var(--spectrum-corner-radius-200); }
+  .tile-label, .chart-title { font-size: var(--spectrum-font-size-50, 11px); font-weight: var(--spectrum-bold-font-weight); letter-spacing: 0.04em; text-transform: uppercase; color: var(--spectrum-neutral-subdued-content-color-default); }
+  .tile-value { font-size: var(--spectrum-font-size-500, 22px); font-weight: var(--spectrum-bold-font-weight); font-variant-numeric: tabular-nums; }
+  .tile-note { font-size: var(--spectrum-font-size-75); color: var(--spectrum-neutral-subdued-content-color-default); }
+  .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: var(--spectrum-spacing-300); }
+  .chart { display: flex; flex-direction: column; gap: var(--spectrum-spacing-200); min-width: 0; }
+  .chart-note { font-size: var(--spectrum-font-size-75); color: var(--spectrum-neutral-subdued-content-color-default); }
+  /* Execution time by kind of call: the bar is the average, the thin line the range from the fastest to the slowest */
+  .op { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px var(--spectrum-spacing-200); font-size: var(--spectrum-font-size-75); }
+  .op-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .op-value { color: var(--spectrum-neutral-subdued-content-color-default); font-variant-numeric: tabular-nums; text-align: right; }
+  .op-track { grid-column: 1 / -1; position: relative; height: 10px; }
+  .op-range { position: absolute; top: 4px; height: 2px; background: var(--spectrum-gray-400); border-radius: 1px; }
+  .op-bar { position: absolute; top: 0; left: 0; height: 10px; min-width: 2px; background: var(--spectrum-accent-background-color-default); border-radius: 0 4px 4px 0; }
+  .op:hover .op-bar { background: var(--spectrum-accent-background-color-hover, var(--spectrum-accent-background-color-default)); }
+  .day-bars { position: relative; display: flex; align-items: flex-end; gap: 2px; height: 120px; border-bottom: 1px solid var(--spectrum-gray-300); }
+  .day-bar { flex: 1; min-width: 2px; max-width: 24px; display: flex; flex-direction: column-reverse; height: 100%; }
+  .day-bar span { display: block; background: var(--spectrum-accent-background-color-default); border-radius: 4px 4px 0 0; min-height: 0; }
+  .day-bar span.failed { background: var(--spectrum-gray-400); border-radius: 4px 4px 0 0; margin-bottom: 2px; }
+  .day-bar span.failed + span { border-radius: 0; }
+  .day-bar:hover span:not(.failed) { background: var(--spectrum-accent-background-color-hover, var(--spectrum-accent-background-color-default)); }
+  .axis { display: flex; justify-content: space-between; font-size: var(--spectrum-font-size-50, 11px); color: var(--spectrum-neutral-subdued-content-color-default); }
+  .legend { display: flex; gap: var(--spectrum-spacing-300); font-size: var(--spectrum-font-size-75); color: var(--spectrum-neutral-subdued-content-color-default); }
+  .legend i { display: inline-block; width: 10px; height: 10px; margin-right: 4px; border-radius: 2px; vertical-align: -1px; background: var(--spectrum-accent-background-color-default); }
+  .legend i.failed { background: var(--spectrum-gray-400); }
+  .table { width: 100%; border-collapse: collapse; font-size: var(--spectrum-font-size-75); font-variant-numeric: tabular-nums; }
+  .table th { text-align: left; font-weight: var(--spectrum-bold-font-weight); color: var(--spectrum-neutral-subdued-content-color-default); border-bottom: 1px solid var(--spectrum-gray-300); padding: 4px 8px 4px 0; }
+  .table td { border-bottom: 1px solid var(--spectrum-gray-200); padding: 6px 8px 6px 0; vertical-align: top; }
+  .table .n { text-align: right; }
+  .table-wrap { overflow-x: auto; }
+`
+
+// Helpers of the dashboards: durations, averages and stat tiles
+const REPORT_SCRIPT = `
+  function seconds(ms) {
+    var s = ms / 1000;
+    if (s < 60) return (s < 10 ? s.toFixed(1) : Math.round(s)) + ' s';
+    return Math.floor(s / 60) + ' min ' + Math.round(s % 60) + ' s';
+  }
+
+  function average(list) {
+    return list.length ? list.reduce(function (total, ms) { return total + ms; }, 0) / list.length : 0;
+  }
+
+  function tileHtml(label, value, note) {
+    return '<div class="tile"><span class="tile-label">' + escapeHtml(label) + '</span><span class="tile-value">' + escapeHtml(value)
+      + '</span>' + (note ? '<span class="tile-note">' + escapeHtml(note) + '</span>' : '') + '</div>';
+  }
+
+`
+
 function getVariantViewHtml (scriptUrl) {
   return page(scriptUrl, 'PSD Variants', `
   .grid {
@@ -2501,31 +2562,7 @@ ${STEPS_CSS}
   }
   .card-warning[data-layer] { cursor: pointer; }
   .card-warning[data-layer]:hover { text-decoration: underline; }
-  /* Report of the last generation: tiles, then the execution times of the API calls since the template was imported */
-  .report {
-    display: flex; flex-direction: column; gap: var(--spectrum-spacing-300);
-    margin-top: var(--spectrum-spacing-400); padding: var(--spectrum-spacing-300);
-    background: var(--spectrum-background-layer-2-color); border: 1px solid var(--spectrum-gray-200); border-radius: var(--spectrum-corner-radius-500);
-  }
-  .report[hidden] { display: none; }
-  .report-title { font-weight: var(--spectrum-bold-font-weight); }
-  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: var(--spectrum-spacing-200); }
-  .tile { display: flex; flex-direction: column; gap: 2px; padding: var(--spectrum-spacing-200); background: var(--spectrum-background-base-color); border-radius: var(--spectrum-corner-radius-200); }
-  .tile-label, .chart-title { font-size: var(--spectrum-font-size-50, 11px); font-weight: var(--spectrum-bold-font-weight); letter-spacing: 0.04em; text-transform: uppercase; color: var(--spectrum-neutral-subdued-content-color-default); }
-  .tile-value { font-size: var(--spectrum-font-size-500, 22px); font-weight: var(--spectrum-bold-font-weight); font-variant-numeric: tabular-nums; }
-  .tile-note { font-size: var(--spectrum-font-size-75); color: var(--spectrum-neutral-subdued-content-color-default); }
-  .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: var(--spectrum-spacing-300); }
-  .chart { display: flex; flex-direction: column; gap: var(--spectrum-spacing-200); min-width: 0; }
-  .chart-note { font-size: var(--spectrum-font-size-75); color: var(--spectrum-neutral-subdued-content-color-default); }
-  /* Execution time by kind of call: the bar is the average, the thin line the range from the fastest to the slowest */
-  .op { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px var(--spectrum-spacing-200); font-size: var(--spectrum-font-size-75); }
-  .op-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .op-value { color: var(--spectrum-neutral-subdued-content-color-default); font-variant-numeric: tabular-nums; text-align: right; }
-  .op-track { grid-column: 1 / -1; position: relative; height: 10px; }
-  .op-range { position: absolute; top: 4px; height: 2px; background: var(--spectrum-gray-400); border-radius: 1px; }
-  .op-bar { position: absolute; top: 0; left: 0; height: 10px; min-width: 2px; background: var(--spectrum-accent-background-color-default); border-radius: 0 4px 4px 0; }
-  .op:hover .op-bar { background: var(--spectrum-accent-background-color-hover, var(--spectrum-accent-background-color-default)); }
-`, `
+${REPORT_CSS}`, `
 <h2 class="heading">Generated variants</h2>
 <ol class="steps single" aria-label="Step"><li data-for="5" class="current"><span class="step-kicker">Step 5</span><span class="step-title">Review and download</span></li></ol>
 <div class="preview" id="preview">
@@ -2557,6 +2594,7 @@ ${STEPS_CSS}
 <sp-help-text class="status" id="status"></sp-help-text>
 <section class="report" id="report" hidden aria-label="Generation report"></section>
 `, `
+${REPORT_SCRIPT}
   setStatus('Generating variants...', false, true);
   var grid = document.getElementById('grid');
   var preview = document.getElementById('preview');
@@ -2978,21 +3016,6 @@ ${STEPS_CSS}
   // was imported, with their execution times by kind
   var reportEl = document.getElementById('report');
 
-  function seconds(ms) {
-    var s = ms / 1000;
-    if (s < 60) return (s < 10 ? s.toFixed(1) : Math.round(s)) + ' s';
-    return Math.floor(s / 60) + ' min ' + Math.round(s % 60) + ' s';
-  }
-
-  function average(list) {
-    return list.length ? list.reduce(function (total, ms) { return total + ms; }, 0) / list.length : 0;
-  }
-
-  function tileHtml(label, value, note) {
-    return '<div class="tile"><span class="tile-label">' + escapeHtml(label) + '</span><span class="tile-value">' + escapeHtml(value)
-      + '</span>' + (note ? '<span class="tile-note">' + escapeHtml(note) + '</span>' : '') + '</div>';
-  }
-
   function showReport(report) {
     if (!report) return;
     var calls = report.calls || [];
@@ -3131,4 +3154,130 @@ ${STEPS_CSS}
 `)
 }
 
-module.exports = { getStartViewHtml, getUploadViewHtml, getVariantImagesViewHtml, getLayersViewHtml, getTextsViewHtml, getVariantViewHtml }
+// Dashboard of the usage of the service (get-usage-history for the user, get-usage-report for all the users): totals, the
+// variants per day, the execution time by kind of API call, and the latest generations or the users.
+function getUsageViewHtml (scriptUrl) {
+  return page(scriptUrl, 'Usage', `
+${REPORT_CSS}
+  .report { margin-top: var(--spectrum-spacing-200); }
+`, `
+<h2 class="heading" id="title">Usage</h2>
+<div class="subtle" id="period"></div>
+<section class="report" id="report" hidden aria-label="Usage"></section>
+<sp-help-text class="status" id="status"></sp-help-text>
+`, `
+${REPORT_SCRIPT}
+  setStatus('Loading the usage...', false, true);
+  var reportEl = document.getElementById('report');
+  var DAY_MS = 86400000;
+
+  function dateTime(iso) {
+    return new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+  }
+
+  function dayLabel(day) {
+    return new Date(day + 'T00:00:00Z').toLocaleDateString(undefined, { day: 'numeric', month: 'short', timeZone: 'UTC' });
+  }
+
+  // Bars of the variants per day, from the first day of the period (or of the activity) to today; per month beyond 120 days
+  function perDayHtml(data) {
+    var byDay = {};
+    (data.perDay || []).forEach(function (d) { byDay[d.day] = d; });
+    var today = new Date().toISOString().slice(0, 10);
+    var first = data.days ? new Date(Date.now() - (data.days - 1) * DAY_MS).toISOString().slice(0, 10) : ((data.perDay || [])[0] || {}).day;
+    if (!first) return '';
+    var buckets = [];
+    for (var t = Date.parse(first + 'T00:00:00Z'); t <= Date.parse(today + 'T00:00:00Z'); t += DAY_MS) {
+      var day = new Date(t).toISOString().slice(0, 10);
+      buckets.push({ key: day, label: dayLabel(day), d: byDay[day] });
+    }
+    var monthly = buckets.length > 120;
+    if (monthly) {
+      var months = {};
+      buckets.forEach(function (b) {
+        var key = b.key.slice(0, 7);
+        var m = months[key] = months[key] || { key: key, label: new Date(key + '-01T00:00:00Z').toLocaleDateString(undefined, { month: 'short', year: 'numeric', timeZone: 'UTC' }), d: { variants: 0, failed: 0, generations: 0 } };
+        if (b.d) { m.d.variants += b.d.variants; m.d.failed += b.d.failed; m.d.generations += b.d.generations; }
+      });
+      buckets = Object.keys(months).sort().map(function (key) { return months[key]; });
+    }
+    var top = Math.max.apply(null, [1].concat(buckets.map(function (b) { return b.d ? b.d.variants + b.d.failed : 0; })));
+    var anyFailed = buckets.some(function (b) { return b.d && b.d.failed; });
+    var bars = buckets.map(function (b) {
+      var ok = b.d ? b.d.variants : 0, failed = b.d ? b.d.failed : 0, generations = b.d ? b.d.generations : 0;
+      var tip = b.label + ': ' + ok + ' variant(s)' + (failed ? ', ' + failed + ' failed' : '') + ', ' + generations + ' generation(s)';
+      return '<div class="day-bar" title="' + escapeHtml(tip) + '">'
+        + (ok ? '<span style="height:' + (ok / top * 100) + '%"></span>' : '')
+        + (failed ? '<span class="failed" style="height:' + (failed / top * 100) + '%"></span>' : '') + '</div>';
+    }).join('');
+    return '<div class="chart"><span class="chart-title">Variants per ' + (monthly ? 'month' : 'day') + '</span>'
+      + '<div class="day-bars">' + bars + '</div>'
+      + '<div class="axis"><span>' + escapeHtml(buckets[0].label) + '</span>'
+      + (buckets.length > 1 ? '<span>' + escapeHtml(buckets[buckets.length - 1].label) + '</span>' : '') + '</div>'
+      + (anyFailed ? '<div class="legend"><span><i></i>Generated</span><span><i class="failed"></i>Failed</span></div>' : '')
+      + '</div>';
+  }
+
+  // Average execution time of each kind of API call
+  function operationsHtml(apiCalls) {
+    if (!apiCalls || !apiCalls.length) return '';
+    var longest = Math.max.apply(null, [1].concat(apiCalls.map(function (op) { return op.averageMs || 0; })));
+    return '<div class="chart"><span class="chart-title">Execution time by call</span>' + apiCalls.map(function (op) {
+      var tip = op.api + ': ' + op.count + ' call(s)' + (op.failed ? ', ' + op.failed + ' failed' : '') + ', ' + op.requests + ' requests with the status checks';
+      return '<div class="op" title="' + escapeHtml(tip) + '"><span class="op-name">' + escapeHtml(op.operation) + ' ×' + op.count + '</span>'
+        + '<span class="op-value">' + (op.averageMs != null ? 'avg ' + seconds(op.averageMs) : 'failed') + '</span>'
+        + '<div class="op-track"><span class="op-bar" style="width:' + ((op.averageMs || 0) / longest * 100) + '%"></span></div></div>';
+    }).join('') + '<span class="chart-note">Bar: average time of a call</span></div>';
+  }
+
+  function tableHtml(title, head, rows) {
+    if (!rows.length) return '';
+    return '<div class="chart"><span class="chart-title">' + escapeHtml(title) + '</span><div class="table-wrap"><table class="table"><thead><tr>'
+      + head.map(function (h) { return '<th' + (h.n ? ' class="n"' : '') + '>' + escapeHtml(h.label) + '</th>'; }).join('')
+      + '</tr></thead><tbody>' + rows.map(function (row) {
+        return '<tr>' + row.map(function (cell, i) { return '<td' + (head[i].n ? ' class="n"' : '') + '>' + escapeHtml(cell == null ? '' : String(cell)) + '</td>'; }).join('') + '</tr>';
+      }).join('') + '</tbody></table></div></div>';
+  }
+
+  function show(data) {
+    var all = data.scope === 'all';
+    var totals = data.totals || {};
+    document.getElementById('title').textContent = all ? 'Usage of all the users' : 'My usage';
+    var firstDay = ((data.perDay || [])[0] || {}).day;
+    document.getElementById('period').textContent = data.days ? 'Last ' + data.days + ' days' : 'Whole history' + (firstDay ? ', since ' + dayLabel(firstDay) : '');
+    if (!totals.generations && !totals.apiCalls) {
+      setStatus('No activity over this period.');
+      return;
+    }
+    var table = all
+      ? tableHtml('Users', [{ label: 'User' }, { label: 'Generations', n: true }, { label: 'Variants', n: true }, { label: 'Failed', n: true }, { label: 'API calls', n: true }, { label: 'Avg render', n: true }, { label: 'Last activity' }],
+        (data.users || []).map(function (u) {
+          return [u.user, u.generations, u.variants, u.failed, u.apiCalls, u.averageRenderMs != null ? seconds(u.averageRenderMs) : '', dateTime(u.lastActivity)];
+        }))
+      : tableHtml('Latest generations', [{ label: 'Date' }, { label: 'Template' }, { label: 'Variants', n: true }, { label: 'Failed', n: true }, { label: 'Avg render', n: true }, { label: 'Formats' }, { label: 'Languages' }],
+        (data.generations || []).map(function (g) {
+          return [dateTime(g.at), g.template || '', g.variants, g.failed, g.averageRenderMs != null ? seconds(g.averageRenderMs) : '',
+            (g.formats || []).join(', ').toUpperCase(), (g.languages || []).join(', ').toUpperCase()];
+        }));
+    reportEl.innerHTML = '<div class="tiles">'
+      + (all ? tileHtml('Users', String(totals.users), '') : '')
+      + tileHtml('Generations', String(totals.generations), '')
+      + tileHtml('Variants generated', String(totals.variants), totals.failed ? totals.failed + ' failed' : '')
+      + tileHtml('API calls', String(totals.apiCalls), totals.requests + ' requests with the status checks')
+      + (totals.averageRenderMs != null ? tileHtml('Average render', seconds(totals.averageRenderMs), '') : '')
+      + '</div>' + perDayHtml(data) + operationsHtml(data.apiCalls) + table;
+    reportEl.hidden = false;
+    setStatus('');
+  }
+
+  onToolResult(function (result) {
+    if (result.isError) {
+      setStatus(result.content && result.content[0] ? result.content[0].text : 'Error', true);
+      return;
+    }
+    show(result.structuredContent || {});
+  });
+`)
+}
+
+module.exports = { getStartViewHtml, getUploadViewHtml, getVariantImagesViewHtml, getLayersViewHtml, getTextsViewHtml, getVariantViewHtml, getUsageViewHtml }

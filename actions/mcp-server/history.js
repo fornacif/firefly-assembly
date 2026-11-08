@@ -5,13 +5,15 @@ const crypto = require('crypto')
 const libDb = require('@adobe/aio-lib-db')
 const { generateAccessToken } = require('@adobe/aio-lib-core-auth')
 const stateStore = require('./state')
+const { getUnverifiedClaims } = require('./validator.js')
 
 // Region of the database, as provisioned (app.config.yaml)
 const DB_REGION = 'emea'
 const COLLECTION = 'activity'
 // Email of a user, from the IMS profile, kept this long in state
 const PROFILE_TTL_SECONDS = 30 * 24 * 3600
-const IMS_PROFILE_URL = 'https://ims-na1.adobelogin.com/ims/profile/v1'
+// Endpoints of IMS that may give the email of the user of a token, tried in order
+const IMS_PROFILE_URLS = ['https://ims-na1.adobelogin.com/ims/profile/v1', 'https://ims-na1.adobelogin.com/ims/userinfo/v2']
 
 let indexed = false
 
@@ -35,19 +37,27 @@ async function withActivity (params, fn) {
 
 const profileKey = userId => `profile-${crypto.createHash('sha256').update(String(userId)).digest('hex').slice(0, 16)}`
 
-// Email of the user of an IMS token, from its profile (kept in state); null when the profile does not give it.
+// Email of the user of an IMS token, from its profile (kept in state when found); null when IMS does not give it.
 async function userEmail (userId, token) {
   if (!userId || !token) return null
   const stored = (await stateStore.get(profileKey(userId)).catch(() => undefined))?.value
-  if (stored) return stored.email
-  const response = await fetch(IMS_PROFILE_URL, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5000) })
-  if (!response.ok) {
-    await response.body?.cancel().catch(() => {})
-    return null
+  if (stored?.email) return stored.email
+  const { client_id: clientId, scope } = getUnverifiedClaims(token)
+  for (const url of IMS_PROFILE_URLS) {
+    const response = await fetch(`${url}?client_id=${encodeURIComponent(clientId || '')}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(5000)
+    })
+    const body = response.ok ? await response.json().catch(() => ({})) : (await response.body?.cancel().catch(() => {}), {})
+    // The status and the fields given, without their values
+    console.log(`Email of the user from ${new URL(url).pathname}: HTTP ${response.status}, fields ${Object.keys(body).join(',') || 'none'}, token scopes ${scope}`)
+    const email = body.email || null
+    if (email) {
+      await stateStore.put(profileKey(userId), { email }, { ttl: PROFILE_TTL_SECONDS }).catch(() => {})
+      return email
+    }
   }
-  const email = (await response.json()).email || null
-  await stateStore.put(profileKey(userId), { email }, { ttl: PROFILE_TTL_SECONDS }).catch(() => {})
-  return email
+  return null
 }
 
 // API calls of a task by kind: [{ api, operation, count, failed, totalMs, requests }]
@@ -106,22 +116,43 @@ const num = value => value && typeof value === 'object' && 'low' in value ? valu
 const average = (totalMs, count) => num(count) ? Math.round(num(totalMs) / num(count)) : null
 const isoDate = value => new Date(value?.$date ?? value).toISOString()
 
-// Generations of a user over the last days (all of them without days), the latest first (at most limit), and their totals.
+const SUMS = { generations: { $sum: '$generations' }, variants: { $sum: '$variants' }, failed: { $sum: '$failed' }, apiCalls: { $sum: '$apiCalls' }, requests: { $sum: '$requests' }, renders: { $sum: '$renders' }, renderMs: { $sum: '$renderMs' } }
+const numbers = object => Object.fromEntries(Object.entries(object).map(([key, value]) => [key, typeof value === 'string' ? value : num(value)]))
+const withAverage = ({ renders, renderMs, ...rest }) => ({ ...numbers(rest), averageRenderMs: average(renderMs, renders) })
+
+// Usage of the activity matching a filter: totals, per day and per kind of API call.
+async function usage (activity, filter) {
+  const match = { $match: filter }
+  const [totals, perDay, operations] = await Promise.all([
+    activity.aggregate([match, { $group: { _id: null, users: { $addToSet: '$userId' }, ...SUMS } }]).toArray(),
+    activity.aggregate([match, { $group: { _id: '$day', users: { $addToSet: '$userId' }, ...SUMS } }, { $sort: { _id: 1 } }]).toArray(),
+    activity.aggregate([match, { $unwind: '$calls' }, {
+      $group: { _id: '$calls.operation', api: { $first: '$calls.api' }, count: { $sum: '$calls.count' }, failed: { $sum: '$calls.failed' }, totalMs: { $sum: '$calls.totalMs' }, requests: { $sum: '$calls.requests' } }
+    }, { $sort: { count: -1 } }]).toArray()
+  ])
+  const { _id, users = [], ...total } = totals[0] || {}
+  return {
+    totals: withAverage({ users: users.length, ...Object.fromEntries(Object.keys(SUMS).map(key => [key, total[key]])) }),
+    perDay: perDay.map(({ _id, users, ...day }) => withAverage({ day: _id, users: users.length, ...day })),
+    apiCalls: operations.map(({ _id, totalMs, ...op }) => ({ operation: _id, ...numbers(op), averageMs: average(totalMs, num(op.count) - num(op.failed)) }))
+  }
+}
+
+// Usage of a user over the last days (all of it without days): totals, per day, per kind of API call, and their generations,
+// the latest first (at most limit).
 async function usageHistory (params, userId, { days, limit }) {
   return withActivity(params, async activity => {
     const filter = { userId, ...period(days) }
-    const [generations, totals] = await Promise.all([
+    const [summary, generations] = await Promise.all([
+      usage(activity, filter),
       activity.find({ ...filter, kind: 'variants' })
         .project({ _id: 0, at: 1, template: 1, variants: 1, failed: 1, durationMs: 1, apiCalls: 1, formats: 1, languages: 1, renders: 1, renderMs: 1 })
-        .sort({ at: -1 }).limit(limit).toArray(),
-      activity.aggregate([{ $match: filter }, {
-        $group: { _id: null, generations: { $sum: '$generations' }, variants: { $sum: '$variants' }, failed: { $sum: '$failed' }, apiCalls: { $sum: '$apiCalls' }, renders: { $sum: '$renders' }, renderMs: { $sum: '$renderMs' } }
-      }]).toArray()
+        .sort({ at: -1 }).limit(limit).toArray()
     ])
-    const total = totals[0] || {}
     return {
+      scope: 'user',
       days: days || null,
-      totals: { generations: num(total.generations), variants: num(total.variants), failed: num(total.failed), apiCalls: num(total.apiCalls), averageRenderMs: average(total.renderMs, total.renders) },
+      ...summary,
       generations: generations.map(g => ({
         at: isoDate(g.at),
         template: g.template,
@@ -137,28 +168,19 @@ async function usageHistory (params, userId, { days, limit }) {
   })
 }
 
-const SUMS = { generations: { $sum: '$generations' }, variants: { $sum: '$variants' }, failed: { $sum: '$failed' }, apiCalls: { $sum: '$apiCalls' }, requests: { $sum: '$requests' }, renders: { $sum: '$renders' }, renderMs: { $sum: '$renderMs' } }
-const numbers = object => Object.fromEntries(Object.entries(object).map(([key, value]) => [key, typeof value === 'string' ? value : num(value)]))
-const withAverage = ({ renders, renderMs, ...rest }) => ({ ...numbers(rest), averageRenderMs: average(renderMs, renders) })
-
 // Usage of all the users over the last days (since the start without days): totals, per user, per day and per kind of API call.
 async function usageReport (params, { days }) {
   return withActivity(params, async activity => {
-    const match = { $match: period(days) }
-    const [users, perDay, operations] = await Promise.all([
-      activity.aggregate([match, { $group: { _id: '$userId', email: { $max: '$email' }, lastAt: { $max: '$at' }, ...SUMS } }, { $sort: { variants: -1 } }]).toArray(),
-      activity.aggregate([match, { $group: { _id: '$day', users: { $addToSet: '$userId' }, ...SUMS } }, { $sort: { _id: 1 } }]).toArray(),
-      activity.aggregate([match, { $unwind: '$calls' }, {
-        $group: { _id: '$calls.operation', api: { $first: '$calls.api' }, count: { $sum: '$calls.count' }, failed: { $sum: '$calls.failed' }, totalMs: { $sum: '$calls.totalMs' }, requests: { $sum: '$calls.requests' } }
-      }, { $sort: { count: -1 } }]).toArray()
+    const filter = period(days)
+    const [summary, users] = await Promise.all([
+      usage(activity, filter),
+      activity.aggregate([{ $match: filter }, { $group: { _id: '$userId', email: { $max: '$email' }, lastAt: { $max: '$at' }, ...SUMS } }, { $sort: { variants: -1 } }]).toArray()
     ])
-    const sum = key => users.reduce((total, user) => total + num(user[key]), 0)
     return {
+      scope: 'all',
       days: days || null,
-      totals: withAverage({ users: users.length, ...Object.fromEntries(Object.keys(SUMS).map(key => [key, sum(key)])) }),
-      users: users.map(({ _id, email, lastAt, ...user }) => withAverage({ user: email || _id, lastActivity: isoDate(lastAt), ...user })),
-      perDay: perDay.map(({ _id, users, ...day }) => withAverage({ day: _id, users: users.length, ...day })),
-      apiCalls: operations.map(({ _id, totalMs, ...op }) => ({ operation: _id, ...numbers(op), averageMs: average(totalMs, num(op.count) - num(op.failed)) }))
+      ...summary,
+      users: users.map(({ _id, email, lastAt, ...user }) => withAverage({ user: email || _id, lastActivity: isoDate(lastAt), ...user }))
     }
   })
 }

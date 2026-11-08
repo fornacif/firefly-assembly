@@ -4,7 +4,7 @@ const { Readable } = require('stream')
 const { z } = require('zod')
 const filesLib = require('@adobe/aio-lib-files')
 const { reviewImage } = require('./review.js')
-const { getStartViewHtml, getUploadViewHtml, getVariantImagesViewHtml, getLayersViewHtml, getTextsViewHtml, getVariantViewHtml } = require('./views.js')
+const { getStartViewHtml, getUploadViewHtml, getVariantImagesViewHtml, getLayersViewHtml, getTextsViewHtml, getVariantViewHtml, getUsageViewHtml } = require('./views.js')
 const stateStore = require('./state')
 const { getTokenFromRequest, getUnverifiedClaims, getUnverifiedClientId } = require('./validator.js')
 const { createPickerSession, getPickerResult } = require('./aem-picker.js')
@@ -39,7 +39,8 @@ const VIEWS = {
   variantImages: { uri: 'ui://variant-images/app.html', name: 'Variant Images App', description: 'Image grid per variant and smart object layer', html: getVariantImagesViewHtml },
   layers: { uri: 'ui://psd-layers/app.html', name: 'PSD Layers App', description: 'Editable layers picker', html: getLayersViewHtml },
   texts: { uri: 'ui://variant-texts/app.html', name: 'Variant Texts App', description: 'Editable table of the texts per variant', html: getTextsViewHtml },
-  variant: { uri: 'ui://psd-variant/app.html', name: 'PSD Variant App', description: 'Variant preview and download', html: getVariantViewHtml }
+  variant: { uri: 'ui://psd-variant/app.html', name: 'PSD Variant App', description: 'Variant preview and download', html: getVariantViewHtml },
+  usage: { uri: 'ui://usage/app.html', name: 'Usage App', description: 'Dashboard of the usage of the service', html: getUsageViewHtml }
 }
 
 const WORKFLOW = `Variant creation workflow. When the user asks to create variants (or versions, adaptations, localizations...) of a banner, ad, visual, social post or any PSD template, ALWAYS follow these steps in order, one at a time, without skipping any:
@@ -1843,11 +1844,13 @@ function registerTools (server, params) {
       title: 'Get Usage History',
       description: 'Returns the generations of variants of the current user over the last days (or since the start), the ' +
         'latest first: date, template, variants generated and failed, time taken, API calls, average render time, formats and ' +
-        'languages, with their totals. Call it when the user asks what they generated, or how much they used the service.',
+        'languages, with their totals, per day and per kind of API call. Call it when the user asks what they generated, or how much ' +
+        'they used the service. A widget shows it as a dashboard: do not repeat it, briefly comment on it.',
       inputSchema: {
         days: z.number().int().min(1).optional().describe('Period, in days up to today; omit it for the whole history'),
         limit: z.number().int().min(1).max(200).default(50).describe('Most generations listed')
-      }
+      },
+      _meta: uiMeta(VIEWS.usage)
     },
     async ({ days, limit }) => {
       try {
@@ -1865,10 +1868,11 @@ function registerTools (server, params) {
       description: 'Returns the usage of the service by all the users over the last days (or since the start): totals ' +
         '(users, generations, variants, failures, API calls, average render time), per user (email), per day, and per kind of API ' +
         'call (count, failures, average execution time). Reserved to the admins of the service. Call it when the user asks for ' +
-        'the overall usage; present it with tables or charts.',
+        'the overall usage. A widget shows it as a dashboard: do not repeat it, briefly comment on it.',
       inputSchema: {
         days: z.number().int().min(1).optional().describe('Period, in days up to today; omit it for the whole history')
-      }
+      },
+      _meta: uiMeta(VIEWS.usage)
     },
     async ({ days }) => {
       try {
