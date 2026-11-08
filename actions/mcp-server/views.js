@@ -436,7 +436,7 @@ function getStartViewHtml (scriptUrl) {
   sp-dropzone sp-button { font-size: var(--spectrum-font-size-100); line-height: var(--spectrum-line-height-100); }
   #file { display: none; }
   sp-progress-bar { width: 100%; margin-top: var(--spectrum-spacing-200); }
-  /* Fonts added, as tags that can be removed next to the button */
+  /* Fonts added, under the preview: tags that can be removed next to the button */
   .field.fonts { margin-top: var(--spectrum-spacing-300); }
   .fonts-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--spectrum-spacing-200); }
   #font-files { display: none; }
@@ -476,6 +476,10 @@ ${LAYERS_CSS}
   </div>
 </sp-dropzone>
 <sp-progress-bar id="progress" label="Upload" progress="0" side-label hidden></sp-progress-bar>
+</div>
+<div data-step="2" hidden>
+  <div class="subtle intro" id="layers-intro">Click the numbered zones of the template, or the list, to pick the layers to change in the variants.</div>
+  ${LAYERS_HTML}
 <div class="field fonts">
   <label>Fonts</label>
   <div class="fonts-row">
@@ -485,10 +489,6 @@ ${LAYERS_CSS}
   </div>
   <sp-help-text id="fonts-help"></sp-help-text>
 </div>
-</div>
-<div data-step="2" hidden>
-  <div class="subtle intro" id="layers-intro">Click the numbered zones of the template, or the list, to pick the layers to change in the variants.</div>
-  ${LAYERS_HTML}
 </div>
 <sp-help-text id="quota" variant="negative" icon hidden></sp-help-text>
 <div class="actions">
@@ -580,8 +580,8 @@ ${LAYERS_SCRIPT}
     fontsHelp.textContent = fontsUploading ? 'Uploading ' + fontsUploading + ' font file(s)...'
       : missing ? 'Fonts of the template not available: ' + missingFonts.join(', ') + '. Add their files, otherwise they are '
         + 'replaced by a default font.'
-      : missingFonts ? 'All the fonts of the template are available.'
-      : 'Optional: the .otf or .ttf files of fonts of the template that Photoshop does not have.';
+      : missingFonts ? 'All the fonts of the template are available. The preview is rendered again when a font is added or removed.'
+      : 'Optional: the .otf or .ttf files of fonts of the template that Photoshop does not have. The preview is rendered again with them.';
     fontsHelp.variant = missing ? 'negative' : 'neutral';
     reportSize();
   }
@@ -599,19 +599,30 @@ ${LAYERS_SCRIPT}
     if (!template) return;
     var read = templateRead;
     missingFonts = null;
-    fontsHelp.textContent = 'Checking the fonts of the template...';
+    fontsHelp.textContent = 'Rendering the preview again with the fonts...';
     fontsHelp.variant = 'neutral';
+    if (document.getElementById('preview-img').getAttribute('src')) showPreviewLoader();
+    reportSize();
     callTool('read-psd-template', { url: template.url, fonts: fontUrls() })
       .then(function (started) { return waitForTask(started.taskId); })
       .then(function (result) {
         if (version !== fontsVersion || read !== templateRead) return;
         if (result.previewUrl) showLatePreview(result.previewUrl, result.document || {});
+        // Without a new preview, the previous one is shown again
+        if (!document.getElementById('preview-loader').hidden) {
+          document.getElementById('preview-loader').hidden = true;
+          document.getElementById('stage').hidden = false;
+        }
         onMissingFonts(result.missingFonts || [], version);
       })
       .catch(function (error) {
         if (version !== fontsVersion) return;
-        fontsHelp.textContent = (error && error.message) || String(error);
+        // The previous preview is shown again
+        document.getElementById('preview-loader').hidden = true;
+        document.getElementById('stage').hidden = false;
+        fontsHelp.textContent = 'Preview not rendered again: ' + ((error && error.message) || String(error));
         fontsHelp.variant = 'negative';
+        reportSize();
       });
   }
 
@@ -628,9 +639,9 @@ ${LAYERS_SCRIPT}
       fontsUploading -= list.length;
       failed = failed.filter(Boolean);
       updateButton();
-      checkFonts();
       renderFonts();
       if (failed.length) { fontsHelp.textContent = 'Not uploaded: ' + failed.join(', '); fontsHelp.variant = 'negative'; }
+      if (failed.length < list.length) checkFonts();
     });
   }
 
@@ -638,8 +649,8 @@ ${LAYERS_SCRIPT}
   fontInput.addEventListener('change', function () { addFonts(fontInput.files); });
   fontTags.addEventListener('delete', function (e) {
     fonts.splice(Number(e.target.getAttribute('data-index')), 1);
-    checkFonts();
     renderFonts();
+    checkFonts();
   });
   renderFonts();
 
