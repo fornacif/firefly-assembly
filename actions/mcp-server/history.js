@@ -2,44 +2,11 @@
 // database of the workspace (App Builder Database Storage, region emea): one document per task, with the API calls it made.
 // Kept without limit of time. Read by get-usage-history (the user's own generations) and get-usage-report (all the users, for the admins).
 const libDb = require('@adobe/aio-lib-db')
-const crypto = require('crypto')
 const { generateAccessToken } = require('@adobe/aio-lib-core-auth')
-const stateStore = require('./state')
 
 // Region of the database, as provisioned (app.config.yaml)
 const DB_REGION = 'emea'
 const COLLECTION = 'activity'
-// Profile of the user (IMS profile, with the AdobeID scope of the connectors): only these fields are kept, 30 days in state
-const IMS_PROFILE_URL = 'https://ims-na1.adobelogin.com/ims/profile/v1'
-const PROFILE_FIELDS = ['email', 'name', 'first_name', 'last_name', 'displayName']
-const PROFILE_TTL_SECONDS = 30 * 24 * 3600
-const profileKey = userId => `profile-${crypto.createHash('sha256').update(String(userId)).digest('hex').slice(0, 16)}`
-
-// Profile of the user of an IMS token ({ email, name, first_name, last_name, displayName }), from state or IMS; null when IMS
-// does not give it (not kept then, to ask again).
-async function userProfile (userId, token, clientId) {
-  if (!userId || !token) return null
-  const stored = (await stateStore.get(profileKey(userId)).catch(() => undefined))?.value
-  // An empty profile kept by an earlier version is read again
-  if (PROFILE_FIELDS.some(field => stored?.[field])) return stored
-  const response = await fetch(`${IMS_PROFILE_URL}?client_id=${encodeURIComponent(clientId || '')}`, {
-    headers: { Authorization: `Bearer ${token}` },
-    signal: AbortSignal.timeout(5000)
-  })
-  if (!response.ok) {
-    await response.body?.cancel().catch(() => {})
-    console.warn(`IMS profile not read: HTTP ${response.status}`)
-    return null
-  }
-  const body = await response.json().catch(() => ({}))
-  const profile = Object.fromEntries(PROFILE_FIELDS.filter(field => body[field]).map(field => [field, body[field]]))
-  if (!Object.keys(profile).length) {
-    console.warn(`IMS profile without the fields kept: ${Object.keys(body).join(',') || 'none'}`)
-    return null
-  }
-  await stateStore.put(profileKey(userId), profile, { ttl: PROFILE_TTL_SECONDS }).catch(() => {})
-  return profile
-}
 
 // Environment of the workspace, from its Runtime namespace (<org>-<project>-<workspace>, without workspace for Production):
 // each workspace has its own database, the dashboards say which one they show
@@ -90,7 +57,6 @@ async function recordActivity (params, task, { ok, durationMs, calls, result }) 
   const generation = task.type === 'variants'
   const document = {
     userId: task.userId,
-    ...(task.profile ? { profile: task.profile } : {}),
     kind: task.type,
     at,
     day,
@@ -159,6 +125,7 @@ async function usageHistory (params, userId, { days, limit }) {
     ])
     return {
       scope: 'user',
+      userId,
       env: environment(),
       days: days || null,
       ...summary,
@@ -183,22 +150,16 @@ async function usageReport (params, { days }) {
     const filter = period(days)
     const [summary, users] = await Promise.all([
       usage(activity, filter),
-      activity.aggregate([{ $match: filter }, { $group: { _id: '$userId', lastAt: { $max: '$at' }, displayName: { $max: '$profile.displayName' }, name: { $max: '$profile.name' }, email: { $max: '$profile.email' }, ...SUMS } }, { $sort: { variants: -1 } }]).toArray()
+      activity.aggregate([{ $match: filter }, { $group: { _id: '$userId', lastAt: { $max: '$at' }, ...SUMS } }, { $sort: { variants: -1 } }]).toArray()
     ])
     return {
       scope: 'all',
       env: environment(),
       days: days || null,
       ...summary,
-      users: users.map(({ _id, lastAt, displayName, name, email, ...user }) => withAverage({
-        userId: _id,
-        user: displayName || name || email || _id,
-        email: email || null,
-        lastActivity: isoDate(lastAt),
-        ...user
-      }))
+      users: users.map(({ _id, lastAt, ...user }) => withAverage({ user: _id, lastActivity: isoDate(lastAt), ...user }))
     }
   })
 }
 
-module.exports = { recordActivity, usageHistory, usageReport, userProfile }
+module.exports = { recordActivity, usageHistory, usageReport }

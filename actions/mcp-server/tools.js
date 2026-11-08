@@ -9,7 +9,7 @@ const stateStore = require('./state')
 const { getTokenFromRequest, getUnverifiedClaims, getUnverifiedClientId } = require('./validator.js')
 const { createPickerSession, getPickerResult } = require('./aem-picker.js')
 const { zipFiles } = require('./zip.js')
-const { recordActivity, usageHistory, usageReport, userProfile } = require('./history.js')
+const { recordActivity, usageHistory, usageReport } = require('./history.js')
 const spectrumAsset = require('./spectrum-asset.js')
 
 const IMS_TOKEN_URL = 'https://ims-na1.adobelogin.com/ims/token/v3'
@@ -1168,11 +1168,7 @@ const signTask = (params, taskJson) =>
 
 // Starts a task of the current user; returns its id.
 async function startTask (params, type, args) {
-  const userId = currentUserId(params)
-  // The profile of the user (name, email), for the history of the activity (a zip makes no API call)
-  const token = getTokenFromRequest(params)
-  const profile = type === 'zip' ? null : await userProfile(userId, token, getUnverifiedClaims(token).client_id).catch(() => null)
-  const task = { id: crypto.randomUUID(), type, args, userId, ...(profile ? { profile } : {}) }
+  const task = { id: crypto.randomUUID(), type, args, userId: currentUserId(params) }
   const state = await initState()
   await state.put(taskKey(task.userId, task.id), { status: 'running', startedAt: Date.now() }, { ttl: TASK_TTL_SECONDS })
   const [namespace, ...action] = (process.env.__OW_ACTION_NAME || '').split('/').filter(Boolean)
@@ -1845,7 +1841,7 @@ function registerTools (server, params) {
       title: 'Get Usage History',
       description: 'Returns the generations of variants of the current user over the last days (or since the start), the ' +
         'latest first: date, template, variants generated and failed, time taken, API calls, average render time, formats and ' +
-        'languages, with their totals, per day and per kind of API call, and the user (IMS user id and profile), in the environment of this server (env: Production, Stage...: ' +
+        'languages, with their totals, per day and per kind of API call, and the IMS user id, in the environment of this server (env: Production, Stage...: ' +
         'each one keeps its own history). Call it when the user asks what they generated, or how much they used the service. A widget ' +
         'shows it as a dashboard: do not repeat it, briefly comment on it, naming the environment.',
       inputSchema: {
@@ -1856,13 +1852,7 @@ function registerTools (server, params) {
     },
     async ({ days, limit }) => {
       try {
-        const userId = currentUserId(params)
-        const token = getTokenFromRequest(params)
-        const [history, profile] = await Promise.all([
-          usageHistory(params, userId, { days, limit }),
-          userProfile(userId, token, getUnverifiedClaims(token).client_id).catch(() => null)
-        ])
-        return jsonResult({ ...history, user: { userId, ...profile } })
+        return jsonResult(await usageHistory(params, currentUserId(params), { days, limit }))
       } catch (error) {
         return errorResult(error)
       }
@@ -1874,7 +1864,7 @@ function registerTools (server, params) {
     {
       title: 'Get Usage Report',
       description: 'Returns the usage of the service by all the users over the last days (or since the start): totals ' +
-        '(users, generations, variants, failures, API calls, average render time), per user (name, email and IMS user id), per day, and per kind of API ' +
+        '(users, generations, variants, failures, API calls, average render time), per user (IMS user id), per day, and per kind of API ' +
         'call (count, failures, average execution time). Reserved to the admins of the service. Call it when the user asks for ' +
         'the overall usage. Covers the environment of this server only (env: Production, Stage...: each one keeps its own history). A ' +
         'widget shows it as a dashboard: do not repeat it, briefly comment on it, naming the environment.',

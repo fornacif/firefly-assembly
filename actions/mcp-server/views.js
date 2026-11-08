@@ -2433,9 +2433,6 @@ const REPORT_CSS = `
   .table td { border-bottom: 1px solid var(--spectrum-gray-200); padding: 6px 8px 6px 0; vertical-align: top; }
   .table .n { text-align: right; }
   .table-wrap { overflow-x: auto; }
-  .profile { display: grid; grid-template-columns: max-content 1fr; gap: 2px var(--spectrum-spacing-300); margin: var(--spectrum-spacing-200) 0 0; font-size: var(--spectrum-font-size-75); }
-  .profile dt { color: var(--spectrum-neutral-subdued-content-color-default); }
-  .profile dd { margin: 0; word-break: break-all; }
   .env-badge { margin-left: var(--spectrum-spacing-100); padding: 0 6px; border-radius: 4px; background: var(--spectrum-gray-200); font-size: 11px; font-weight: bold; line-height: 18px; text-transform: uppercase; vertical-align: middle; }
 `
 
@@ -3167,7 +3164,7 @@ ${REPORT_CSS}
 `, `
 <h2 class="heading" id="title">Usage</h2>
 <div class="subtle" id="period"></div>
-<dl class="profile" id="profile" hidden></dl>
+<div class="subtle" id="user-id" hidden></div>
 <section class="report" id="report" hidden aria-label="Usage"></section>
 <sp-help-text class="status" id="status"></sp-help-text>
 `, `
@@ -3250,15 +3247,10 @@ ${REPORT_SCRIPT}
     document.getElementById('title').innerHTML = escapeHtml(all ? 'Usage of all the users' : 'My usage')
       + (data.env ? '<span class="env-badge">' + escapeHtml(data.env) + '</span>' : '');
     var firstDay = ((data.perDay || [])[0] || {}).day;
-    // The user of their own history: their IMS profile and id
-    var profileEl = document.getElementById('profile');
-    var user = data.user;
-    if (user) {
-      profileEl.innerHTML = [['Display name', user.displayName], ['Name', user.name], ['First name', user.first_name], ['Last name', user.last_name],
-        ['Email', user.email], ['IMS user id', user.userId]].filter(function (f) { return f[1]; }).map(function (f) {
-        return '<dt>' + escapeHtml(f[0]) + '</dt><dd>' + escapeHtml(f[1]) + '</dd>';
-      }).join('');
-      profileEl.hidden = false;
+    if (data.userId) {
+      var userIdEl = document.getElementById('user-id');
+      userIdEl.textContent = 'IMS user id: ' + data.userId;
+      userIdEl.hidden = false;
     }
     document.getElementById('period').textContent = data.days ? 'Last ' + data.days + ' days' : 'Whole history' + (firstDay ? ', since ' + dayLabel(firstDay) : '');
     if (!totals.generations && !totals.apiCalls) {
@@ -3266,9 +3258,9 @@ ${REPORT_SCRIPT}
       return;
     }
     var table = all
-      ? tableHtml('Users', [{ label: 'User' }, { label: 'Email' }, { label: 'Generations', n: true }, { label: 'Variants', n: true }, { label: 'Failed', n: true }, { label: 'API calls', n: true }, { label: 'Avg render', n: true }, { label: 'Last activity' }],
+      ? tableHtml('Users', [{ label: 'User' }, { label: 'Generations', n: true }, { label: 'Variants', n: true }, { label: 'Failed', n: true }, { label: 'API calls', n: true }, { label: 'Avg render', n: true }, { label: 'Last activity' }],
         (data.users || []).map(function (u) {
-          return [u.user, u.email || '', u.generations, u.variants, u.failed, u.apiCalls, u.averageRenderMs != null ? seconds(u.averageRenderMs) : '', dateTime(u.lastActivity)];
+          return [u.user, u.generations, u.variants, u.failed, u.apiCalls, u.averageRenderMs != null ? seconds(u.averageRenderMs) : '', dateTime(u.lastActivity)];
         }))
       : tableHtml('Latest generations', [{ label: 'Date' }, { label: 'Template' }, { label: 'Variants', n: true }, { label: 'Failed', n: true }, { label: 'Avg render', n: true }, { label: 'Formats' }, { label: 'Languages' }],
         (data.generations || []).map(function (g) {
