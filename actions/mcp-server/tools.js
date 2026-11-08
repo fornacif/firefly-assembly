@@ -1337,16 +1337,23 @@ async function keptVariants (params, previousTaskId, fileNames) {
   return { kept, earlier, order: [...earlierOrder, ...fileNames.filter(name => !earlierOrder.includes(name))] }
 }
 
-// Files of the earlier generation of variants generated again with the same edits, in formats not rendered again
-// ({ fileName: [file] }): only the format changes, so they are still those of the variant.
-function earlierFiles (earlier = [], variants, formats) {
-  return Object.fromEntries(variants.map(variant => {
-    const before = earlier.find(v => v.fileName === variant.fileName)
-    if (!before || before.edits !== editsHash(variant.layers)) return null
+// Formats of the variants generated again, so that each keeps all its formats up to date: a variant with the same edits keeps
+// the files of the earlier generation in the formats not rendered again ({ fileName: [file] }: only the format changes); a
+// variant with other edits is also rendered again in its earlier formats (the same Photoshop job, no other call).
+function earlierFormats (earlier = [], variants, formats) {
+  const addedFiles = {}
+  const planned = variants.map(variant => {
+    const before = earlier.find(v => v.fileName === variant.fileName && !v.error)
     const rendered = variant.formats || formats
-    const files = (before.files || []).filter(file => !rendered.includes(file.format))
-    return files.length ? [variant.fileName, files] : null
-  }).filter(Boolean))
+    const others = (before?.files || []).filter(file => !rendered.includes(file.format))
+    if (!others.length) return variant
+    if (before.edits === editsHash(variant.layers)) {
+      addedFiles[variant.fileName] = others
+      return variant
+    }
+    return { ...variant, formats: [...rendered, ...new Set(others.map(file => file.format))] }
+  })
+  return { variants: planned, addedFiles }
 }
 
 // A generation of the current user, done and to be reviewed by the assistant; throws otherwise.
@@ -1699,11 +1706,12 @@ function registerTools (server, params) {
         const callFormats = [...new Set(formats || [format || 'jpeg'])]
         const fileNames = uniqueFileNames(variantList)
         const { kept, earlier, order } = await keptVariants(params, previousTaskId, fileNames)
-        const addedFiles = earlierFiles(earlier, variantList.map((variant, index) => ({ ...variant, fileName: fileNames[index] })), callFormats)
+        const { variants: plannedVariants, addedFiles } = earlierFormats(earlier,
+          variantList.map((variant, index) => ({ ...variant, fileName: fileNames[index] })), callFormats)
         const taskId = await startTask(params, 'variants', {
           templateUrl,
           formats: callFormats,
-          variants: variantList,
+          variants: plannedVariants,
           fonts,
           warnings,
           ...(kept.length ? { kept, order } : {}),
