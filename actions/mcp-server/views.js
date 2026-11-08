@@ -2549,6 +2549,8 @@ function getVariantViewHtml (scriptUrl) {
   .card-head { display: flex; align-items: center; gap: var(--spectrum-spacing-100); min-width: 0; }
   .card-head .card-name { flex: 1; min-width: 0; }
   .language { flex: none; padding: 0 6px; border-radius: 4px; background: var(--spectrum-gray-200); font-size: 11px; font-weight: bold; line-height: 18px; text-transform: uppercase; }
+  /* A variant of the earlier generation, not generated again */
+  .unchanged { flex: none; font-size: 11px; color: var(--spectrum-neutral-subdued-content-color-default); }
   /* In place of the visual of a variant being rendered */
   .rendering {
     display: flex;
@@ -2707,6 +2709,7 @@ ${REPORT_SCRIPT}
   // Name of a variant, with its language
   function cardHead(v) {
     return '<div class="card-head"><span class="subtle card-name">' + escapeHtml(v.fileName) + '</span>'
+      + (v.kept ? '<span class="unchanged" title="Not generated again: as in the earlier generation">Unchanged</span>' : '')
       + (v.language ? '<span class="language">' + escapeHtml(v.language) + '</span>' : '') + '</div>';
   }
 
@@ -2725,7 +2728,7 @@ ${REPORT_SCRIPT}
     }).join('')
       + (v.checking ? '<sp-progress-bar size="s" label="Checking the texts" indeterminate></sp-progress-bar>' : '');
     // Pre-filled once the texts are checked
-    if (requests[v.fileName] == null && !v.checking) requests[v.fileName] = recommendationOf(v);
+    if (requests[v.fileName] == null && !v.checking) requests[v.fileName] = v.kept ? '' : recommendationOf(v);
     return '<div class="card">' + visualHtml(v, i, 320)
       + cardHead(v)
       + problems
@@ -2817,7 +2820,8 @@ ${REPORT_SCRIPT}
       + '"change", nothing else: change the font size of a text only when the change asks for it ("Reduce the font size of X to N%" is '
       + 'fontScale N/100); to change the words of a text (shorter, longer, other words), rewrite it as asked and keep its fontScale as '
       + 'before. "texts" gives the layer id of the texts by name. Then call create-variant ONCE with these variants only, with the same '
-      + 'file names and the same edits as before except the changes. If a change is unclear, ask the user first.\\n' + JSON.stringify(changes);
+      + 'file names and the same edits as before except the changes, and previousTaskId "' + generationTaskId + '" (its widget also shows '
+      + 'the other variants, unchanged). If a change is unclear, ask the user first.\\n' + JSON.stringify(changes);
     busy = true;
     updateFixActions();
     sendToModel(context, 'Please apply my changes to ' + changes.length + ' variant(s).', 'Changes sent.')
@@ -3104,7 +3108,7 @@ ${REPORT_SCRIPT}
   var polling = false;
 
   function setChecking(checking) {
-    variants = variants.map(function (v) { return v.error || v.pending ? v : Object.assign({}, v, { checking: checking }); });
+    variants = variants.map(function (v) { return v.error || v.pending || v.kept ? v : Object.assign({}, v, { checking: checking }); });
     render();
   }
 
@@ -3112,7 +3116,7 @@ ${REPORT_SCRIPT}
   function applyReview(issues) {
     var done = true;
     variants = variants.map(function (v) {
-      if (v.error || v.pending) return v;
+      if (v.error || v.pending || v.kept) return v;
       if (!issues[v.fileName]) { done = false; return v; }
       // Pre-filled again with the fixes proposed, unless the user has written changes
       if (!requestOf(v)) delete requests[v.fileName];
@@ -3168,17 +3172,25 @@ ${REPORT_SCRIPT}
     }
     generating = true;
     generationTaskId = data.taskId;
-    variants = (data.pending || []).map(function (fileName, i) {
+    // Variants of the earlier generation not generated again, in its order with the new ones
+    var kept = data.kept || [];
+    var withKept = function (list) {
+      if (!kept.length) return list;
+      var all = kept.concat(list);
+      var at = function (v) { var i = (data.order || []).indexOf(v.fileName); return i < 0 ? all.length : i; };
+      return all.slice().sort(function (a, b) { return at(a) - at(b); });
+    };
+    variants = withKept((data.pending || []).map(function (fileName, i) {
       return Object.assign({ fileName: fileName, pending: true }, (data.labels || [])[i]);
-    });
+    }));
     render();
     waitForTask(data.taskId, function (partial) {
-      variants = partial.variants || variants;
+      if (partial.variants) variants = withKept(partial.variants);
       render();
     })
       .then(function (generation) {
         generating = false;
-        variants = generation.variants || variants;
+        variants = generation.variants ? withKept(generation.variants) : variants;
         textLayers = ((generation.review && generation.review.layers) || []).filter(function (l) { return l.type === 'text_layer'; });
         render();
         showReport(generation.report);
