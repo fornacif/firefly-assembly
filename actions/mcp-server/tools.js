@@ -454,8 +454,7 @@ function missingFontsOf (error) {
 // Flattened JPEG of a PSD, on which the layer picker of the views shows the editable layers, and the fonts of the template
 // that the render does not have: { url, missingFonts }. A text is only drawn again, with its font, when it is edited: the
 // texts are given their own content, with the 'fail' strategy (the manifest lists as missing the fonts that the render gets
-// from Adobe Fonts). When fonts are missing, the preview is the template as saved: a text drawn again with a default font
-// would not match the area of its layer, where the picker numbers it.
+// from Adobe Fonts). When fonts are missing, the preview is rendered again with a default font in their place, as the variants.
 function renderPreview (params, url, fonts = []) {
   return previewCache([url, ...fonts].join('|'), async () => {
     const texts = drawnLayers((await getManifest(params, url)).layers)
@@ -475,7 +474,7 @@ function renderPreview (params, url, fonts = []) {
     } catch (error) {
       const missingFonts = missingFontsOf(error)
       if (!missingFonts) throw error
-      return { url: await render('use_default', []), missingFonts }
+      return { url: await render('use_default', texts), missingFonts }
     }
   })
 }
