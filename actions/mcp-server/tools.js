@@ -9,7 +9,7 @@ const stateStore = require('./state')
 const { getTokenFromRequest, getUnverifiedClaims, getUnverifiedClientId } = require('./validator.js')
 const { createPickerSession, getPickerResult } = require('./aem-picker.js')
 const { zipFiles } = require('./zip.js')
-const { recordActivity, userEmail, usageHistory, usageReport } = require('./history.js')
+const { recordActivity, usageHistory, usageReport } = require('./history.js')
 const spectrumAsset = require('./spectrum-asset.js')
 
 const IMS_TOKEN_URL = 'https://ims-na1.adobelogin.com/ims/token/v3'
@@ -1168,10 +1168,7 @@ const signTask = (params, taskJson) =>
 
 // Starts a task of the current user; returns its id.
 async function startTask (params, type, args) {
-  const userId = currentUserId(params)
-  // The email of the user, for the history of the activity (a zip makes no API call)
-  const email = type === 'zip' ? null : await userEmail(userId, getTokenFromRequest(params)).catch(() => null)
-  const task = { id: crypto.randomUUID(), type, args, userId, ...(email ? { email } : {}) }
+  const task = { id: crypto.randomUUID(), type, args, userId: currentUserId(params) }
   const state = await initState()
   await state.put(taskKey(task.userId, task.id), { status: 'running', startedAt: Date.now() }, { ttl: TASK_TTL_SECONDS })
   const [namespace, ...action] = (process.env.__OW_ACTION_NAME || '').split('/').filter(Boolean)
@@ -1866,7 +1863,7 @@ function registerTools (server, params) {
     {
       title: 'Get Usage Report',
       description: 'Returns the usage of the service by all the users over the last days (or since the start): totals ' +
-        '(users, generations, variants, failures, API calls, average render time), per user (email), per day, and per kind of API ' +
+        '(users, generations, variants, failures, API calls, average render time), per user (IMS user id), per day, and per kind of API ' +
         'call (count, failures, average execution time). Reserved to the admins of the service. Call it when the user asks for ' +
         'the overall usage. A widget shows it as a dashboard: do not repeat it, briefly comment on it.',
       inputSchema: {

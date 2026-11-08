@@ -120,7 +120,7 @@ function getProtectedResourceMetadata (params) {
     return {
         resource: getResourceUrl(params),
         authorization_servers: [(params.IMS_HOST && String(params.IMS_HOST).trim()) || 'https://ims-na1.adobelogin.com'],
-        scopes_supported: String(params.IMS_SCOPES || 'openid,AdobeID,email').split(/[\s,]+/).filter(Boolean),
+        scopes_supported: String(params.IMS_SCOPES || 'openid,AdobeID').split(/[\s,]+/).filter(Boolean),
         bearer_methods_supported: ['header']
     }
 }

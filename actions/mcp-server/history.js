@@ -1,19 +1,12 @@
 // History of the activity of the users (template readings, crops, image generations, generations of variants), kept in the
 // database of the workspace (App Builder Database Storage, region emea): one document per task, with the API calls it made.
 // Kept without limit of time. Read by get-usage-history (the user's own generations) and get-usage-report (all the users, for the admins).
-const crypto = require('crypto')
 const libDb = require('@adobe/aio-lib-db')
 const { generateAccessToken } = require('@adobe/aio-lib-core-auth')
-const stateStore = require('./state')
-const { getUnverifiedClaims } = require('./validator.js')
 
 // Region of the database, as provisioned (app.config.yaml)
 const DB_REGION = 'emea'
 const COLLECTION = 'activity'
-// Email of a user, from the IMS profile, kept this long in state
-const PROFILE_TTL_SECONDS = 30 * 24 * 3600
-// Endpoints of IMS that may give the email of the user of a token, tried in order
-const IMS_PROFILE_URLS = ['https://ims-na1.adobelogin.com/ims/profile/v1', 'https://ims-na1.adobelogin.com/ims/userinfo/v2']
 
 let indexed = false
 
@@ -33,34 +26,6 @@ async function withActivity (params, fn) {
   } finally {
     await client.close().catch(() => {})
   }
-}
-
-const profileKey = userId => `profile-${crypto.createHash('sha256').update(String(userId)).digest('hex').slice(0, 16)}`
-
-// Email of the user of an IMS token, from its profile (kept in state when found); null when IMS does not give it.
-async function userEmail (userId, token) {
-  if (!userId || !token) return null
-  const stored = (await stateStore.get(profileKey(userId)).catch(() => undefined))?.value
-  if (stored?.email) return stored.email
-  const { client_id: clientId, scope } = getUnverifiedClaims(token)
-  // What IMS answered (status and fields, without their values), logged when no email is given
-  const attempts = []
-  for (const url of IMS_PROFILE_URLS) {
-    const response = await fetch(`${url}?client_id=${encodeURIComponent(clientId || '')}`, {
-      headers: { Authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(5000)
-    })
-    const body = response.ok ? await response.json().catch(() => ({})) : (await response.body?.cancel().catch(() => {}), {})
-    // The status and the fields given, without their values
-    attempts.push({ path: new URL(url).pathname, status: response.status, fields: Object.keys(body) })
-    const email = body.email || null
-    if (email) {
-      await stateStore.put(profileKey(userId), { email }, { ttl: PROFILE_TTL_SECONDS }).catch(() => {})
-      return email
-    }
-  }
-  console.warn(`No email for the user from IMS: ${JSON.stringify(attempts)}, token scopes ${scope}`)
-  return null
 }
 
 // API calls of a task by kind: [{ api, operation, count, failed, totalMs, requests }]
@@ -85,7 +50,6 @@ async function recordActivity (params, task, { ok, durationMs, calls, result }) 
   const generation = task.type === 'variants'
   const document = {
     userId: task.userId,
-    email: task.email || null,
     kind: task.type,
     at,
     day,
@@ -177,15 +141,15 @@ async function usageReport (params, { days }) {
     const filter = period(days)
     const [summary, users] = await Promise.all([
       usage(activity, filter),
-      activity.aggregate([{ $match: filter }, { $group: { _id: '$userId', email: { $max: '$email' }, lastAt: { $max: '$at' }, ...SUMS } }, { $sort: { variants: -1 } }]).toArray()
+      activity.aggregate([{ $match: filter }, { $group: { _id: '$userId', lastAt: { $max: '$at' }, ...SUMS } }, { $sort: { variants: -1 } }]).toArray()
     ])
     return {
       scope: 'all',
       days: days || null,
       ...summary,
-      users: users.map(({ _id, email, lastAt, ...user }) => withAverage({ user: email || _id, lastActivity: isoDate(lastAt), ...user }))
+      users: users.map(({ _id, lastAt, ...user }) => withAverage({ user: _id, lastActivity: isoDate(lastAt), ...user }))
     }
   })
 }
 
-module.exports = { recordActivity, userEmail, usageHistory, usageReport }
+module.exports = { recordActivity, usageHistory, usageReport }
