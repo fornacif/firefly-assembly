@@ -19,4 +19,11 @@ async function remove (key) {
   return (await init()).delete(key)
 }
 
-module.exports = { get, put, delete: remove }
+// Keys matching a glob pattern (e.g. 'abc-*')
+async function keys (match) {
+  const found = []
+  for await (const page of (await init()).list({ match })) found.push(...page.keys)
+  return found
+}
+
+module.exports = { get, put, delete: remove, keys }

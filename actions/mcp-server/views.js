@@ -2501,6 +2501,35 @@ ${STEPS_CSS}
   }
   .card-warning[data-layer] { cursor: pointer; }
   .card-warning[data-layer]:hover { text-decoration: underline; }
+  /* Report of the last generation: tiles, then the execution times of the API calls since the template was imported */
+  .report {
+    display: flex; flex-direction: column; gap: var(--spectrum-spacing-300);
+    margin-top: var(--spectrum-spacing-400); padding: var(--spectrum-spacing-300);
+    background: var(--spectrum-background-layer-2-color); border: 1px solid var(--spectrum-gray-200); border-radius: var(--spectrum-corner-radius-500);
+  }
+  .report[hidden] { display: none; }
+  .report-title { font-weight: var(--spectrum-bold-font-weight); }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: var(--spectrum-spacing-200); }
+  .tile { display: flex; flex-direction: column; gap: 2px; padding: var(--spectrum-spacing-200); background: var(--spectrum-background-base-color); border-radius: var(--spectrum-corner-radius-200); }
+  .tile-label, .chart-title { font-size: var(--spectrum-font-size-50, 11px); font-weight: var(--spectrum-bold-font-weight); letter-spacing: 0.04em; text-transform: uppercase; color: var(--spectrum-neutral-subdued-content-color-default); }
+  .tile-value { font-size: var(--spectrum-font-size-500, 22px); font-weight: var(--spectrum-bold-font-weight); font-variant-numeric: tabular-nums; }
+  .tile-note { font-size: var(--spectrum-font-size-75); color: var(--spectrum-neutral-subdued-content-color-default); }
+  .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: var(--spectrum-spacing-300); }
+  .chart { display: flex; flex-direction: column; gap: var(--spectrum-spacing-200); min-width: 0; }
+  .chart-note { font-size: var(--spectrum-font-size-75); color: var(--spectrum-neutral-subdued-content-color-default); }
+  /* Execution time by kind of call: the bar is the average, the thin line the range from the fastest to the slowest */
+  .op { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px var(--spectrum-spacing-200); font-size: var(--spectrum-font-size-75); }
+  .op-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .op-value { color: var(--spectrum-neutral-subdued-content-color-default); font-variant-numeric: tabular-nums; text-align: right; }
+  .op-track { grid-column: 1 / -1; position: relative; height: 10px; }
+  .op-range { position: absolute; top: 4px; height: 2px; background: var(--spectrum-gray-400); border-radius: 1px; }
+  .op-bar { position: absolute; top: 0; left: 0; height: 10px; min-width: 2px; background: var(--spectrum-accent-background-color-default); border-radius: 0 4px 4px 0; }
+  /* Renders of the last generation, in the order they started, against the average render since the import */
+  .renders { position: relative; display: flex; align-items: flex-end; gap: 2px; height: 96px; border-bottom: 1px solid var(--spectrum-gray-300); }
+  .render-bar { flex: 1; max-width: 32px; min-height: 2px; background: var(--spectrum-accent-background-color-default); border-radius: 4px 4px 0 0; }
+  .render-bar.failed { background: var(--spectrum-gray-400); }
+  .render-bar:hover, .op:hover .op-bar { background: var(--spectrum-accent-background-color-hover, var(--spectrum-accent-background-color-default)); }
+  .average-line { position: absolute; left: 0; right: 0; border-top: 2px dashed var(--spectrum-neutral-subdued-content-color-default); pointer-events: none; }
 `, `
 <h2 class="heading">Generated variants</h2>
 <ol class="steps single" aria-label="Step"><li data-for="5" class="current"><span class="step-kicker">Step 5</span><span class="step-title">Review and download</span></li></ol>
@@ -2531,6 +2560,7 @@ ${STEPS_CSS}
   <sp-button variant="secondary" treatment="outline" id="download-all" hidden disabled>Download all</sp-button>
 </div>
 <sp-help-text class="status" id="status"></sp-help-text>
+<section class="report" id="report" hidden aria-label="Generation report"></section>
 `, `
   setStatus('Generating variants...', false, true);
   var grid = document.getElementById('grid');
@@ -2871,6 +2901,7 @@ ${STEPS_CSS}
     callTool('create-variant', args)
       .then(function (started) { return waitForTask(started.taskId).then(function (generation) { return { taskId: started.taskId, generation: generation }; }); })
       .then(function (done) {
+        showReport(done.generation.report);
         var result = (done.generation.variants || [])[0] || { fileName: before.fileName, error: 'Not generated' };
         variants[index] = Object.assign({}, result, { group: before.group, language: before.language, textIssues: [] });
         if (result.error) return render();
@@ -2946,6 +2977,78 @@ ${STEPS_CSS}
     else if (e.key === 'ArrowLeft') step(-1);
     else if (e.key === 'ArrowRight') step(1);
   });
+
+
+  // Report of the last generation (its task result): variants generated, time taken, and the API calls since the template
+  // was imported, with their execution times by kind and the renders of the generation against the average render
+  var reportEl = document.getElementById('report');
+
+  function seconds(ms) {
+    var s = ms / 1000;
+    if (s < 60) return (s < 10 ? s.toFixed(1) : Math.round(s)) + ' s';
+    return Math.floor(s / 60) + ' min ' + Math.round(s % 60) + ' s';
+  }
+
+  function average(list) {
+    return list.length ? list.reduce(function (total, ms) { return total + ms; }, 0) / list.length : 0;
+  }
+
+  function tileHtml(label, value, note) {
+    return '<div class="tile"><span class="tile-label">' + escapeHtml(label) + '</span><span class="tile-value">' + escapeHtml(value)
+      + '</span>' + (note ? '<span class="tile-note">' + escapeHtml(note) + '</span>' : '') + '</div>';
+  }
+
+  function showReport(report) {
+    if (!report) return;
+    var calls = report.calls || [];
+    var isRender = function (c) { return c.operation === 'Variant render'; };
+    var renders = calls.filter(function (c) { return c.generation && isRender(c); });
+    var allRenders = calls.filter(function (c) { return isRender(c) && c.ok; }).map(function (c) { return c.ms; });
+    var ownRenders = renders.filter(function (c) { return c.ok; }).map(function (c) { return c.ms; });
+    var requests = calls.reduce(function (total, c) { return total + (c.requests || 0); }, 0);
+    var since = report.sinceImport ? 'since the template was imported' : 'of this generation';
+
+    // Kinds of calls, in the order of their first call
+    var kinds = [];
+    calls.forEach(function (c) {
+      var kind = kinds.filter(function (k) { return k.name === c.operation; })[0];
+      if (!kind) kinds.push(kind = { name: c.operation, api: c.api, times: [], failed: 0 });
+      if (c.ok) kind.times.push(c.ms); else kind.failed++;
+    });
+    var longest = Math.max.apply(null, [1].concat(calls.map(function (c) { return c.ms || 0; })));
+    var opsHtml = kinds.map(function (k) {
+      var count = k.times.length + k.failed;
+      var min = k.times.length ? Math.min.apply(null, k.times) : 0, max = k.times.length ? Math.max.apply(null, k.times) : 0;
+      var tip = k.api + ': ' + count + ' call(s), average ' + seconds(average(k.times)) + ', from ' + seconds(min) + ' to ' + seconds(max)
+        + (k.failed ? ', ' + k.failed + ' failed' : '');
+      return '<div class="op" title="' + escapeHtml(tip) + '"><span class="op-name">' + escapeHtml(k.name) + ' ×' + count + '</span>'
+        + '<span class="op-value">' + (k.times.length ? 'avg ' + seconds(average(k.times)) : 'failed') + '</span>'
+        + '<div class="op-track"><span class="op-range" style="left:' + (min / longest * 100) + '%;width:' + ((max - min) / longest * 100) + '%"></span>'
+        + '<span class="op-bar" style="width:' + (average(k.times) / longest * 100) + '%"></span></div></div>';
+    }).join('');
+
+    var rendersHtml = '';
+    if (renders.length) {
+      var top = Math.max.apply(null, renders.map(function (c) { return c.ms; }).concat([average(allRenders)])) || 1;
+      rendersHtml = '<div class="chart"><span class="chart-title">Renders of this generation</span><div class="renders">'
+        + renders.map(function (c, i) {
+          return '<span class="render-bar' + (c.ok ? '' : ' failed') + '" style="height:' + (c.ms / top * 100) + '%" title="Render ' + (i + 1) + ': '
+            + seconds(c.ms) + (c.ok ? '' : ' (failed)') + '"></span>';
+        }).join('')
+        + (allRenders.length ? '<span class="average-line" style="bottom:' + (average(allRenders) / top * 100) + '%"></span>' : '')
+        + '</div><span class="chart-note">Dashed line: average render ' + since + ' (' + seconds(average(allRenders)) + ')</span></div>';
+    }
+
+    reportEl.innerHTML = '<div class="report-title">Report of the last generation</div><div class="tiles">'
+      + tileHtml('Variants generated', String(report.variants), report.failed ? report.failed + ' failed' : '')
+      + tileHtml('Generation time', seconds(report.durationMs), '')
+      + tileHtml('API calls', String(calls.length), since + ', ' + requests + ' requests with the status checks')
+      + (ownRenders.length ? tileHtml('Average render', seconds(average(ownRenders)), seconds(average(allRenders)) + ' ' + since) : '')
+      + '</div>'
+      + (calls.length ? '<div class="charts"><div class="chart"><span class="chart-title">Execution time by call</span>' + opsHtml
+        + '<span class="chart-note">Bar: average time; line: from the fastest to the slowest call</span></div>' + rendersHtml + '</div>' : '');
+    reportEl.hidden = false;
+  }
 
   // Texts checked by the assistant (review-variants, report-variant-issues), which create-variant tells to do it in the same
   // turn: once the generation is done, the widget waits for the problems it reports (get-variant-review) and shows them
@@ -3033,6 +3136,7 @@ ${STEPS_CSS}
         variants = generation.variants || variants;
         textLayers = ((generation.review && generation.review.layers) || []).filter(function (l) { return l.type === 'text_layer'; });
         render();
+        showReport(generation.report);
         if (generation.review) return startReview(generation);
         return request('ui/update-model-context', { content: [{ type: 'text', text: 'Result of create-variant: ' + generation.summary }] });
       })

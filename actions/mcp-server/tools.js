@@ -1,4 +1,5 @@
 const crypto = require('crypto')
+const { AsyncLocalStorage } = require('async_hooks')
 const { Readable } = require('stream')
 const { z } = require('zod')
 const filesLib = require('@adobe/aio-lib-files')
@@ -256,6 +257,32 @@ async function fireflyHeaders (params) {
   }
 }
 
+// API calls of the current task (jobs of the Photoshop API, Firefly image generations, subject detections): what the generation
+// report of the widget shows. Each task collects its own calls, kept in state by runTask (see saveApiCalls).
+const apiCalls = new AsyncLocalStorage()
+
+// Starts the record of a call: request() counts each HTTP request (the submission and the status polls), begin() starts its
+// time (once, when it gets out of the queue of jobs), end(ok) adds it to the calls of the task.
+function recordApiCall (api, operation) {
+  const calls = apiCalls.getStore()
+  const call = { api, operation, at: null, ms: null, requests: 0, ok: false }
+  return {
+    request () { call.requests++ },
+    begin () { call.at = call.at || Date.now() },
+    end (ok) {
+      call.ms = Date.now() - (call.at || Date.now())
+      call.ok = ok
+      calls?.push(call)
+    }
+  }
+}
+
+// Ends the record of a call when the promise settles; returns the promise.
+function recorded (call, promise) {
+  promise.then(() => call.end(true), () => call.end(false))
+  return promise
+}
+
 // Calls a Firefly Services API; on 401 (token revoked or expired early), once again with a new token.
 async function callFirefly (params, label, url, options = {}, renewed = false) {
   const headers = { ...(await fireflyHeaders(params)), ...(options.body ? { 'Content-Type': 'application/json' } : {}) }
@@ -310,11 +337,15 @@ const JOB_RESUBMIT_AFTER_MS = 60000
 
 // Submits an asynchronous Photoshop job and polls it until it finishes, within POLL_TIMEOUT_MS; returns the job result. A job
 // longer than JOB_RESUBMIT_AFTER_MS is submitted once more (the same outputs: either job writes them).
-function runPhotoshopJob (params, path, body) {
+function runPhotoshopJob (params, path, body, operation) {
+  const call = recordApiCall('Photoshop API', operation)
   const run = limit => limitJob(async () => {
+    call.begin()
+    call.request()
     const { jobId } = await callPhotoshop(params, path, { method: 'POST', body: JSON.stringify(body) })
     if (!jobId) throw new Error(`Photoshop API ${path}: no job id in the answer`)
     return pollJob(async () => {
+      call.request()
       const status = await callPhotoshop(params, `/status/${jobId}`)
       if (status.status === 'succeeded') return status.result
       if (status.status === 'failed') throw new Error(`Photoshop job failed: ${JSON.stringify(status.errorDetails)}`)
@@ -331,14 +362,14 @@ function runPhotoshopJob (params, path, body) {
     return run(POLL_TIMEOUT_MS - JOB_RESUBMIT_AFTER_MS)
   })
   // The first job to succeed; the error of the first one when both fail
-  return Promise.any([first, second]).catch(() => first)
+  return recorded(call, Promise.any([first, second]).catch(() => first))
 }
 
 async function generateManifest (params, url) {
   const result = await runPhotoshopJob(params, '/generate-manifest', {
     image: { source: { url } },
     outputs: [{ destination: { embedded: 'json' }, mediaType: 'application/json' }]
-  })
+  }, 'Manifest')
   const manifest = result?.outputs?.[0]?.destination?.content ?? result
   if (!manifest?.document?.bounds) throw new Error('The Photoshop API returned no document in the manifest of the file.')
   return manifest
@@ -466,7 +497,7 @@ function renderPreview (params, url, fonts = []) {
         ...(layers.length ? { edits: { layers: layers.map(layer => toLayerEdit({ id: layer.id, type: 'text_layer', text: layer.text.content })) } } : {}),
         ...fontOptions(fonts, strategy),
         outputs: [{ destination: { url: uploadUrl }, mediaType: 'image/jpeg', quality: 'high' }]
-      })
+      }, 'Template preview')
       return readUrl
     }
     try {
@@ -616,7 +647,7 @@ async function createVariant (params, { templateUrl, templateManifest, formats, 
       ...formats.map((format, i) => ({ destination: { url: files[i].uploadUrl }, ...VARIANT_OUTPUTS[format].output })),
       ...(preview ? [{ destination: { url: preview.uploadUrl }, ...PREVIEW_OUTPUT }] : [])
     ]
-  }), deadline, tooLate('The rendering'))
+  }, 'Variant render'), deadline, tooLate('The rendering'))
   // Shown in the view: the first displayable file, or the preview
   const imageUrl = preview ? preview.readUrl : files[formats.indexOf(shownFormat)].readUrl
   return {
@@ -713,18 +744,22 @@ function closestAutoCropRatio (ratio) {
 
 // Returns the box auto-crop suggests around the subject, in auto-crop coordinates (see toImageCoordinates).
 function detectSubjectBox (params, imageUrl, ratio) {
-  return limitJob(async () => {
+  const call = recordApiCall('Firefly Services', 'Subject detection')
+  return recorded(call, limitJob(async () => {
+    call.begin()
+    call.request()
     const { statusUrl } = await callFirefly(params, 'auto-crop', AUTO_CROP_API, {
       method: 'POST',
       body: JSON.stringify({ image: { source: { url: imageUrl } }, mode: 'smartCrop', aspectRatio: closestAutoCropRatio(ratio) })
     })
     if (!statusUrl) throw new Error('auto-crop: no status URL in the answer')
     return pollJob(async () => {
+      call.request()
       const status = await callFirefly(params, 'auto-crop', statusUrl)
       if (status.status === 'failed') throw new Error(`auto-crop failed: ${JSON.stringify(status)}`)
       if (status.status === 'succeeded') return status.output?.crops?.[0]?.boundingBoxes?.[0] || null
     }, 'auto-crop')
-  })
+  }))
 }
 
 function toImageCoordinates (box, image) {
@@ -769,18 +804,24 @@ function fireflySize (width, height) {
 // the widgets may show): { name, url, width, height }.
 async function generateImage (params, { prompt, width, height }, deadline) {
   const size = fireflySize(width, height)
-  const job = await callFirefly(params, 'Firefly API', FIREFLY_GENERATE_API, {
-    method: 'POST',
-    body: JSON.stringify({ prompt, numVariations: 1, size, contentClass: 'photo' })
-  })
-  if (!job.statusUrl) throw new Error(`Firefly API: no job in the answer (${JSON.stringify(job).slice(0, 200)})`)
-  const result = await pollJob(async () => {
-    const status = await callFirefly(params, 'Firefly API', job.statusUrl)
-    if (status.status === 'succeeded') return status.result
-    if (status.status === 'failed' || status.status === 'canceled') {
-      throw new Error(`The image could not be generated: ${status.message || status.error_code || status.status}`)
-    }
-  }, 'Firefly image generation', Math.max(10000, deadline - Date.now()))
+  const call = recordApiCall('Firefly API', 'Image generation')
+  const result = await recorded(call, (async () => {
+    call.begin()
+    call.request()
+    const job = await callFirefly(params, 'Firefly API', FIREFLY_GENERATE_API, {
+      method: 'POST',
+      body: JSON.stringify({ prompt, numVariations: 1, size, contentClass: 'photo' })
+    })
+    if (!job.statusUrl) throw new Error(`Firefly API: no job in the answer (${JSON.stringify(job).slice(0, 200)})`)
+    return pollJob(async () => {
+      call.request()
+      const status = await callFirefly(params, 'Firefly API', job.statusUrl)
+      if (status.status === 'succeeded') return status.result
+      if (status.status === 'failed' || status.status === 'canceled') {
+        throw new Error(`The image could not be generated: ${status.message || status.error_code || status.status}`)
+      }
+    }, 'Firefly image generation', Math.max(10000, deadline - Date.now()))
+  })())
   const imageUrl = result?.outputs?.[0]?.image?.url
   if (!imageUrl) throw new Error('Firefly API: no image in the result')
   const response = await fetchWithRetry(imageUrl)
@@ -810,7 +851,7 @@ async function cropImage (params, imageUrl, bounds) {
     image: { source: { url: imageUrl } },
     edits: { document: { crop: { bounds } } },
     outputs: [{ destination: { url: uploadUrl }, ...(isPng ? { mediaType: 'image/png', compression: 'medium' } : { mediaType: 'image/jpeg', quality: 'photoshop_max' }) }]
-  })
+  }, 'Image crop')
   return readUrl
 }
 
@@ -1097,7 +1138,9 @@ const TASKS = {
   },
 
   // Variants, shown as they are rendered
-  async variants (params, { args }, update, deadline) {
+  async variants (params, task, update, deadline) {
+    const { args } = task
+    const started = Date.now()
     const variants = await createVariants(params, {
       templateUrl: args.templateUrl,
       formats: args.formats,
@@ -1113,7 +1156,9 @@ const TASKS = {
       templateUrl: args.templateUrl,
       variants,
       summary: describeGeneration(variants, args.warnings || ''),
-      ...(review ? { review: await reviewData(params, args), doneAt: Date.now() } : {})
+      ...(review ? { review: await reviewData(params, args), doneAt: Date.now() } : {}),
+      report: await generationReport(task, variants, started)
+        .catch(error => { console.warn(`Generation report not made: ${error.message}`); return null })
     }
   },
 
@@ -1238,6 +1283,42 @@ async function zipGeneration (userId, variantsTaskId, replacementTaskIds = []) {
   return { fileName, count: entries.length, url: await storage.generatePresignURL(path, { expiryInSeconds: URL_EXPIRY_SECONDS, permissions: 'r' }) }
 }
 
+// API calls since the template was imported, for the generation report: each task keeps its calls in state, under the session
+// of the user, which a template task of another template (a new import) starts again. Kept 24 hours, as the tasks.
+const apiSessionKey = userId => `api-session-${shortHash(userId)}`
+const apiCallsKey = (userId, sessionId, taskId = '*') => `api-calls-${shortHash(userId)}-${sessionId}-${taskId}`
+
+async function readApiSession (userId) {
+  return (await stateStore.get(apiSessionKey(userId)).catch(() => undefined))?.value
+}
+
+// Keeps the calls of a task in the session of its user (a new one for a template task of another template)
+async function saveApiCalls (task, calls) {
+  let session = await readApiSession(task.userId)
+  if (task.type === 'template' && session?.templateUrl !== task.args.url) {
+    session = { id: task.id, templateUrl: task.args.url, startedAt: Date.now() }
+    await stateStore.put(apiSessionKey(task.userId), session, { ttl: TASK_TTL_SECONDS })
+  }
+  if (!session || !calls.length) return
+  await stateStore.put(apiCallsKey(task.userId, session.id, task.id), calls, { ttl: TASK_TTL_SECONDS })
+}
+
+// Generation report: the variants generated, the time taken, and the API calls since the template was imported, those of
+// this generation marked (generation: true), in the order they started.
+async function generationReport (task, variants, started) {
+  const own = (apiCalls.getStore() || []).map(call => ({ ...call, generation: true }))
+  const session = await readApiSession(task.userId)
+  const keys = session ? await stateStore.keys(apiCallsKey(task.userId, session.id)) : []
+  const earlier = (await Promise.all(keys.map(async key => (await stateStore.get(key))?.value || []))).flat()
+  return {
+    variants: variants.filter(v => !v.error).length,
+    failed: variants.filter(v => v.error).length,
+    durationMs: Date.now() - started,
+    sinceImport: Boolean(session),
+    calls: [...earlier, ...own].sort((a, b) => a.at - b.at)
+  }
+}
+
 // Runs a task invoked by startTask (not a web request), and writes its result or error.
 async function runTask (params) {
   if (params.__ow_method) return { error: 'A task cannot come from a web request' }
@@ -1248,14 +1329,16 @@ async function runTask (params) {
   if (!TASKS[task.type]) return { error: 'Unknown task type' }
   const update = taskWriter(task)
   const started = Date.now()
+  const calls = []
   try {
-    const result = await TASKS[task.type](params, task, update, started + TASK_BUDGET_MS)
+    const result = await apiCalls.run(calls, () => TASKS[task.type](params, task, update, started + TASK_BUDGET_MS))
     console.log(`Task ${task.type} ${task.id} done in ${(Date.now() - started) / 1000}s`)
     await update({ status: 'done', result, partial: null })
   } catch (error) {
     console.warn(`Task ${task.type} failed: ${error.message}`)
     await update({ status: 'failed', error: error.message })
   }
+  await saveApiCalls(task, calls).catch(error => console.warn(`API calls of task ${task.id} not kept: ${error.message}`))
   return { done: task.id }
 }
 
