@@ -418,6 +418,106 @@ function getManifest (params, url) {
   return manifestCache(url, () => sharedManifest(params, url))
 }
 
+// Size of an image read from the header of its file (PNG, JPEG, GIF, WebP), without a Photoshop job; null when it cannot be
+// read there (another format, a header further than IMAGE_HEADER_MAX_BYTES, a JPEG rotated by its EXIF orientation, whose
+// size Photoshop may report swapped).
+const IMAGE_HEADER_MAX_BYTES = 524288
+
+async function readImageHeader (url) {
+  const response = await fetchWithRetry(url, { headers: { Range: `bytes=0-${IMAGE_HEADER_MAX_BYTES - 1}` } })
+  if (!response.ok) throw new Error(`The image could not be read (HTTP ${response.status})`)
+  // A server ignoring the range sends the whole file: only its start is read
+  const reader = response.body.getReader()
+  const chunks = []
+  let length = 0
+  while (length < IMAGE_HEADER_MAX_BYTES) {
+    const { done, value } = await reader.read()
+    if (done) break
+    chunks.push(value)
+    length += value.length
+  }
+  await reader.cancel().catch(() => {})
+  return Buffer.concat(chunks).subarray(0, IMAGE_HEADER_MAX_BYTES)
+}
+
+// EXIF orientation of a JPEG APP1 segment (data after its length), 1 when absent
+function exifOrientation (data) {
+  if (data.length < 14 || data.toString('latin1', 0, 6) !== 'Exif\0\0') return 1
+  const tiff = data.subarray(6)
+  const little = tiff.toString('latin1', 0, 2) === 'II'
+  const u16 = offset => little ? tiff.readUInt16LE(offset) : tiff.readUInt16BE(offset)
+  const u32 = offset => little ? tiff.readUInt32LE(offset) : tiff.readUInt32BE(offset)
+  const ifd = u32(4)
+  if (ifd + 2 > tiff.length) return 1
+  const count = u16(ifd)
+  for (let i = 0; i < count; i++) {
+    const entry = ifd + 2 + i * 12
+    if (entry + 12 > tiff.length) break
+    if (u16(entry) === 0x0112) return u16(entry + 8)
+  }
+  return 1
+}
+
+function jpegSize (buffer) {
+  let offset = 2
+  while (offset + 9 < buffer.length) {
+    if (buffer[offset] !== 0xff) return null
+    const marker = buffer[offset + 1]
+    // Fill bytes and markers without a length
+    if (marker === 0xff) { offset++; continue }
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd8)) { offset += 2; continue }
+    const length = buffer.readUInt16BE(offset + 2)
+    if (marker === 0xe1 && exifOrientation(buffer.subarray(offset + 4, offset + 2 + length)) >= 5) return null
+    // Start of frame (SOF0-SOF15, except DHT, JPG and DAC)
+    if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) {
+      return { width: buffer.readUInt16BE(offset + 7), height: buffer.readUInt16BE(offset + 5) }
+    }
+    offset += 2 + length
+  }
+  return null
+}
+
+function webpSize (buffer) {
+  if (buffer.length < 30) return null
+  const chunk = buffer.toString('latin1', 12, 16)
+  if (chunk === 'VP8X') return { width: 1 + buffer.readUIntLE(24, 3), height: 1 + buffer.readUIntLE(27, 3) }
+  if (chunk === 'VP8L' && buffer[20] === 0x2f) {
+    const bits = buffer.readUInt32LE(21)
+    return { width: 1 + (bits & 0x3fff), height: 1 + ((bits >>> 14) & 0x3fff) }
+  }
+  if (chunk === 'VP8 ' && buffer[23] === 0x9d && buffer[24] === 0x01 && buffer[25] === 0x2a) {
+    return { width: buffer.readUInt16LE(26) & 0x3fff, height: buffer.readUInt16LE(28) & 0x3fff }
+  }
+  return null
+}
+
+function imageHeaderSize (buffer) {
+  if (buffer.length >= 24 && buffer.readUInt32BE(0) === 0x89504e47 && buffer.toString('latin1', 12, 16) === 'IHDR') {
+    return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) }
+  }
+  if (buffer.length >= 4 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return jpegSize(buffer)
+  if (buffer.length >= 10 && /^GIF8[79]a$/.test(buffer.toString('latin1', 0, 6))) {
+    return { width: buffer.readUInt16LE(6), height: buffer.readUInt16LE(8) }
+  }
+  if (buffer.length >= 16 && buffer.toString('latin1', 0, 4) === 'RIFF' && buffer.toString('latin1', 8, 12) === 'WEBP') {
+    return webpSize(buffer)
+  }
+  return null
+}
+
+const imageSizeCache = createCache(100)
+
+// Size of an image: from the header of its file, otherwise from its Photoshop manifest (e.g. a PSD or a TIFF)
+function getImageSize (params, url) {
+  return imageSizeCache(url, async () => {
+    const size = await readImageHeader(url).then(imageHeaderSize).catch(error => {
+      console.warn(`Image header not read: ${error.message}`)
+      return null
+    })
+    return size?.width > 0 && size?.height > 0 ? size : boundsSize((await getManifest(params, url)).document.bounds)
+  })
+}
+
 // Adobe I/O Runtime ends a web request after about 60 seconds, whatever the action timeout: tools that can take longer
 // answer within this time, with what they could not finish marked as such. Jobs still running go on in the container, and
 // their results are cached for the next call.
@@ -836,11 +936,10 @@ async function generateImage (params, { prompt, width, height }, deadline) {
 }
 
 async function suggestCrop (params, imageUrl, ratio, deadline) {
-  const [manifest, subject] = await Promise.all([
-    beforeDeadline(getManifest(params, imageUrl), deadline, tooLate('Reading the image')),
+  const [image, subject] = await Promise.all([
+    beforeDeadline(getImageSize(params, imageUrl), deadline, tooLate('Reading the image')),
     beforeDeadline(detectSubjectBox(params, imageUrl, ratio).catch(() => null), deadline, () => null)
   ])
-  const image = boundsSize(manifest.document.bounds)
   return { image, crop: cropBounds(image, ratio, subject && toImageCoordinates(subject, image)), subjectDetected: Boolean(subject) }
 }
 
@@ -859,7 +958,7 @@ async function cropImage (params, imageUrl, bounds) {
 // Centered crop of an image to the ratio of a frame, for images without a crop chosen in upload-variant-images.
 async function cropToFrameCenter (params, imageUrl, frame) {
   const ratio = frame.width / frame.height
-  const image = boundsSize((await getManifest(params, imageUrl)).document.bounds)
+  const image = await getImageSize(params, imageUrl)
   if (Math.abs(image.width / image.height - ratio) < 0.01) return imageUrl
   return cropImage(params, imageUrl, cropBounds(image, ratio, null))
 }
