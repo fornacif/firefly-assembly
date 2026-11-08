@@ -2633,6 +2633,7 @@ ${REPORT_CSS}`, `
 <div class="actions" id="fix-actions" hidden>
   <sp-button variant="accent" id="send-changes" disabled>Send changes</sp-button>
   <sp-button variant="secondary" treatment="outline" id="download-all" hidden disabled>Download all</sp-button>
+  <sp-button variant="secondary" treatment="outline" id="fullscreen" hidden>Full screen</sp-button>
 </div>
 <sp-help-text class="status" id="status"></sp-help-text>
 <section class="report" id="report" hidden aria-label="Generation report"></section>
@@ -2643,14 +2644,28 @@ ${REPORT_SCRIPT}
   var preview = document.getElementById('preview');
   var previewVisual = document.getElementById('preview-visual');
   var stage = document.getElementById('stage');
-  // The enlarged view is shown full screen when the host can (ui/request-display-mode), and closed when the host leaves it
+  // Full screen, when the host can show the view so (ui/request-display-mode): the whole widget with the Full screen button, or
+  // the enlarged view alone (back inline when it closes, unless the widget was already full screen). Leaving full screen from
+  // the host closes the enlarged view.
   appDisplayModes = ['inline', 'fullscreen'];
-  function setFullscreen(mode) { document.body.classList.toggle('fullscreen', mode === 'fullscreen'); }
+  var fullscreenBtn = document.getElementById('fullscreen');
+  var previewFullscreen = false;
+  function isFullscreen() { return document.body.classList.contains('fullscreen'); }
+  function setFullscreen(mode) {
+    document.body.classList.toggle('fullscreen', mode === 'fullscreen');
+    fullscreenBtn.textContent = mode === 'fullscreen' ? 'Exit full screen' : 'Full screen';
+    if (mode !== 'fullscreen') previewFullscreen = false;
+  }
+  function requestDisplayMode(mode) {
+    return request('ui/request-display-mode', { mode: mode })
+      .then(function (result) { setFullscreen((result && result.mode) || mode); fitStage(); }, function () {});
+  }
   onHostContextChanged(function (context) {
     if (!context.displayMode) return;
     setFullscreen(context.displayMode);
     if (context.displayMode !== 'fullscreen' && current >= 0) showPreview(-1);
   });
+  fullscreenBtn.addEventListener('click', function () { requestDisplayMode(isFullscreen() ? 'inline' : 'fullscreen'); });
   var variants = [];
   var current = -1;
   // Changes of each variant, by file name: pre-filled with the proposed fixes, edited by the user
@@ -2791,6 +2806,7 @@ ${REPORT_SCRIPT}
     var files = generated().reduce(function (total, i) { return total + filesOf(variants[i]).length; }, 0);
     downloadAllBtn.hidden = !generationTaskId || files < 2;
     downloadAllBtn.disabled = generating || zipping;
+    fullscreenBtn.hidden = !canFullscreen();
   }
 
   function downloadAll() {
@@ -2812,6 +2828,11 @@ ${REPORT_SCRIPT}
   // Sends the changes of the variants to the model, which generates them again with create-variant. With the problems found
   // in each text (layer id and name), so that it finds the layers named in the changes.
   function sendChanges() {
+    // Claude answers in the conversation, with a new widget: shown once out of full screen
+    if (isFullscreen()) {
+      if (current >= 0) showPreview(-1);
+      if (isFullscreen()) { setFullscreen('inline'); request('ui/request-display-mode', { mode: 'inline' }).catch(function () {}); }
+    }
     var toChange = variants.filter(function (v) { return !v.error && requestOf(v); });
     var changes = toChange.map(function (v) {
       return {
@@ -2857,12 +2878,12 @@ ${REPORT_SCRIPT}
       var image = grid.querySelector('img[data-index="' + index + '"]');
       var card = image && image.closest('.card');
       preview.style.top = Math.max(0, card ? card.getBoundingClientRect().top - stage.getBoundingClientRect().top : 0) + 'px';
-      if (canFullscreen()) {
-        request('ui/request-display-mode', { mode: 'fullscreen' })
-          .then(function (result) { setFullscreen(result && result.mode); fitStage(); }, function () {});
+      if (canFullscreen() && !isFullscreen()) {
+        previewFullscreen = true;
+        requestDisplayMode('fullscreen');
       }
     }
-    if (!open && wasOpen && document.body.classList.contains('fullscreen')) {
+    if (!open && wasOpen && previewFullscreen && isFullscreen()) {
       setFullscreen('inline');
       request('ui/request-display-mode', { mode: 'inline' }).catch(function () {});
     }
