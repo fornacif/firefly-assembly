@@ -36,6 +36,11 @@ const BRIDGE_SCRIPT = `
   var _pending = {};
   var _toolResultHandler = null;
   var _toolInputHandler = null;
+  var _hostContextHandler = null;
+  // Context given by the host (theme, display mode and the modes it offers), updated as it changes; the display modes of the
+  // view, told to the host (a view shown full screen at times adds 'fullscreen')
+  var hostContext = {};
+  var appDisplayModes = ['inline'];
   // Resolved once the handshake with the host is done: host methods must not be called before
   var _readyResolve;
   var ready = new Promise(function (resolve) { _readyResolve = resolve; });
@@ -56,6 +61,10 @@ const BRIDGE_SCRIPT = `
 
   function onToolResult(handler) { _toolResultHandler = handler; }
   function onToolInput(handler) { _toolInputHandler = handler; }
+  function onHostContextChanged(handler) { _hostContextHandler = handler; }
+
+  // Whether the host can show the view full screen (ui/request-display-mode)
+  function canFullscreen() { return (hostContext.availableDisplayModes || []).indexOf('fullscreen') >= 0; }
 
   window.addEventListener('message', function (event) {
     var msg = event.data;
@@ -69,7 +78,9 @@ const BRIDGE_SCRIPT = `
     }
 
     if (msg.method === 'ui/notifications/host-context-changed') {
+      hostContext = Object.assign({}, hostContext, msg.params);
       applyTheme(msg.params);
+      if (_hostContextHandler) _hostContextHandler(msg.params || {});
     } else if (msg.method === 'ui/notifications/tool-result' && _toolResultHandler) {
       _toolResultHandler(msg.params);
     } else if (msg.method === 'ui/notifications/tool-input' && _toolInputHandler) {
@@ -182,8 +193,9 @@ const BRIDGE_SCRIPT = `
     request('ui/initialize', {
       protocolVersion: '2026-01-26',
       appInfo: { name: appName, version: '1.0.0' },
-      appCapabilities: {}
+      appCapabilities: { availableDisplayModes: appDisplayModes }
     }).then(function (result) {
+      hostContext = result.hostContext || {};
       applyTheme(result.hostContext);
       notification('ui/notifications/initialized');
       reportSize();
@@ -2585,6 +2597,9 @@ function getVariantViewHtml (scriptUrl) {
   .stage { position: relative; }
   /* The grid keeps its place under the enlarged view (opacity: the Spectrum buttons do not follow visibility) */
   .stage.enlarged .grid, .stage.enlarged .groups { opacity: 0; pointer-events: none; }
+  /* With a host that shows the view full screen, the enlarged view is a modal over the whole screen */
+  body.fullscreen .preview.open { position: fixed; inset: 0; top: 0 !important; overflow: auto; padding: var(--spectrum-spacing-400); }
+  body.fullscreen .preview .visual img { max-height: calc(100vh - 140px); }
   .preview { display: none; }
   .preview.open { display: block; position: absolute; left: 0; right: 0; z-index: 1; background: var(--spectrum-background-base-color); }
   .preview-bar { display: flex; align-items: center; gap: var(--spectrum-spacing-200); margin-bottom: var(--spectrum-spacing-200); }
@@ -2627,6 +2642,14 @@ ${REPORT_SCRIPT}
   var preview = document.getElementById('preview');
   var previewVisual = document.getElementById('preview-visual');
   var stage = document.getElementById('stage');
+  // The enlarged view is shown full screen when the host can (ui/request-display-mode), and closed when the host leaves it
+  appDisplayModes = ['inline', 'fullscreen'];
+  function setFullscreen(mode) { document.body.classList.toggle('fullscreen', mode === 'fullscreen'); }
+  onHostContextChanged(function (context) {
+    if (!context.displayMode) return;
+    setFullscreen(context.displayMode);
+    if (context.displayMode !== 'fullscreen' && current >= 0) showPreview(-1);
+  });
   var variants = [];
   var current = -1;
   // Changes of each variant, by file name: pre-filled with the proposed fixes, edited by the user
@@ -2833,6 +2856,14 @@ ${REPORT_SCRIPT}
       var image = grid.querySelector('img[data-index="' + index + '"]');
       var card = image && image.closest('.card');
       preview.style.top = Math.max(0, card ? card.getBoundingClientRect().top - stage.getBoundingClientRect().top : 0) + 'px';
+      if (canFullscreen()) {
+        request('ui/request-display-mode', { mode: 'fullscreen' })
+          .then(function (result) { setFullscreen(result && result.mode); fitStage(); }, function () {});
+      }
+    }
+    if (!open && wasOpen && document.body.classList.contains('fullscreen')) {
+      setFullscreen('inline');
+      request('ui/request-display-mode', { mode: 'inline' }).catch(function () {});
     }
     preview.classList.toggle('open', open);
     stage.classList.toggle('enlarged', open);
@@ -2850,7 +2881,7 @@ ${REPORT_SCRIPT}
 
   // The widget as high as the enlarged view, when it goes past the grid
   function fitStage() {
-    if (current < 0) return;
+    if (current < 0 || document.body.classList.contains('fullscreen')) { stage.style.minHeight = ''; return; }
     stage.style.minHeight = (parseFloat(preview.style.top) + preview.offsetHeight) + 'px';
     reportSize();
   }
