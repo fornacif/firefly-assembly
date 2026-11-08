@@ -1,6 +1,6 @@
 // History of the activity of the users (template readings, crops, image generations, generations of variants), kept in the
 // database of the workspace (App Builder Database Storage, region emea): one document per task, with the API calls it made.
-// Read by get-usage-history (the user's own generations) and get-usage-report (all the users, for the admins).
+// Kept without limit of time. Read by get-usage-history (the user's own generations) and get-usage-report (all the users, for the admins).
 const crypto = require('crypto')
 const libDb = require('@adobe/aio-lib-db')
 const { generateAccessToken } = require('@adobe/aio-lib-core-auth')
@@ -9,15 +9,11 @@ const stateStore = require('./state')
 // Region of the database, as provisioned (app.config.yaml)
 const DB_REGION = 'emea'
 const COLLECTION = 'activity'
-// Activity kept this long, the older one deleted (the database has no TTL)
-const RETENTION_DAYS = 90
-const PURGE_EVERY_MS = 3600000
 // Email of a user, from the IMS profile, kept this long in state
 const PROFILE_TTL_SECONDS = 30 * 24 * 3600
 const IMS_PROFILE_URL = 'https://ims-na1.adobelogin.com/ims/profile/v1'
 
 let indexed = false
-let purgedAt = 0
 
 // Runs fn(collection) on a connection to the database, closed after.
 async function withActivity (params, fn) {
@@ -68,7 +64,7 @@ function callsByKind (calls) {
 }
 
 // Keeps the activity of a task: its kind, duration, API calls, and for a generation its variants, template, formats and
-// languages. The activity older than RETENTION_DAYS is deleted, at most once an hour per container.
+// languages. The activity is kept without limit of time.
 async function recordActivity (params, task, { ok, durationMs, calls, result }) {
   const at = new Date()
   const day = at.toISOString().slice(0, 10)
@@ -100,25 +96,20 @@ async function recordActivity (params, task, { ok, durationMs, calls, result }) 
       : {}),
     ...(task.type === 'template' ? { template: result?.document?.title || null } : {})
   }
-  await withActivity(params, async activity => {
-    await activity.insertOne(document)
-    if (Date.now() - purgedAt > PURGE_EVERY_MS) {
-      purgedAt = Date.now()
-      await activity.deleteMany({ at: { $lt: since(RETENTION_DAYS) } })
-    }
-  })
+  await withActivity(params, activity => activity.insertOne(document))
 }
 
-const since = days => new Date(Date.now() - days * 86400000)
+// Filter of the activity over the last days, all of it without days
+const period = days => days ? { at: { $gte: new Date(Date.now() - days * 86400000) } } : {}
 // Numbers of the database: those beyond 32 bits come as BSON longs ({ low, high })
 const num = value => value && typeof value === 'object' && 'low' in value ? value.high * 2 ** 32 + (value.low >>> 0) : Number(value || 0)
 const average = (totalMs, count) => num(count) ? Math.round(num(totalMs) / num(count)) : null
 const isoDate = value => new Date(value?.$date ?? value).toISOString()
 
-// Generations of a user over the last days, the latest first (at most limit), and their totals.
+// Generations of a user over the last days (all of them without days), the latest first (at most limit), and their totals.
 async function usageHistory (params, userId, { days, limit }) {
   return withActivity(params, async activity => {
-    const filter = { userId, at: { $gte: since(days) } }
+    const filter = { userId, ...period(days) }
     const [generations, totals] = await Promise.all([
       activity.find({ ...filter, kind: 'variants' })
         .project({ _id: 0, at: 1, template: 1, variants: 1, failed: 1, durationMs: 1, apiCalls: 1, formats: 1, languages: 1, renders: 1, renderMs: 1 })
@@ -129,7 +120,7 @@ async function usageHistory (params, userId, { days, limit }) {
     ])
     const total = totals[0] || {}
     return {
-      days,
+      days: days || null,
       totals: { generations: num(total.generations), variants: num(total.variants), failed: num(total.failed), apiCalls: num(total.apiCalls), averageRenderMs: average(total.renderMs, total.renders) },
       generations: generations.map(g => ({
         at: isoDate(g.at),
@@ -150,10 +141,10 @@ const SUMS = { generations: { $sum: '$generations' }, variants: { $sum: '$varian
 const numbers = object => Object.fromEntries(Object.entries(object).map(([key, value]) => [key, typeof value === 'string' ? value : num(value)]))
 const withAverage = ({ renders, renderMs, ...rest }) => ({ ...numbers(rest), averageRenderMs: average(renderMs, renders) })
 
-// Usage of all the users over the last days: totals, per user, per day and per kind of API call.
+// Usage of all the users over the last days (since the start without days): totals, per user, per day and per kind of API call.
 async function usageReport (params, { days }) {
   return withActivity(params, async activity => {
-    const match = { $match: { at: { $gte: since(days) } } }
+    const match = { $match: period(days) }
     const [users, perDay, operations] = await Promise.all([
       activity.aggregate([match, { $group: { _id: '$userId', email: { $max: '$email' }, lastAt: { $max: '$at' }, ...SUMS } }, { $sort: { variants: -1 } }]).toArray(),
       activity.aggregate([match, { $group: { _id: '$day', users: { $addToSet: '$userId' }, ...SUMS } }, { $sort: { _id: 1 } }]).toArray(),
@@ -163,7 +154,7 @@ async function usageReport (params, { days }) {
     ])
     const sum = key => users.reduce((total, user) => total + num(user[key]), 0)
     return {
-      days,
+      days: days || null,
       totals: withAverage({ users: users.length, ...Object.fromEntries(Object.keys(SUMS).map(key => [key, sum(key)])) }),
       users: users.map(({ _id, email, lastAt, ...user }) => withAverage({ user: email || _id, lastActivity: isoDate(lastAt), ...user })),
       perDay: perDay.map(({ _id, users, ...day }) => withAverage({ day: _id, users: users.length, ...day })),
@@ -172,4 +163,4 @@ async function usageReport (params, { days }) {
   })
 }
 
-module.exports = { recordActivity, userEmail, usageHistory, usageReport, RETENTION_DAYS }
+module.exports = { recordActivity, userEmail, usageHistory, usageReport }

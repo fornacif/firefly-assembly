@@ -9,7 +9,7 @@ const stateStore = require('./state')
 const { getTokenFromRequest, getUnverifiedClaims, getUnverifiedClientId } = require('./validator.js')
 const { createPickerSession, getPickerResult } = require('./aem-picker.js')
 const { zipFiles } = require('./zip.js')
-const { recordActivity, userEmail, usageHistory, usageReport, RETENTION_DAYS } = require('./history.js')
+const { recordActivity, userEmail, usageHistory, usageReport } = require('./history.js')
 const spectrumAsset = require('./spectrum-asset.js')
 
 const IMS_TOKEN_URL = 'https://ims-na1.adobelogin.com/ims/token/v3'
@@ -1742,11 +1742,11 @@ function registerTools (server, params) {
     'get-usage-history',
     {
       title: 'Get Usage History',
-      description: `Returns the generations of variants of the current user over the last days (at most ${RETENTION_DAYS}), the ` +
+      description: 'Returns the generations of variants of the current user over the last days (or since the start), the ' +
         'latest first: date, template, variants generated and failed, time taken, API calls, average render time, formats and ' +
         'languages, with their totals. Call it when the user asks what they generated, or how much they used the service.',
       inputSchema: {
-        days: z.number().int().min(1).max(RETENTION_DAYS).default(30).describe('Period, in days up to today'),
+        days: z.number().int().min(1).optional().describe('Period, in days up to today; omit it for the whole history'),
         limit: z.number().int().min(1).max(200).default(50).describe('Most generations listed')
       }
     },
@@ -1763,12 +1763,12 @@ function registerTools (server, params) {
     'get-usage-report',
     {
       title: 'Get Usage Report',
-      description: `Returns the usage of the service by all the users over the last days (at most ${RETENTION_DAYS}): totals ` +
+      description: 'Returns the usage of the service by all the users over the last days (or since the start): totals ' +
         '(users, generations, variants, failures, API calls, average render time), per user (email), per day, and per kind of API ' +
         'call (count, failures, average execution time). Reserved to the admins of the service. Call it when the user asks for ' +
         'the overall usage; present it with tables or charts.',
       inputSchema: {
-        days: z.number().int().min(1).max(RETENTION_DAYS).default(30).describe('Period, in days up to today')
+        days: z.number().int().min(1).optional().describe('Period, in days up to today; omit it for the whole history')
       }
     },
     async ({ days }) => {

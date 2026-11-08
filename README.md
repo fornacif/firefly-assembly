@@ -53,9 +53,9 @@ The Photoshop jobs are polled from 3 seconds, then up to every 8 seconds: each s
 
 At the end of each generation, the widget shows a report: the variants generated, the time taken, and the API calls made since the template was imported (Photoshop jobs, Firefly image generations, subject detections), with their execution times by kind and the renders of the generation against the average render. Each task keeps its calls in App Builder state, under a session of the user that the reading of another template starts again.
 
-Each task (template reading, crop, image generation, generation of variants) is also recorded in the database of the workspace ([App Builder Database Storage](https://developer.adobe.com/app-builder/docs/guides/app_builder_guides/storage/database), region `emea`, collection `activity`, `actions/mcp-server/history.js`): the user (IMS id and email, read from the IMS profile), its duration, its API calls by kind, and for a generation its template, variants, formats and languages. The activity is kept 90 days, the older one deleted (the database has no TTL). The assistant answers with two tools:
+Each task (template reading, crop, image generation, generation of variants) is also recorded in the database of the workspace ([App Builder Database Storage](https://developer.adobe.com/app-builder/docs/guides/app_builder_guides/storage/database), region `emea`, collection `activity`, `actions/mcp-server/history.js`): the user (IMS id and email, read from the IMS profile), its duration, its API calls by kind, and for a generation its template, variants, formats and languages. The activity is kept without limit of time (a document of about 1 KB per task, within the 40 GB of storage of an App Builder pack). The assistant answers with two tools, over the last days or the whole history:
 
-- `get-usage-history`: the generations of the user over the last days, with their totals.
+- `get-usage-history`: the generations of the user, with their totals.
 - `get-usage-report`: the usage of all the users (totals, per user, per day, per kind of API call), only for the emails listed in `ADMIN_EMAILS`.
 
 ## Text checks
