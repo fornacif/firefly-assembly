@@ -2083,13 +2083,11 @@ ${IMAGES_SCRIPT}
     return name;
   }
 
-  // Workbook of rows of texts, laid out: a header row in white on blue, filtered and frozen with the variant column, thin
+  // Workbook of rows of texts, laid out: a header row in white on blue, frozen with the variant column, thin
   // borders, the texts wrapped on their lines at the top of their cells, and each column about as wide as its longest line.
   // Styles (cellXfs): 0 default, 1 text, 2 header, 3 variant label.
   function workbook(rows) {
     var NS = 'http://schemas.openxmlformats.org/';
-    var columns = rows[0].length;
-    var last = columnName(columns - 1) + rows.length;
     var widths = rows[0].map(function (name, c) {
       var longest = 0;
       rows.forEach(function (cells) {
@@ -2116,9 +2114,7 @@ ${IMAGES_SCRIPT}
       '_rels/.rels': head + '<Relationships xmlns="' + NS + 'package/2006/relationships">'
         + '<Relationship Id="rId1" Type="' + NS + 'officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>',
       'xl/workbook.xml': head + '<workbook xmlns="' + NS + 'spreadsheetml/2006/main" xmlns:r="' + NS + 'officeDocument/2006/relationships">'
-        + '<sheets><sheet name="Texts" sheetId="1" r:id="rId1"/></sheets>'
-        + '<definedNames><definedName name="_xlnm._FilterDatabase" localSheetId="0" hidden="1">Texts!$A$1:$' + columnName(columns - 1)
-        + '$' + rows.length + '</definedName></definedNames></workbook>',
+        + '<sheets><sheet name="Texts" sheetId="1" r:id="rId1"/></sheets></workbook>',
       'xl/_rels/workbook.xml.rels': head + '<Relationships xmlns="' + NS + 'package/2006/relationships">'
         + '<Relationship Id="rId1" Type="' + NS + 'officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
         + '<Relationship Id="rId2" Type="' + NS + 'officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>',
@@ -2143,7 +2139,7 @@ ${IMAGES_SCRIPT}
         + '<cols>' + widths.map(function (width, c) {
           return '<col min="' + (c + 1) + '" max="' + (c + 1) + '" width="' + width + '" customWidth="1"/>';
         }).join('') + '</cols>'
-        + '<sheetData>' + sheetRows + '</sheetData><autoFilter ref="A1:' + last + '"/></worksheet>'
+        + '<sheetData>' + sheetRows + '</sheetData></worksheet>'
     });
   }
 
