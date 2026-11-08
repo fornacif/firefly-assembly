@@ -9,7 +9,7 @@ const stateStore = require('./state')
 const { getTokenFromRequest, getUnverifiedClaims, getUnverifiedClientId } = require('./validator.js')
 const { createPickerSession, getPickerResult } = require('./aem-picker.js')
 const { zipFiles } = require('./zip.js')
-const { recordActivity, usageHistory, usageReport } = require('./history.js')
+const { recordActivity, usageHistory, usageReport, callAverages } = require('./history.js')
 const spectrumAsset = require('./spectrum-asset.js')
 
 const IMS_TOKEN_URL = 'https://ims-na1.adobelogin.com/ims/token/v3'
@@ -325,6 +325,9 @@ function createLimiter (max) {
 // their crops): keeps the polling within the rate limits, without delaying the renders of a full generation.
 const MAX_CONCURRENT_JOBS = 10
 const limitJob = createLimiter(MAX_CONCURRENT_JOBS)
+
+// Average time of the calls of a generation before any is kept in the history (ms), for the estimate of the start widget
+const ESTIMATE_DEFAULT_MS = { 'Variant render': 8000, 'Image crop (Photoshop)': 3500, 'Crop suggestion': 8000 }
 
 // Polls check() until it returns a value (undefined: not finished), more often at first, as most jobs take a few seconds; each
 // status request counts against the rate limit of the API, as the jobs do.
@@ -1749,6 +1752,30 @@ function registerTools (server, params) {
       try {
         const usedUp = Object.entries(await usedUpQuotas()).map(([host, until]) => ({ host, until, message: quotaMessage(host, until) }))
         return jsonResult({ usedUp })
+      } catch (error) {
+        return errorResult(error)
+      }
+    }
+  )
+
+  server.registerTool(
+    'get-generation-estimate',
+    {
+      title: 'Get Generation Estimate',
+      description: 'Used by the start widget to estimate a generation before it is started: the average time of the calls it makes ' +
+        '(over the last 30 days: those of the user, or of all the users, or a default before any) and the jobs run at once.',
+      inputSchema: {},
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    async () => {
+      try {
+        const averages = await callAverages(params, currentUserId(params), Object.keys(ESTIMATE_DEFAULT_MS))
+          .catch(error => { console.warn(`Averages of the calls not read: ${error.message}`); return {} })
+        return jsonResult({
+          averages: Object.fromEntries(Object.entries(ESTIMATE_DEFAULT_MS)
+            .map(([operation, averageMs]) => [operation, averages[operation] || { averageMs, source: 'default' }])),
+          parallelJobs: MAX_CONCURRENT_JOBS
+        })
       } catch (error) {
         return errorResult(error)
       }

@@ -496,6 +496,7 @@ ${LAYERS_CSS}
   </div>
   <div id="fonts-help" class="fonts-help" role="status"></div>
 </div>
+<sp-help-text id="estimate" hidden></sp-help-text>
 </div>
 <sp-help-text id="quota" variant="negative" icon hidden></sp-help-text>
 <div class="actions">
@@ -730,6 +731,35 @@ ${LAYERS_SCRIPT}
     nextBtn.disabled = !template || !count() || !n || n > ${MAX_VARIANTS_UI} || !!namingError() || fontsUploading > 0;
     continueBtn.disabled = nextBtn.disabled || !layerCount;
     if (typeof updateSteps === 'function') updateSteps();
+    updateEstimate();
+  }
+
+  // Estimate of the generation, from the layers picked: one render per variant, and for each image (the languages of a
+  // variant share its images) a crop suggestion in the grid and a crop. Its time is that of the jobs run at once by
+  // the generation, from the average times of the calls (get-generation-estimate).
+  var estimate = null;
+  callTool('get-generation-estimate').then(function (result) { estimate = result; updateEstimate(); }, function () {});
+  function duration(ms) {
+    var s = Math.max(1, Math.round(ms / 1000));
+    return s < 60 ? 'about ' + s + ' s' : 'about ' + Math.round(s / 60) + ' min';
+  }
+  function updateEstimate() {
+    var estimateText = document.getElementById('estimate');
+    var n = total();
+    var imageLayers = template ? selected().filter(function (l) { return l.type === 'smart_object_layer'; }).length : 0;
+    estimateText.hidden = !estimate || !layerCount || !n || n > ${MAX_VARIANTS_UI};
+    if (estimateText.hidden) return reportSize();
+    var avg = function (operation) { return estimate.averages[operation].averageMs; };
+    var images = (count() || 0) * imageLayers;
+    var jobsMs = n * avg('Variant render') + images * avg('Image crop (Photoshop)');
+    var waitMs = Math.max(avg('Variant render') + (images ? avg('Image crop (Photoshop)') : 0), jobsMs / estimate.parallelJobs);
+    var sources = Object.keys(estimate.averages).map(function (operation) { return estimate.averages[operation].source; });
+    var basis = sources.indexOf('default') >= 0 ? 'typical times' : sources.indexOf('all') >= 0 ? 'the average times of the service' : 'your average times';
+    estimateText.textContent = 'Estimate: ' + (n + images) + ' Photoshop API call' + (n + images > 1 ? 's' : '') + ' ('
+      + n + ' render' + (n > 1 ? 's' : '') + (images ? ', ' + images + ' image crop' + (images > 1 ? 's' : '') : '') + ')'
+      + (images ? ' and ' + images + ' crop suggestion' + (images > 1 ? 's' : '') + ' (Firefly Services)' : '')
+      + '; the generation takes ' + duration(waitMs) + ' once the ' + (images ? 'images are' : 'texts are') + ' confirmed (from ' + basis + ').';
+    reportSize();
   }
 
   onToolInput(function (args) {
