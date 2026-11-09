@@ -2614,8 +2614,7 @@ function getVariantViewHtml (scriptUrl) {
   body.fullscreen .preview .visual img { max-height: calc(100vh - 120px - var(--host-bottom-inset, 0px)); }
   body.fullscreen .preview .visual { max-width: calc((100vh - 120px - var(--host-bottom-inset, 0px)) * var(--ratio, 1)) !important; }
   body.fullscreen #edit-hint { text-align: center; }
-  body.fullscreen .preview.open { transition: opacity 0.15s; }
-  body.fullscreen.settling .preview.open { opacity: 0; transition: none; }
+  body.fullscreen.settling .preview.open { opacity: 0; }
   .preview { display: none; }
   .preview.open { display: block; position: absolute; left: 0; right: 0; z-index: 1; background: var(--spectrum-background-base-color); }
   .preview-bar { display: flex; align-items: center; gap: var(--spectrum-spacing-200); margin-bottom: var(--spectrum-spacing-200); }
@@ -2671,13 +2670,13 @@ ${REPORT_SCRIPT}
     fullscreenBtn.textContent = mode === 'fullscreen' ? 'Exit full screen' : 'Full screen';
     if (mode !== 'fullscreen') { previewFullscreen = false; reportSize(); }
   }
-  // While the host changes the size of the view (its animation to full screen), the enlarged view is hidden, shown again once the
-  // size no longer changes: the visual, fitted to the height of the view, would be redrawn at each step
+  // While the host changes the size of the view (its animation to full screen), the enlarged view is hidden, shown again (without
+  // fading in) as soon as the size no longer changes: the visual, fitted to the height of the view, would be redrawn at each step
   var settleTimer = null;
   function settle() {
     document.body.classList.add('settling');
     clearTimeout(settleTimer);
-    settleTimer = setTimeout(function () { document.body.classList.remove('settling'); }, 250);
+    settleTimer = setTimeout(function () { document.body.classList.remove('settling'); }, 60);
   }
   window.addEventListener('resize', function () { if (isFullscreen()) settle(); });
   // Full screen is set at once (not inline first, then full screen when the host answers), back as before if the host refuses
