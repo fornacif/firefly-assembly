@@ -2605,11 +2605,12 @@ function getVariantViewHtml (scriptUrl) {
   /* The grid keeps its place under the enlarged view (opacity: the Spectrum buttons do not follow visibility) */
   .stage.enlarged .grid, .stage.enlarged .groups { opacity: 0; pointer-events: none; }
   /* With a host that shows the view full screen, the enlarged view is a modal over the whole screen */
-  /* The host draws its message field over the bottom of a view shown full screen (Claude, ChatGPT): room is kept for it,
-     or for the bottom inset given by the host if larger */
+  /* Full screen, the view stops above the message field of the host: the visual is fitted so that the bar, the visual and
+     the hint under it fit in its height without scrolling (plus the bottom safe area inset of the host, if any) */
   body.fullscreen .preview.open { position: fixed; inset: 0; top: 0 !important; overflow: auto; padding: var(--spectrum-spacing-400);
-    padding-bottom: calc(var(--spectrum-spacing-400) + max(var(--host-bottom-inset, 0px), 72px)); }
-  body.fullscreen .preview .visual img { max-height: calc(100vh - 140px - max(var(--host-bottom-inset, 0px), 72px)); }
+    padding-bottom: calc(var(--spectrum-spacing-400) + var(--host-bottom-inset, 0px)); }
+  body.fullscreen .preview .visual img { max-height: calc(100vh - 120px - var(--host-bottom-inset, 0px)); }
+  body.fullscreen .preview .visual { max-width: calc((100vh - 120px - var(--host-bottom-inset, 0px)) * var(--ratio, 1)) !important; }
   body.fullscreen #edit-hint { text-align: center; }
   .preview { display: none; }
   .preview.open { display: block; position: absolute; left: 0; right: 0; z-index: 1; background: var(--spectrum-background-base-color); }
@@ -2731,7 +2732,8 @@ ${REPORT_SCRIPT}
       return (issue.marks || []).map(function (rect) { return markHtml(c, rect, 'mark-overlap'); }).join('')
         + (issue.area ? markHtml(c, issue.area, 'mark-text', k + 1) : '');
     }).join('') : '';
-    var style = c ? ' style="aspect-ratio:' + c.width + '/' + c.height + ';max-width:' + Math.round(maxHeight * c.width / c.height) + 'px"' : '';
+    var style = c ? ' style="aspect-ratio:' + c.width + '/' + c.height + ';--ratio:' + (c.width / c.height).toFixed(4)
+      + ';max-width:' + Math.round(maxHeight * c.width / c.height) + 'px"' : '';
     return '<div class="visual"' + style + '><img src="' + escapeHtml(v.imageUrl) + '" alt="' + escapeHtml(v.fileName) + '" data-index="' + index + '">'
       + marks + '</div>';
   }
