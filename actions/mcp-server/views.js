@@ -490,7 +490,7 @@ ${LAYERS_CSS}
   <div class="message"><div id="message-heading">Drop your PSD template</div><div class="subtle" id="message-description">Layered .psd file</div></div>
   <div class="browse">
     <sp-button variant="accent" treatment="outline" id="browse">Browse</sp-button>
-    <sp-button variant="secondary" treatment="outline" id="aem" hidden>${ADOBE_ICON}Choose from AEM</sp-button>
+    <sp-button variant="accent" treatment="outline" id="aem" hidden>${ADOBE_ICON}Choose from AEM</sp-button>
     <input type="file" id="file" accept=".psd,image/vnd.adobe.photoshop">
   </div>
 </sp-dropzone>
