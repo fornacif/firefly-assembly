@@ -64,6 +64,11 @@ const BRIDGE_SCRIPT = `
   function onHostContextChanged(handler) { _hostContextHandler = handler; }
 
   // Whether the host can show the view full screen (ui/request-display-mode)
+  // Bottom inset of the host (safeAreaInsets), kept for the views shown full screen
+  function applyInsets(context) {
+    var bottom = context && context.safeAreaInsets && Number(context.safeAreaInsets.bottom);
+    document.documentElement.style.setProperty('--host-bottom-inset', (bottom > 0 ? bottom : 0) + 'px');
+  }
   function canFullscreen() { return (hostContext.availableDisplayModes || []).indexOf('fullscreen') >= 0; }
 
   window.addEventListener('message', function (event) {
@@ -80,6 +85,7 @@ const BRIDGE_SCRIPT = `
     if (msg.method === 'ui/notifications/host-context-changed') {
       hostContext = Object.assign({}, hostContext, msg.params);
       applyTheme(msg.params);
+      applyInsets(hostContext);
       if (_hostContextHandler) _hostContextHandler(msg.params || {});
     } else if (msg.method === 'ui/notifications/tool-result' && _toolResultHandler) {
       _toolResultHandler(msg.params);
@@ -197,6 +203,7 @@ const BRIDGE_SCRIPT = `
     }).then(function (result) {
       hostContext = result.hostContext || {};
       applyTheme(result.hostContext);
+      applyInsets(hostContext);
       notification('ui/notifications/initialized');
       reportSize();
     }).catch(function () {}).then(_readyResolve);
@@ -2598,8 +2605,11 @@ function getVariantViewHtml (scriptUrl) {
   /* The grid keeps its place under the enlarged view (opacity: the Spectrum buttons do not follow visibility) */
   .stage.enlarged .grid, .stage.enlarged .groups { opacity: 0; pointer-events: none; }
   /* With a host that shows the view full screen, the enlarged view is a modal over the whole screen */
-  body.fullscreen .preview.open { position: fixed; inset: 0; top: 0 !important; overflow: auto; padding: var(--spectrum-spacing-400); }
-  body.fullscreen .preview .visual img { max-height: calc(100vh - 140px); }
+  /* The host draws its message field over the bottom of a view shown full screen (Claude, ChatGPT): room is kept for it,
+     or for the bottom inset given by the host if larger */
+  body.fullscreen .preview.open { position: fixed; inset: 0; top: 0 !important; overflow: auto; padding: var(--spectrum-spacing-400);
+    padding-bottom: calc(var(--spectrum-spacing-400) + max(var(--host-bottom-inset, 0px), 72px)); }
+  body.fullscreen .preview .visual img { max-height: calc(100vh - 140px - max(var(--host-bottom-inset, 0px), 72px)); }
   body.fullscreen #edit-hint { text-align: center; }
   .preview { display: none; }
   .preview.open { display: block; position: absolute; left: 0; right: 0; z-index: 1; background: var(--spectrum-background-base-color); }
