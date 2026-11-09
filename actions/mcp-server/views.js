@@ -3058,8 +3058,12 @@ ${REPORT_SCRIPT}
 
   // load does not bubble: listened to in the capture phase
   preview.addEventListener('load', fitStage, true);
+  // Escape closes the enlarged view, or else leaves full screen
   document.addEventListener('keydown', function (e) {
-    if (current < 0) return;
+    if (current < 0) {
+      if (e.key === 'Escape' && isFullscreen()) requestDisplayMode('inline');
+      return;
+    }
     if (e.key === 'Escape') showPreview(-1);
     else if (e.key === 'ArrowLeft') step(-1);
     else if (e.key === 'ArrowRight') step(1);
