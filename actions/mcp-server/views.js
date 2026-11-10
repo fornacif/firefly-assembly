@@ -491,8 +491,7 @@ function getStartViewHtml (scriptUrl) {
   .fonts-help.warning svg { color: var(--spectrum-notice-visual-color, #e68619); }
   .fonts-help.negative { color: var(--spectrum-negative-content-color-default, #d31510); }
   /* Fonts added before (the library of the user): a chip each, to add it, with a button to remove it from the library */
-  .font-library { display: flex; align-items: center; flex-wrap: wrap; gap: var(--spectrum-spacing-100); margin-top: var(--spectrum-spacing-200);
-    font-size: var(--spectrum-font-size-75); }
+  .font-library { display: flex; align-items: center; flex-wrap: wrap; gap: var(--spectrum-spacing-100); font-size: var(--spectrum-font-size-75); }
   .font-library .library-label { color: var(--spectrum-neutral-subdued-content-color-default); margin-right: var(--spectrum-spacing-75); }
   .font-chip { display: inline-flex; align-items: center; border: 1px solid var(--spectrum-gray-400); border-radius: 14px; overflow: hidden; }
   .font-chip button { font: inherit; color: var(--spectrum-neutral-content-color-default); background: transparent; border: none; cursor: pointer;
@@ -551,10 +550,9 @@ ${LAYERS_CSS}
   <div class="fonts-row">
     <sp-button variant="secondary" treatment="outline" id="add-fonts">Add fonts</sp-button>
     <input type="file" id="font-files" accept=".otf,.ttf,font/otf,font/ttf" multiple>
-    <sp-tags id="fonts"></sp-tags>
+    <div class="font-library" id="font-library" hidden></div>
   </div>
   <div id="fonts-help" class="fonts-help" role="status"></div>
-  <div class="font-library" id="font-library" hidden></div>
 </div>
 </div>
 <sp-help-text id="quota" variant="negative" icon hidden></sp-help-text>
@@ -653,7 +651,6 @@ ${LAYERS_SCRIPT}
   var missingFonts = null;
   var fontsUploading = 0;
   var fontsVersion = 0;
-  var fontTags = document.getElementById('fonts');
   var fontsHelp = document.getElementById('fonts-help');
   var fontInput = document.getElementById('font-files');
 
@@ -684,15 +681,27 @@ ${LAYERS_SCRIPT}
   var autoAdded = [];
   var libraryEl = document.getElementById('font-library');
   function inUse(font) { return fonts.some(function (f) { return f.libraryId === font.id || f.url === font.url; }); }
-  // All the fonts of the library: those in use checked (a click removes them from the render), the others to add
+  // Names of the fonts the templates need (missing without the fonts added), for the order of the fonts
+  var neededFonts = {};
+  function fontKey(name) { return String(name || '').toLowerCase().replace(/[\\s_-]/g, ''); }
+  function isNeeded(font) { return [font.postScriptName, font.fullName].some(function (n) { return n && neededFonts[fontKey(n)]; }); }
+
+  // The fonts, next to Add fonts: those of the library, and those added and not yet in it (local); the ones used for the
+  // render checked (a click removes them from it), the others to add. The fonts the templates need first, then those used.
   function renderLibrary() {
-    libraryEl.hidden = !library.length;
-    libraryEl.innerHTML = '<span class="library-label">Your fonts (' + library.length + '):</span>' + library.map(function (font) {
-      var title = (font.postScriptName || font.fileName) + (font.fullName && font.fullName !== font.postScriptName ? ' (' + font.fullName + ')' : '');
-      var used = inUse(font);
-      return '<span class="font-chip' + (used ? ' used' : '') + '"><button type="button" class="font-use" data-id="' + escapeHtml(font.id) + '" aria-pressed="' + used + '"'
-        + ' title="' + (used ? 'Used for the render, click to remove it: ' : 'Add ') + escapeHtml(title) + '">' + (used ? '✓ ' : '+ ') + escapeHtml(font.fileName) + '</button>'
-        + '<button type="button" class="font-forget" data-id="' + escapeHtml(font.id) + '" aria-label="Remove ' + escapeHtml(font.fileName) + ' from your fonts" title="Remove from your fonts">&times;</button></span>';
+    var local = fonts.filter(function (f) { return !library.some(function (font) { return f.libraryId === font.id || f.url === font.url; }); })
+      .map(function (f) { return { id: 'local:' + fonts.indexOf(f), fileName: f.name, url: f.url, local: true }; });
+    var items = library.concat(local).map(function (font, i) { return { font: font, used: font.local || inUse(font), needed: isNeeded(font), i: i }; });
+    items.sort(function (a, b) { return (b.needed - a.needed) || (b.used - a.used) || (a.i - b.i); });
+    libraryEl.hidden = !items.length;
+    libraryEl.innerHTML = '<span class="library-label">Your fonts (' + items.length + '):</span>' + items.map(function (item) {
+      var font = item.font;
+      var title = (font.postScriptName || font.fileName) + (font.fullName && font.fullName !== font.postScriptName ? ' (' + font.fullName + ')' : '')
+        + (item.needed ? ', needed by the template' : '');
+      return '<span class="font-chip' + (item.used ? ' used' : '') + '"><button type="button" class="font-use" data-id="' + escapeHtml(font.id) + '" aria-pressed="' + item.used + '"'
+        + ' title="' + (item.used ? 'Used for the render, click to remove it: ' : 'Add ') + escapeHtml(title) + '">' + (item.used ? '✓ ' : '+ ') + escapeHtml(font.fileName) + '</button>'
+        + (font.local ? '' : '<button type="button" class="font-forget" data-id="' + escapeHtml(font.id) + '" aria-label="Remove ' + escapeHtml(font.fileName) + ' from your fonts" title="Remove from your fonts">&times;</button>')
+        + '</span>';
     }).join('');
     reportSize();
   }
@@ -705,6 +714,14 @@ ${LAYERS_SCRIPT}
     var button = e.target.closest('button');
     if (!button) return;
     var id = button.getAttribute('data-id');
+    // A font added and not yet in the library: removed from the render
+    if (id.indexOf('local:') === 0) {
+      fonts.splice(Number(id.slice(6)), 1);
+      renderLibrary();
+      renderFonts();
+      checkFonts();
+      return;
+    }
     var font = library.filter(function (f) { return f.id === id; })[0];
     if (!font) return;
     if (button.classList.contains('font-use')) {
@@ -729,7 +746,7 @@ ${LAYERS_SCRIPT}
   // templates rendered again with them
   function addMissingFromLibrary() {
     if (!missingFonts || !missingFonts.length || fontsUploading) return false;
-    var key = function (name) { return String(name || '').toLowerCase().replace(/[\\s_-]/g, ''); };
+    var key = fontKey;
     var added = [];
     missingFonts.forEach(function (name) {
       if (autoTried[name]) return;
@@ -745,13 +762,10 @@ ${LAYERS_SCRIPT}
 
   function renderFonts() {
     missingFonts = allMissingFonts();
-    if (addMissingFromLibrary()) {
-      fontTags.innerHTML = fonts.map(function (f, i) { return '<sp-tag deletable data-index="' + i + '">' + escapeHtml(f.name) + '</sp-tag>'; }).join('');
-      return;
-    }
-    fontTags.innerHTML = fonts.map(function (f, i) {
-      return '<sp-tag deletable data-index="' + i + '">' + escapeHtml(f.name) + '</sp-tag>';
-    }).join('');
+    (missingFonts || []).forEach(function (name) { neededFonts[fontKey(name)] = true; });
+    var added = addMissingFromLibrary();
+    renderLibrary();
+    if (added) return;
     var missing = missingFonts && missingFonts.length;
     setFontsHelp(fontsUploading ? 'Uploading ' + fontsUploading + ' font file(s)...'
       : missing ? 'Fonts of the template not available: ' + missingFonts.join(', ') + '. Add their files, otherwise they are '
@@ -829,12 +843,6 @@ ${LAYERS_SCRIPT}
 
   document.getElementById('add-fonts').addEventListener('click', function () { fontInput.value = ''; fontInput.click(); });
   fontInput.addEventListener('change', function () { addFonts(fontInput.files); });
-  fontTags.addEventListener('delete', function (e) {
-    fonts.splice(Number(e.target.getAttribute('data-index')), 1);
-    renderLibrary();
-    renderFonts();
-    checkFonts();
-  });
   renderFonts();
 
   // File name of a part of the name: the characters that files do not allow replaced, spaces as dashes
