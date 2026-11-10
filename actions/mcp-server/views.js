@@ -1021,6 +1021,7 @@ ${LAYERS_SCRIPT}
           if (!isCurrent() || !partial.layers || (t.data && t.data.layers)) return;
           t.data = partial;
           t.status = 'ready';
+          t.previewPending = true;
           templateRead(t, false);
         });
       })
@@ -1031,6 +1032,7 @@ ${LAYERS_SCRIPT}
         if (hadLayers) result.layers = t.data.layers;
         t.data = result;
         t.status = 'ready';
+        t.previewPending = false;
         t.missingFonts = result.missingFonts || [];
         templateRead(t, hadLayers);
       })
@@ -1151,7 +1153,7 @@ ${LAYERS_SCRIPT}
       render(t.data);
       layers.forEach(function (l, i) { document.getElementById('layer-' + i).checked = Boolean(t.checked[l.id]); });
       if (layers.length) updateSelection();
-      if (!t.data.previewUrl && t.status === 'reading') showPreviewLoader();
+      if (!t.data.previewUrl && t.previewPending) showPreviewLoader(t.data.document);
     } else if (t) {
       setStatus(t.status === 'error' ? t.error : 'Reading the template...', t.status === 'error', t.status !== 'error');
     }
@@ -2122,6 +2124,8 @@ const LAYERS_HTML = `<div class="picker">
 
 const LAYERS_SCRIPT = `
   var layers = [];
+  // Size of the document shown, for the place of the spinner
+  var previewDoc = null;
   // Number of each layer shown on the preview (1, 2...), in the order of the list; none for layers without a zone
   var numbers = [];
   var listEl = document.getElementById('layers');
@@ -2158,6 +2162,7 @@ const LAYERS_SCRIPT = `
       return;
     }
     var doc = data.document || {};
+    previewDoc = doc;
     var hasPreview = Boolean(data.previewUrl && doc.width && doc.height && layers.some(function (l) { return l.area; }));
     var next = 0;
     numbers = layers.map(function (l) { return hasPreview && l.area ? ++next : null; });
@@ -2175,7 +2180,16 @@ const LAYERS_SCRIPT = `
   }
 
   // Spinner in place of the preview while it renders; hidePreviewLoader when it cannot be shown.
-  function showPreviewLoader() {
+  // With the size of the document, the spinner takes the place the preview will take (same ratio, same largest height), so
+  // that the layout does not change when it appears
+  function showPreviewLoader(doc) {
+    var loader = document.getElementById('preview-loader');
+    doc = doc || previewDoc;
+    if (doc && doc.width && doc.height) {
+      loader.style.aspectRatio = doc.width + ' / ' + doc.height;
+      loader.style.width = Math.round(460 * doc.width / doc.height) + 'px';
+      loader.style.height = 'auto';
+    }
     document.getElementById('stage').hidden = true;
     document.getElementById('preview-loader').hidden = false;
     document.getElementById('preview').hidden = false;
@@ -2210,11 +2224,17 @@ const LAYERS_SCRIPT = `
         + '<span class="num ' + kind + '">' + numbers[i] + '</span></button>';
     }).join('');
     var img = document.getElementById('preview-img');
-    img.onload = function () { reportSize(); };
+    // The spinner stays until the image is loaded
+    showPreviewLoader(doc);
+    var shown = function () {
+      if (img.getAttribute('src') !== previewUrl) return;
+      document.getElementById('preview-loader').hidden = true;
+      document.getElementById('stage').hidden = false;
+      reportSize();
+    };
+    img.onload = shown;
+    img.onerror = shown;
     img.src = previewUrl;
-    document.getElementById('preview-loader').hidden = true;
-    document.getElementById('stage').hidden = false;
-    document.getElementById('preview').hidden = false;
     var introEl = document.getElementById('intro');
     if (introEl) introEl.textContent = 'Click the numbered zones of the template, or the list, to pick the layers to use for the variants.';
   }
