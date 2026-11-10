@@ -3,8 +3,8 @@
 const jpeg = require('jpeg-js')
 
 // Longest side of a visual shown to the assistant, in pixels, and its JPEG quality
-const REVIEW_MAX_SIDE = 1000
-const REVIEW_JPEG_QUALITY = 80
+const REVIEW_MAX_SIDE = 640
+const REVIEW_JPEG_QUALITY = 70
 
 // Pixels of a PNG or JPEG image: { width, height, data } in RGBA.
 function decodeImage (image) {
