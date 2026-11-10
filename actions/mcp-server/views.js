@@ -719,7 +719,26 @@ ${LAYERS_SCRIPT}
       fonts.push({ name: font.fileName, url: font.url, libraryId: font.id });
       if (autoAdded.indexOf(font.fileName) < 0) autoAdded.push(font.fileName);
     });
-    if (list && list.length) renderLibrary();
+    if (!list || !list.length) return;
+    renderLibrary();
+    // The templates already read without these fonts, which they miss, are read again with them
+    templates.forEach(function (t) { if (t.status === 'ready' && !t.previewPending) rereadWithFontsUsed(t); });
+  }
+  // A template read without a font it misses, which is used for the render meanwhile (picked, or given by the reading of
+  // another template): read again with it, once per font
+  function rereadWithFontsUsed(t) {
+    var missed = (t.missingFonts || []).filter(function (name) {
+      var font = library.filter(function (f) { return [f.postScriptName, f.fullName].some(function (n) { return n && fontKey(n) === fontKey(name); }); })[0];
+      var used = font && fonts.filter(function (f) { return f.libraryId === font.id || f.url === font.url; })[0];
+      return used && (t.readFonts || []).indexOf(used.url) < 0 && !(t.rereadFor || {})[name];
+    });
+    if (!missed.length) return false;
+    t.rereadFor = t.rereadFor || {};
+    missed.forEach(function (name) { t.rereadFor[name] = true; });
+    t.previewPending = true;
+    if (t === templates[active] && currentStep === 2) showPreviewLoader(t.data && t.data.document);
+    readTemplateOf(t);
+    return true;
   }
   function useLibraryFont(font) {
     if (inUse(font)) return;
@@ -747,8 +766,12 @@ ${LAYERS_SCRIPT}
       renderFonts();
       checkFonts();
     } else {
+      // Removed from the library and from the render at once
+      var used = inUse(font);
       library = library.filter(function (f) { return f.id !== id; });
+      fonts = fonts.filter(function (f) { return f.libraryId !== font.id && f.url !== font.url; });
       renderLibrary();
+      if (used) { renderFonts(); checkFonts(); }
       callTool('remove-font', { id: id }).catch(function () {});
     }
   });
@@ -809,12 +832,14 @@ ${LAYERS_SCRIPT}
         document.getElementById('preview-loader').hidden = true;
         document.getElementById('stage').hidden = false;
       };
+      t.readFonts = (fontUrls() || []).slice();
       callTool('read-psd-template', { url: t.url, fonts: fontUrls(), batch: batch })
         .then(function (started) { return waitForTask(started.taskId); })
         .then(function (result) {
           if (version !== fontsVersion || read !== t.read) return;
           if (result.previewUrl) t.data.previewUrl = result.previewUrl;
           t.missingFonts = result.missingFonts || [];
+          if (rereadWithFontsUsed(t)) return;
           if (t === templates[active] && result.previewUrl) showLatePreview(result.previewUrl, result.document || {});
           shownAgain();
           renderFonts();
@@ -1030,6 +1055,7 @@ ${LAYERS_SCRIPT}
     var isCurrent = function () { return templates.indexOf(t) >= 0 && read === t.read; };
     t.status = 'reading';
     t.missingFonts = null;
+    t.readFonts = (fontUrls() || []).slice();
     renderTemplates();
     callTool('read-psd-template', { url: t.url, fonts: fontUrls(), batch: batch })
       .then(function (started) {
@@ -1050,7 +1076,9 @@ ${LAYERS_SCRIPT}
         t.status = 'ready';
         t.previewPending = false;
         t.missingFonts = result.missingFonts || [];
+        (result.libraryFonts || []).forEach(function (f) { t.readFonts.push(f.url); });
         useFontsFromRead(result.libraryFonts);
+        if (rereadWithFontsUsed(t)) return;
         templateRead(t, hadLayers);
       })
       .catch(function (error) {
