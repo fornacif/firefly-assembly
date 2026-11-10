@@ -3129,7 +3129,10 @@ function getVariantViewHtml (scriptUrl) {
   .language { flex: none; padding: 0 6px; border-radius: 4px; background: var(--spectrum-gray-200); font-size: 11px; font-weight: bold; line-height: 18px; text-transform: uppercase; }
   .language.format { flex: 0 1 auto; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; }
   /* A variant of the earlier generation, not generated again */
-  .unchanged { flex: none; font-size: 11px; color: var(--spectrum-neutral-subdued-content-color-default); }
+  /* State of a variant after changes were sent: generated again (Changed) or kept from the earlier generation (Unchanged) */
+  .state { flex: none; padding: 0 8px; border-radius: 9px; font-size: 11px; font-weight: bold; line-height: 18px; color: #ffffff; }
+  .state.unchanged { background: var(--spectrum-gray-600); }
+  .state.changed { background: var(--spectrum-accent-background-color-default); }
   /* In place of the visual of a variant being rendered */
   .rendering {
     display: flex;
@@ -3317,9 +3320,13 @@ ${REPORT_SCRIPT}
   }
 
   // Name of a variant, with its language
+  // Changes were sent: the variants of the earlier generation not generated again are shown too
+  function hasKept() { return variants.some(function (v) { return v.kept; }); }
+
   function cardHead(v) {
     return '<div class="card-head"><span class="subtle card-name">' + escapeHtml(v.fileName) + '</span>'
-      + (v.kept ? '<span class="unchanged" title="Not generated again: as in the earlier generation">Unchanged</span>' : '')
+      + (v.kept ? '<span class="state unchanged" title="Not generated again: as in the earlier generation">Unchanged</span>'
+        : hasKept() && !v.error ? '<span class="state changed" title="Generated again with the changes sent">Changed</span>' : '')
       + (v.template ? '<span class="language format" title="Template">' + escapeHtml(v.template) + '</span>' : '')
       + (v.language ? '<span class="language">' + escapeHtml(v.language) + '</span>' : '') + '</div>';
   }
