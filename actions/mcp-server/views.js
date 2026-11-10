@@ -536,7 +536,7 @@ ${LAYERS_CSS}
 <div class="field fonts">
   <label>Fonts</label>
   <div class="fonts-row">
-    <sp-button size="s" variant="secondary" treatment="outline" id="add-fonts">Add fonts</sp-button>
+    <sp-button variant="secondary" treatment="outline" id="add-fonts">Add fonts</sp-button>
     <input type="file" id="font-files" accept=".otf,.ttf,font/otf,font/ttf" multiple>
     <sp-tags id="fonts"></sp-tags>
   </div>
