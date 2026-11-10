@@ -15,24 +15,30 @@ function environment () {
   return workspace ? workspace.charAt(0).toUpperCase() + workspace.slice(1) : 'Production'
 }
 
-let indexed = false
+// Indexes of the collections, created once per container
+const INDEXES = { [COLLECTION]: [{ userId: 1, at: -1 }, { at: -1 }] }
+const indexed = new Set()
 
-// Runs fn(collection) on a connection to the database, closed after.
-async function withActivity (params, fn) {
+// Runs fn(collection) on a connection to the database, closed after; indexes (list of key specs) are created once.
+async function withCollection (params, name, fn, indexes = INDEXES[name] || []) {
   const token = await generateAccessToken(params)
   const db = await libDb.init({ token: token.access_token, region: DB_REGION })
   const client = await db.connect()
   try {
-    const collection = client.collection(COLLECTION)
-    if (!indexed) {
-      await collection.createIndex({ userId: 1, at: -1 })
-      await collection.createIndex({ at: -1 })
-      indexed = true
+    const collection = client.collection(name)
+    if (!indexed.has(name)) {
+      for (const index of indexes) await collection.createIndex(index)
+      indexed.add(name)
     }
     return await fn(collection)
   } finally {
     await client.close().catch(() => {})
   }
+}
+
+// Runs fn(collection) on the activity collection
+function withActivity (params, fn) {
+  return withCollection(params, COLLECTION, fn)
 }
 
 // Time during which at least one call waited for the rate limit, in ms: the periods of wait of the calls ([start, end]) joined,
@@ -216,4 +222,4 @@ async function callAverages (params, userId, operations, days = 30) {
   })
 }
 
-module.exports = { recordActivity, usageHistory, usageReport, callAverages }
+module.exports = { recordActivity, usageHistory, usageReport, callAverages, withCollection }

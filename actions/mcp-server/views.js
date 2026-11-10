@@ -490,6 +490,15 @@ function getStartViewHtml (scriptUrl) {
   .fonts-help.warning { color: var(--spectrum-orange-1000, #a54b00); }
   .fonts-help.warning svg { color: var(--spectrum-notice-visual-color, #e68619); }
   .fonts-help.negative { color: var(--spectrum-negative-content-color-default, #d31510); }
+  /* Fonts added before (the library of the user): a chip each, to add it, with a button to remove it from the library */
+  .font-library { display: flex; align-items: center; flex-wrap: wrap; gap: var(--spectrum-spacing-100); margin-top: var(--spectrum-spacing-200);
+    font-size: var(--spectrum-font-size-75); }
+  .font-library .library-label { color: var(--spectrum-neutral-subdued-content-color-default); margin-right: var(--spectrum-spacing-75); }
+  .font-chip { display: inline-flex; align-items: center; border: 1px solid var(--spectrum-gray-400); border-radius: 14px; overflow: hidden; }
+  .font-chip button { font: inherit; color: var(--spectrum-neutral-content-color-default); background: transparent; border: none; cursor: pointer;
+    padding: 3px 8px; }
+  .font-chip button:hover { background: var(--spectrum-gray-200); }
+  .font-chip .font-forget { padding: 3px 7px; border-left: 1px solid var(--spectrum-gray-300); color: var(--spectrum-neutral-subdued-content-color-default); }
 ${STEPS_CSS}
 ${LAYERS_CSS}
 `, `
@@ -541,6 +550,7 @@ ${LAYERS_CSS}
     <sp-tags id="fonts"></sp-tags>
   </div>
   <div id="fonts-help" class="fonts-help" role="status"></div>
+  <div class="font-library" id="font-library" hidden></div>
 </div>
 </div>
 <sp-help-text id="quota" variant="negative" icon hidden></sp-help-text>
@@ -663,8 +673,74 @@ ${LAYERS_SCRIPT}
     return list;
   }
 
+  // Fonts the user added before (list-fonts): { id, fileName, postScriptName, fullName, family, url }, offered to add in one
+  // click, and added by themselves when a template misses them (once per font name)
+  var library = [];
+  var autoTried = {};
+  var autoAdded = [];
+  var libraryEl = document.getElementById('font-library');
+  function inUse(font) { return fonts.some(function (f) { return f.libraryId === font.id || f.url === font.url; }); }
+  function renderLibrary() {
+    var offered = library.filter(function (font) { return !inUse(font); });
+    libraryEl.hidden = !offered.length;
+    libraryEl.innerHTML = '<span class="library-label">Your fonts:</span>' + offered.map(function (font) {
+      var title = (font.postScriptName || font.fileName) + (font.fullName && font.fullName !== font.postScriptName ? ' (' + font.fullName + ')' : '');
+      return '<span class="font-chip"><button type="button" class="font-use" data-id="' + escapeHtml(font.id) + '" title="Add ' + escapeHtml(title) + '">+ ' + escapeHtml(font.fileName) + '</button>'
+        + '<button type="button" class="font-forget" data-id="' + escapeHtml(font.id) + '" aria-label="Remove ' + escapeHtml(font.fileName) + ' from your fonts" title="Remove from your fonts">&times;</button></span>';
+    }).join('');
+    reportSize();
+  }
+  function useLibraryFont(font) {
+    if (inUse(font)) return;
+    fonts.push({ name: font.fileName, url: font.url, libraryId: font.id });
+    renderLibrary();
+  }
+  libraryEl.addEventListener('click', function (e) {
+    var button = e.target.closest('button');
+    if (!button) return;
+    var id = button.getAttribute('data-id');
+    var font = library.filter(function (f) { return f.id === id; })[0];
+    if (!font) return;
+    if (button.classList.contains('font-use')) {
+      useLibraryFont(font);
+      renderFonts();
+      checkFonts();
+    } else {
+      library = library.filter(function (f) { return f.id !== id; });
+      renderLibrary();
+      callTool('remove-font', { id: id }).catch(function () {});
+    }
+  });
+  callTool('list-fonts').then(function (result) {
+    library = result.fonts || [];
+    renderLibrary();
+    renderFonts();
+  }, function () {});
+
+  // The fonts missing in the templates that the library has (same PostScript or full name) are added at once, and the
+  // templates rendered again with them
+  function addMissingFromLibrary() {
+    if (!missingFonts || !missingFonts.length || fontsUploading) return false;
+    var key = function (name) { return String(name || '').toLowerCase().replace(/[\\s_-]/g, ''); };
+    var added = [];
+    missingFonts.forEach(function (name) {
+      if (autoTried[name]) return;
+      autoTried[name] = true;
+      var font = library.filter(function (f) { return [f.postScriptName, f.fullName].some(function (n) { return n && key(n) === key(name); }); })[0];
+      if (font && !inUse(font)) { useLibraryFont(font); added.push(font.fileName); autoAdded.push(font.fileName); }
+    });
+    if (!added.length) return false;
+    checkFonts();
+    setFontsHelp('Added from your fonts: ' + added.join(', ') + '. Rendering the preview again with them...');
+    return true;
+  }
+
   function renderFonts() {
     missingFonts = allMissingFonts();
+    if (addMissingFromLibrary()) {
+      fontTags.innerHTML = fonts.map(function (f, i) { return '<sp-tag deletable data-index="' + i + '">' + escapeHtml(f.name) + '</sp-tag>'; }).join('');
+      return;
+    }
     fontTags.innerHTML = fonts.map(function (f, i) {
       return '<sp-tag deletable data-index="' + i + '">' + escapeHtml(f.name) + '</sp-tag>';
     }).join('');
@@ -672,7 +748,8 @@ ${LAYERS_SCRIPT}
     setFontsHelp(fontsUploading ? 'Uploading ' + fontsUploading + ' font file(s)...'
       : missing ? 'Fonts of the template not available: ' + missingFonts.join(', ') + '. Add their files, otherwise they are '
         + 'replaced by a default font.'
-      : missingFonts ? 'All the fonts of the template are available. The preview is rendered again when a font is added or removed.'
+      : missingFonts ? 'All the fonts of the template are available'
+        + (autoAdded.length ? ' (' + autoAdded.join(', ') + ' added from your fonts)' : '') + '. The preview is rendered again when a font is added or removed.'
       : 'Optional: the .otf or .ttf files of fonts of the template that Photoshop does not have. The preview is rendered again with them.',
       missing && !fontsUploading ? 'warning' : '');
   }
@@ -722,7 +799,16 @@ ${LAYERS_SCRIPT}
     renderFonts();
     updateButton();
     Promise.all(list.map(function (file) {
-      return uploadOne(file, function () {}).then(function (uploaded) { fonts.push(uploaded); }, function () { return file.name; });
+      return uploadOne(file, function () {}).then(function (uploaded) {
+        var font = { name: uploaded.name, url: uploaded.url };
+        fonts.push(font);
+        // Kept in the library of the user (in place of a font of the same name), to be offered again later
+        callTool('save-font', { url: uploaded.url }).then(function (result) {
+          font.libraryId = result.font.id;
+          library = [result.font].concat(library.filter(function (f) { return f.id !== result.font.id && f.postScriptName !== result.font.postScriptName; }));
+          renderLibrary();
+        }, function () {});
+      }, function () { return file.name; });
     })).then(function (failed) {
       fontsUploading -= list.length;
       failed = failed.filter(Boolean);
@@ -737,6 +823,7 @@ ${LAYERS_SCRIPT}
   fontInput.addEventListener('change', function () { addFonts(fontInput.files); });
   fontTags.addEventListener('delete', function (e) {
     fonts.splice(Number(e.target.getAttribute('data-index')), 1);
+    renderLibrary();
     renderFonts();
     checkFonts();
   });
@@ -2928,15 +3015,16 @@ function getVariantViewHtml (scriptUrl) {
   }
   .mark-number { position: absolute; top: -9px; left: -9px; }
   .issue-number { margin-right: 4px; }
-  .card-name { word-break: break-all; }
+  .card-name { overflow-wrap: anywhere; }
   /* Languages of a variant side by side: one row per variant, one column per language, scrolled when they do not fit */
   .groups { display: flex; flex-direction: column; gap: var(--spectrum-spacing-400); }
   .group-name { font-weight: var(--spectrum-bold-font-weight); margin-bottom: var(--spectrum-spacing-100); }
   .group-row { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(180px, 1fr); gap: var(--spectrum-spacing-300); overflow-x: auto; padding-bottom: var(--spectrum-spacing-100); }
-  .card-head { display: flex; align-items: center; gap: var(--spectrum-spacing-100); min-width: 0; }
-  .card-head .card-name { flex: 1; min-width: 0; }
+  /* The name on its own line, the badges (unchanged, template, language) on the line below */
+  .card-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spectrum-spacing-75) var(--spectrum-spacing-100); min-width: 0; }
+  .card-head .card-name { flex: 1 1 100%; min-width: 0; }
   .language { flex: none; padding: 0 6px; border-radius: 4px; background: var(--spectrum-gray-200); font-size: 11px; font-weight: bold; line-height: 18px; text-transform: uppercase; }
-  .language.format { flex: 0 1 auto; min-width: 0; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; }
+  .language.format { flex: 0 1 auto; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; }
   /* A variant of the earlier generation, not generated again */
   .unchanged { flex: none; font-size: 11px; color: var(--spectrum-neutral-subdued-content-color-default); }
   /* In place of the visual of a variant being rendered */

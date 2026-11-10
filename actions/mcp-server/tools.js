@@ -10,6 +10,7 @@ const { getTokenFromRequest, getUnverifiedClaims, getUnverifiedClientId } = requ
 const { createPickerSession, getPickerResult } = require('./aem-picker.js')
 const { zipFiles } = require('./zip.js')
 const { recordActivity, usageHistory, usageReport, callAverages } = require('./history.js')
+const { fontNames, listFonts, addFont, removeFont } = require('./fonts.js')
 const spectrumAsset = require('./spectrum-asset.js')
 
 const IMS_TOKEN_URL = 'https://ims-na1.adobelogin.com/ims/token/v3'
@@ -2292,6 +2293,77 @@ function registerTools (server, params) {
       try {
         const urls = await createStorageUrls('uploads', fileName)
         return jsonResult(urls)
+      } catch (error) {
+        return errorResult(error)
+      }
+    }
+  )
+
+  server.registerTool(
+    'save-font',
+    {
+      title: 'Save Font',
+      description: 'Used by the start widget: keeps a font file uploaded by the user (create-upload-url) in their library of fonts, ' +
+        'with its PostScript name read from the file, so that it is offered again later.',
+      inputSchema: { url: z.string().url().describe('Read URL of the uploaded font file') },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    async ({ url }) => {
+      try {
+        const match = new URL(url).origin === STORAGE_ORIGIN && new URL(url).pathname.match(STORAGE_PATH)
+        if (!match || !match[1].startsWith('uploads/')) throw new Error('Not a file uploaded to this server.')
+        const path = match[1]
+        const fresh = await freshStorageUrl(url)
+        const response = await fetchWithRetry(fresh)
+        if (!response.ok) throw new Error(`The font file could not be read (HTTP ${response.status})`)
+        const names = fontNames(Buffer.from(await response.arrayBuffer()))
+        if (!names) throw new Error('Not an OpenType or TrueType font file.')
+        const fileName = path.replace(/^uploads\/\d+-[0-9a-f]{8}-/, '')
+        const font = await addFont(params, currentUserId(params), { id: crypto.randomUUID(), fileName, path, names })
+        const { path: _path, addedAt, ...saved } = font
+        return jsonResult({ font: { ...saved, url: fresh } })
+      } catch (error) {
+        return errorResult(error)
+      }
+    }
+  )
+
+  server.registerTool(
+    'list-fonts',
+    {
+      title: 'List Fonts',
+      description: 'Used by the start widget: the fonts the user added before (their library), the latest first, with URLs valid 24 hours.',
+      inputSchema: {},
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    async () => {
+      try {
+        const files = await initFiles()
+        const fonts = await listFonts(params, currentUserId(params))
+        return jsonResult({
+          fonts: await Promise.all(fonts.map(async ({ path, addedAt, ...font }) => ({
+            ...font,
+            url: await files.generatePresignURL(path, { expiryInSeconds: URL_EXPIRY_SECONDS, permissions: 'r' })
+          })))
+        })
+      } catch (error) {
+        return errorResult(error)
+      }
+    }
+  )
+
+  server.registerTool(
+    'remove-font',
+    {
+      title: 'Remove Font',
+      description: 'Used by the start widget: removes a font from the library of the user.',
+      inputSchema: { id: z.string().uuid().describe('Id of the font in the library') },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    async ({ id }) => {
+      try {
+        await removeFont(params, currentUserId(params), id)
+        return jsonResult({ removed: id })
       } catch (error) {
         return errorResult(error)
       }
