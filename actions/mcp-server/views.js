@@ -217,8 +217,10 @@ const BRIDGE_SCRIPT = `
 const ADOBE_ICON = '<svg slot="icon" viewBox="0 10.22 16.86 14.94" width="18" height="16" aria-hidden="true" style="fill:#eb1000;stroke:none">' +
   '<path style="fill:#eb1000;stroke:none" d="M6.27,10.22h4.39l6.2,14.94h-4.64l-3.92-9.92-2.59,6.51h3.08l1.23,3.41H0l6.27-14.94"/></svg>'
 
-// Keep in sync with MAX_VARIANTS in tools.js
+// Keep in sync with MAX_VARIANTS, MAX_TEMPLATES and MAX_RENDERS in tools.js
 const MAX_VARIANTS_UI = 50
+const MAX_TEMPLATES_UI = 5
+const MAX_RENDERS_UI = 100
 // Languages offered in the start widget: ISO 639-1 code and name
 const LANGUAGES = [['en', 'English'], ['fr', 'French'], ['it', 'Italian'], ['de', 'German'], ['es', 'Spanish'], ['pt', 'Portuguese'],
   ['nl', 'Dutch'], ['pl', 'Polish'], ['sv', 'Swedish'], ['da', 'Danish'], ['no', 'Norwegian'], ['fi', 'Finnish']]
@@ -280,13 +282,13 @@ const AEM_SCRIPT = `
       });
   }
 
-  function pickAemAssets(multiple) {
+  function pickAemAssets(multiple, what) {
     var pickId = ++aemPickId;
     return callTool('create-aem-picker-session', { multiple: multiple })
       .then(function (session) {
         return request('ui/open-link', { url: session.pickerUrl }).then(function (result) {
           if (result && result.isError) throw new Error('The AEM selector tab could not be opened.');
-          setStatus('Choose ' + (multiple ? 'the images' : 'the PSD template') + ' in the AEM tab that opened, then come back here.');
+          setStatus('Choose ' + (what || (multiple ? 'the images' : 'the PSD template')) + ' in the AEM tab that opened, then come back here.');
           return waitForAemSelection(session.sessionId, pickId, Date.now() + AEM_PICK_TIMEOUT_MS);
         });
       })
@@ -457,6 +459,26 @@ function getStartViewHtml (scriptUrl) {
   sp-dropzone sp-button { font-size: var(--spectrum-font-size-100); line-height: var(--spectrum-line-height-100); }
   #file { display: none; }
   sp-progress-bar { width: 100%; margin-top: var(--spectrum-spacing-200); }
+  /* Templates imported (one per format): a row each, with its size, its state and a button to remove it */
+  .template-list { display: flex; flex-direction: column; gap: var(--spectrum-spacing-100); margin-top: var(--spectrum-spacing-200); }
+  .template-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: var(--spectrum-spacing-200);
+    padding: var(--spectrum-spacing-100) var(--spectrum-spacing-200); background: var(--spectrum-background-layer-2-color);
+    border: 1px solid var(--spectrum-gray-200); border-radius: var(--spectrum-corner-radius-200); }
+  .template-row .template-name { font-weight: var(--spectrum-bold-font-weight); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .template-row .template-state { font-size: var(--spectrum-font-size-75); color: var(--spectrum-neutral-subdued-content-color-default); white-space: nowrap; }
+  .template-row .template-state.negative { color: var(--spectrum-negative-content-color-default); white-space: normal; }
+  .template-row sp-progress-bar { grid-column: 1 / -1; margin-top: 0; }
+  .template-remove { width: 24px; height: 24px; padding: 0; font: inherit; font-size: 15px; line-height: 22px; color: var(--spectrum-neutral-content-color-default);
+    background: transparent; border: 1px solid var(--spectrum-gray-400); border-radius: 50%; cursor: pointer; }
+  .template-remove:hover { background: var(--spectrum-gray-200); }
+  /* One tab per template in the layer step, with the number of layers picked in it */
+  .template-tabs { display: flex; flex-wrap: wrap; gap: var(--spectrum-spacing-100); margin-bottom: var(--spectrum-spacing-300); }
+  .template-tab { font: inherit; font-size: var(--spectrum-font-size-75); padding: var(--spectrum-spacing-75) var(--spectrum-spacing-200);
+    color: var(--spectrum-neutral-content-color-default); background: transparent; border: 2px solid var(--spectrum-gray-300);
+    border-radius: 16px; cursor: pointer; }
+  .template-tab:hover { border-color: var(--spectrum-gray-500); }
+  .template-tab.active { border-color: var(--spectrum-accent-background-color-default); color: var(--spectrum-accent-content-color-default); font-weight: var(--spectrum-bold-font-weight); }
+  .linked { margin-top: var(--spectrum-spacing-200); font-size: var(--spectrum-font-size-75); }
   /* Fonts added, under the preview: tags that can be removed next to the button */
   .field.fonts { margin-top: var(--spectrum-spacing-300); }
   .fonts-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--spectrum-spacing-200); }
@@ -477,7 +499,7 @@ ${LAYERS_CSS}
   <li data-for="2" role="button" tabindex="-1"><span class="step-kicker">Step 2</span><span class="step-title">Layers to vary</span></li>
 </ol>
 <div data-step="1">
-<div class="subtle intro">Set the number of variants and their languages, and drop the layered PSD template.</div>
+<div class="subtle intro">Set the number of variants and their languages, and drop the layered PSD template, or one template per format.</div>
 <div class="field">
   <label for="count">Number of variants per language</label>
   <input type="number" id="count" min="1" max="${MAX_VARIANTS_UI}" value="2">
@@ -496,19 +518,21 @@ ${LAYERS_CSS}
   <sp-help-text id="naming-help"></sp-help-text>
 </div>
 <sp-dropzone id="drop">
-  <div class="message"><div id="message-heading">Drop your PSD template</div><div class="subtle" id="message-description">Layered .psd file</div></div>
+  <div class="message"><div id="message-heading">Drop your PSD templates</div><div class="subtle" id="message-description">Layered .psd files, one per format</div></div>
   <div class="browse">
     <sp-button variant="accent" treatment="outline" id="browse">Browse</sp-button>
     <sp-button variant="accent" treatment="outline" id="aem" hidden>${ADOBE_ICON}Choose from AEM</sp-button>
-    <input type="file" id="file" accept=".psd,image/vnd.adobe.photoshop">
+    <input type="file" id="file" accept=".psd,image/vnd.adobe.photoshop" multiple>
   </div>
 </sp-dropzone>
-<sp-progress-bar id="progress" label="Upload" progress="0" side-label hidden></sp-progress-bar>
+<div class="template-list" id="template-list" hidden></div>
 <sp-help-text id="estimate" hidden></sp-help-text>
 </div>
 <div data-step="2" hidden>
   <div class="subtle intro" id="layers-intro">Click the numbered zones of the template, or the list, to pick the layers to change in the variants.</div>
+  <div class="template-tabs" id="template-tabs" role="tablist" hidden></div>
   ${LAYERS_HTML}
+  <div class="subtle linked" id="linked" hidden></div>
 <div class="field fonts">
   <label>Fonts</label>
   <div class="fonts-row">
@@ -531,13 +555,22 @@ ${UPLOAD_SCRIPT}
 ${AEM_SCRIPT}
 ${QUOTA_SCRIPT}
 ${LAYERS_SCRIPT}
+  // Layers picked in all the templates; while a template is shown again (another tab), its boxes are set without linking
   var layerCount = 0;
-  function onLayersChange(count) { layerCount = count; updateButton(); }
+  var switching = false;
+  function onLayersChange() {
+    if (!switching) syncSelection();
+    layerCount = templates.reduce(function (total, t) { return total + checkedIds(t).length; }, 0);
+    renderTabs();
+    updateButton();
+  }
   var LANGUAGE_NAMES = ${JSON.stringify(Object.fromEntries(LANGUAGES))};
   var countInput = document.getElementById('count');
   var input = document.getElementById('file');
   var drop = document.getElementById('drop');
-  var progress = document.getElementById('progress');
+  var templateList = document.getElementById('template-list');
+  var templateTabs = document.getElementById('template-tabs');
+  var linkedEl = document.getElementById('linked');
   var messageHeading = document.getElementById('message-heading');
   var messageDescription = document.getElementById('message-description');
   var continueBtn = document.getElementById('continue');
@@ -586,7 +619,18 @@ ${LAYERS_SCRIPT}
   var totalText = document.getElementById('total');
   var namingInput = document.getElementById('naming');
   var namingHelp = document.getElementById('naming-help');
-  var template = null;
+  // Templates imported, one per format, in order: { name, url, status ('uploading', 'importing', 'reading', 'ready', 'error'),
+  // progress, error, data (layers, document, preview), checked (ids of the layers picked), missingFonts, read (count of its
+  // readings) }. The layer step shows one of them (active), with a tab per template. The layers of the same name and type are
+  // linked: picking one picks them in the other templates, and they get the same texts and images.
+  var templates = [];
+  var active = 0;
+  var MAX_TEMPLATES = ${MAX_TEMPLATES_UI};
+  // Templates read together share the API calls of the report
+  var batch = 'b' + Date.now().toString(36);
+  function readyTemplates() { return templates.filter(function (t) { return t.status === 'ready'; }); }
+  function allRead() { return templates.length > 0 && templates.every(function (t) { return t.status === 'ready'; }); }
+  function checkedIds(t) { return Object.keys(t.checked || {}).filter(function (id) { return t.checked[id]; }).map(Number); }
 
   // Fonts added by the user ({ name, url }), given to the reading of the template and to the generation, and the fonts of the
   // template missing for the render (null until the template is read). fontsVersion counts the changes: an older reading is
@@ -611,7 +655,16 @@ ${LAYERS_SCRIPT}
 
   function fontUrls() { return fonts.length ? fonts.map(function (f) { return f.url; }) : undefined; }
 
+  // Fonts missing in any template, null until all are read
+  function allMissingFonts() {
+    if (!templates.length || templates.some(function (t) { return t.status !== 'error' && !t.missingFonts; })) return null;
+    var list = [];
+    templates.forEach(function (t) { (t.missingFonts || []).forEach(function (f) { if (list.indexOf(f) < 0) list.push(f); }); });
+    return list;
+  }
+
   function renderFonts() {
+    missingFonts = allMissingFonts();
     fontTags.innerHTML = fonts.map(function (f, i) {
       return '<sp-tag deletable data-index="' + i + '">' + escapeHtml(f.name) + '</sp-tag>';
     }).join('');
@@ -624,42 +677,41 @@ ${LAYERS_SCRIPT}
       missing && !fontsUploading ? 'warning' : '');
   }
 
-  // Missing fonts found by a reading of the template made with the fonts of version
-  function onMissingFonts(list, version) {
-    if (version !== undefined && version !== fontsVersion) return;
-    missingFonts = list;
-    renderFonts();
-  }
-
-  // The fonts changed after the template was read: it is rendered again with them, for its preview and the fonts missing
+  // The fonts changed after the templates were read: each is rendered again with them, for its preview and the fonts missing
   function checkFonts() {
     var version = ++fontsVersion;
-    if (!template) return;
-    var read = templateRead;
-    missingFonts = null;
-    setFontsHelp('Rendering the preview again with the fonts...');
-    if (document.getElementById('preview-img').getAttribute('src')) showPreviewLoader();
+    var list = readyTemplates();
+    if (!list.length) return;
+    list.forEach(function (t) { t.missingFonts = null; });
+    setFontsHelp('Rendering the preview' + (list.length > 1 ? 's' : '') + ' again with the fonts...');
+    if (templates[active] && templates[active].status === 'ready' && document.getElementById('preview-img').getAttribute('src')) showPreviewLoader();
     reportSize();
-    callTool('read-psd-template', { url: template.url, fonts: fontUrls() })
-      .then(function (started) { return waitForTask(started.taskId); })
-      .then(function (result) {
-        if (version !== fontsVersion || read !== templateRead) return;
-        if (result.previewUrl) showLatePreview(result.previewUrl, result.document || {});
+    list.forEach(function (t) {
+      var read = t.read;
+      var shownAgain = function () {
+        if (t !== templates[active]) return;
         // Without a new preview, the previous one is shown again
-        if (!document.getElementById('preview-loader').hidden) {
-          document.getElementById('preview-loader').hidden = true;
-          document.getElementById('stage').hidden = false;
-        }
-        onMissingFonts(result.missingFonts || [], version);
-      })
-      .catch(function (error) {
-        if (version !== fontsVersion) return;
-        // The previous preview is shown again
         document.getElementById('preview-loader').hidden = true;
         document.getElementById('stage').hidden = false;
-        setFontsHelp('Preview not rendered again: ' + ((error && error.message) || String(error)), 'negative');
-        reportSize();
-      });
+      };
+      callTool('read-psd-template', { url: t.url, fonts: fontUrls(), batch: batch })
+        .then(function (started) { return waitForTask(started.taskId); })
+        .then(function (result) {
+          if (version !== fontsVersion || read !== t.read) return;
+          if (result.previewUrl) t.data.previewUrl = result.previewUrl;
+          t.missingFonts = result.missingFonts || [];
+          if (t === templates[active] && result.previewUrl) showLatePreview(result.previewUrl, result.document || {});
+          shownAgain();
+          renderFonts();
+        })
+        .catch(function (error) {
+          if (version !== fontsVersion) return;
+          t.missingFonts = t.missingFonts || [];
+          shownAgain();
+          setFontsHelp('Preview not rendered again: ' + ((error && error.message) || String(error)), 'negative');
+          reportSize();
+        });
+    });
   }
 
   function addFonts(files) {
@@ -695,26 +747,41 @@ ${LAYERS_SCRIPT}
     return String(text).trim().replace(/\\s+/g, '-').replace(/[\\\\/:*?"<>|]+/g, '_');
   }
 
-  // Model of the file names, with {template} and {date} replaced: {variant} and {language} are replaced by create-variant
+  // Names of the templates in the file names: their file names without extension, made unique
+  function templateNames() {
+    var used = {};
+    return templates.map(function (t) {
+      var base = safeName(t.name.replace(/\\.psd$/i, '')) || 'template', name = base;
+      for (var n = 2; used[name]; n++) name = base + '-' + n;
+      used[name] = true;
+      return name;
+    });
+  }
+
+  // Model of the file names, with {date} replaced, and {template} with a single template: {variant}, {language} (and
+  // {template} with several templates) are replaced by create-variant
   function fileNamePattern() {
     var now = new Date();
     var date = now.getFullYear() + '-' + ('0' + (now.getMonth() + 1)).slice(-2) + '-' + ('0' + now.getDate()).slice(-2);
-    var name = template ? template.name.replace(/\\.psd$/i, '') : 'template';
-    return namingInput.value.trim().split('{template}').join(safeName(name)).split('{date}').join(date);
+    var pattern = namingInput.value.trim().split('{date}').join(date);
+    return templates.length > 1 ? pattern : pattern.split('{template}').join(templates.length ? templateNames()[0] : 'template');
   }
 
-  // The model is valid when it names each variant apart: with {variant}, and with {language} for several languages
+  // The model is valid when it names each variant apart: with {variant}, with {language} for several languages, and with
+  // {template} for several templates
   function namingError() {
     var value = namingInput.value;
     if (value.indexOf('{variant}') < 0) return 'Add {variant}, so that each variant has its own file.';
     if (languages().length > 1 && value.indexOf('{language}') < 0) return 'Add {language}, so that each language has its own file.';
+    if (templates.length > 1 && value.indexOf('{template}') < 0) return 'Add {template}, so that each format has its own file.';
     return '';
   }
 
   function updateNaming() {
     var error = namingError();
     namingHelp.textContent = error || '{template}, {variant}, {language} and {date}, e.g. '
-      + fileNamePattern().split('{variant}').join('Winter-sale').split('{language}').join(languages()[0] || 'en') + '.jpg';
+      + fileNamePattern().split('{template}').join(templateNames()[0] || 'template').split('{variant}').join('Winter-sale')
+        .split('{language}').join(languages()[0] || 'en') + '.jpg';
     namingHelp.variant = error ? 'negative' : 'neutral';
   }
 
@@ -740,17 +807,24 @@ ${LAYERS_SCRIPT}
     reportSize();
   }
 
-  // Each variant is created in each language: the total is at most ${MAX_VARIANTS_UI}
+  // Each variant is created in each language: the total is at most ${MAX_VARIANTS_UI}, and each is rendered in each template
+  // (at most ${MAX_RENDERS_UI} files)
   function total() { return (count() || 0) * languages().length; }
+  function files() { return total() * Math.max(1, templates.length); }
+  function tooMany() { return total() > ${MAX_VARIANTS_UI} || files() > ${MAX_RENDERS_UI}; }
 
   function updateButton() {
     var n = total();
+    var formats = templates.length > 1 ? ' in ' + templates.length + ' formats, ' + files() + ' files' : '';
     totalText.textContent = !languages().length ? 'Choose at least one language.'
-      : n > ${MAX_VARIANTS_UI} ? n + ' variants in total: at most ${MAX_VARIANTS_UI}.' : n + ' variant' + (n > 1 ? 's' : '') + ' in total.';
-    totalText.variant = n > ${MAX_VARIANTS_UI} || !languages().length ? 'negative' : 'neutral';
+      : n > ${MAX_VARIANTS_UI} ? n + ' variants in total: at most ${MAX_VARIANTS_UI}.'
+        : files() > ${MAX_RENDERS_UI} ? n + ' variants' + formats + ': at most ${MAX_RENDERS_UI} files.'
+          : n + ' variant' + (n > 1 ? 's' : '') + ' in total' + formats + '.';
+    totalText.variant = tooMany() || !languages().length ? 'negative' : 'neutral';
     updateNaming();
-    nextBtn.disabled = !template || !count() || !n || n > ${MAX_VARIANTS_UI} || !!namingError() || fontsUploading > 0;
-    continueBtn.disabled = nextBtn.disabled || !layerCount;
+    nextBtn.disabled = !templates.length || templates.some(function (t) { return t.status === 'uploading' || t.status === 'importing' || t.status === 'error'; })
+      || !count() || !n || tooMany() || !!namingError() || fontsUploading > 0;
+    continueBtn.disabled = nextBtn.disabled || !allRead() || !layerCount;
     if (typeof updateSteps === 'function') updateSteps();
     updateEstimate();
   }
@@ -767,20 +841,31 @@ ${LAYERS_SCRIPT}
   function plural(n, word) { return n + ' ' + word + (n > 1 ? 's' : ''); }
   function updateEstimate() {
     var estimateText = document.getElementById('estimate');
-    var n = total();
-    estimateText.hidden = !estimate || !n || n > ${MAX_VARIANTS_UI};
+    var n = files();
+    estimateText.hidden = !estimate || !n || tooMany();
     if (estimateText.hidden) return reportSize();
     var avg = function (operation) { return estimate.averages[operation].averageMs; };
     var waitMs = function (images) {
       var crop = images ? avg('Image crop (Photoshop)') : 0;
       return Math.max(avg('Variant render') + crop, (n * avg('Variant render') + images * avg('Image crop (Photoshop)')) / estimate.parallelJobs);
     };
-    var imageLayers = template ? layers.filter(function (l) { return l.type === 'smart_object_layer'; }).length : 0;
-    var images = (count() || 0) * imageLayers;
+    // Image layers of the same name share their image, framed once per ratio of their frames
+    var imageLinks = {};
+    readyTemplates().forEach(function (t) {
+      (t.data.layers || []).forEach(function (l) {
+        if (l.type !== 'smart_object_layer') return;
+        var ratios = imageLinks[l.name] = imageLinks[l.name] || [];
+        var ratio = l.frame && l.frame.width && l.frame.height ? Math.round(l.frame.width / l.frame.height * 100) : 0;
+        if (ratios.indexOf(ratio) < 0) ratios.push(ratio);
+      });
+    });
+    var imageLayers = Object.keys(imageLinks).length;
+    var images = (count() || 0) * Object.keys(imageLinks).reduce(function (total, name) { return total + imageLinks[name].length; }, 0);
     var sources = Object.keys(estimate.averages).map(function (operation) { return estimate.averages[operation].source; });
     var basis = sources.indexOf('default') >= 0 ? 'typical times' : sources.indexOf('all') >= 0 ? 'the average times of the service' : 'your average times';
     estimateText.textContent = 'Estimate: ' + plural(n, 'Photoshop render') + ', ' + duration(waitMs(0))
-      + (images ? '; if ' + (imageLayers > 1 ? 'the ' + imageLayers + ' image layers of the template vary' : 'the image layer of the template varies') + ', ' + plural(images, 'image crop')
+      + (images ? '; if ' + (imageLayers > 1 ? 'the ' + imageLayers + ' image layers of the template' + (templates.length > 1 ? 's' : '') + ' vary'
+        : 'the image layer of the template' + (templates.length > 1 ? 's' : '') + ' varies') + ', ' + plural(images, 'image crop')
         + ' and ' + plural(images, 'crop suggestion') + ' more, ' + duration(waitMs(images)) + ' in all' : '')
       + ' (from ' + basis + ').';
     reportSize();
@@ -795,78 +880,238 @@ ${LAYERS_SCRIPT}
     updateButton();
   });
 
-  // The drop zone shows the file being transferred, the progress bar a short label and the percentage on one line.
-  function startTransfer(name, label, indeterminate) {
-    template = null;
-    templateRead++;
-    clearTemplate();
-    updateButton();
-    messageHeading.textContent = name;
-    messageHeading.title = name;
-    messageDescription.textContent = label + '...';
-    progress.hidden = false;
-    progress.indeterminate = indeterminate;
-    progress.progress = 0;
-    progress.label = label;
+  // Each template file is transferred (uploaded, or imported from AEM), then read at once: its layers, then its preview
+  function addTemplate(name, status, transfer) {
+    if (templates.length >= MAX_TEMPLATES) {
+      setStatus('At most ' + MAX_TEMPLATES + ' templates: ' + name + ' not added.', true);
+      return;
+    }
+    var t = { name: name, status: status, progress: 0, checked: {}, read: 0 };
+    templates.push(t);
     setStatus('');
-  }
-
-  function setTemplate(file) {
-    template = file;
-    // The bar stays at 100% with a short label: the drop zone already shows the file name
-    progress.indeterminate = false;
-    progress.progress = 100;
-    progress.label = progress.label === 'Uploading' ? 'Uploaded' : 'Imported';
-    messageHeading.textContent = file.name;
-    messageHeading.title = file.name;
-    messageDescription.textContent = 'Uploaded — drop or choose another file to replace it';
-    setStatus('Reading the template...', false, true);
-    updateButton();
-    readTemplate(file);
-  }
-
-  // The template is read as soon as it is uploaded (read-psd-template): its layers, then its preview, in the picker
-  var templateRead = 0;
-  function readTemplate(file) {
-    var read = ++templateRead;
-    var isCurrent = function () { return read === templateRead; };
-    var version = fontsVersion;
-    missingFonts = null;
-    renderFonts();
-    callTool('read-psd-template', { url: file.url, fonts: fontUrls() })
-      .then(function (started) { if (isCurrent()) return showTemplate(started, isCurrent, function (list) { onMissingFonts(list, version); }); })
-      .catch(function (error) { if (isCurrent()) setStatus((error && error.message) || String(error), true); });
-  }
-
-  function fail(error) {
-    progress.hidden = true;
-    messageHeading.textContent = 'Drop your PSD template';
-    messageHeading.title = '';
-    messageDescription.textContent = 'Layered .psd file';
-    setStatus((error && error.message) || String(error), true);
-  }
-
-  function upload(file) {
-    if (!file) return;
-    startTransfer(file.name, 'Uploading', false);
-    uploadOne(file, function (bytes) { progress.progress = Math.round(bytes / (file.size || 1) * 100); })
-      .then(setTemplate)
-      .catch(fail);
-  }
-
-  // The PSD picked in AEM is copied to storage by the server, like an upload.
-  aemBtn.addEventListener('click', function () {
-    pickAemAssets(false)
-      .then(function (assets) {
-        var asset = assets[0];
-        if (!asset) return;
-        if (!/\.psd$/i.test(asset['repo:name'])) throw new Error(asset['repo:name'] + ' is not a PSD file.');
-        startTransfer(asset['repo:name'], 'Importing from AEM', true);
-        return importAemAsset(asset).then(setTemplate);
+    renderTemplates();
+    transfer(t)
+      .then(function (file) {
+        if (templates.indexOf(t) < 0) return;
+        t.url = file.url;
+        t.name = file.name || t.name;
+        readTemplateOf(t);
       })
-      .catch(fail);
+      .catch(function (error) {
+        if (templates.indexOf(t) < 0) return;
+        t.status = 'error';
+        t.error = (error && error.message) || String(error);
+        renderTemplates();
+      });
+  }
+
+  // Reads a template (read-psd-template): its layers as soon as they are known, then its preview and the fonts missing
+  function readTemplateOf(t) {
+    var read = ++t.read;
+    var isCurrent = function () { return templates.indexOf(t) >= 0 && read === t.read; };
+    t.status = 'reading';
+    t.missingFonts = null;
+    renderTemplates();
+    callTool('read-psd-template', { url: t.url, fonts: fontUrls(), batch: batch })
+      .then(function (started) {
+        return waitForTask(started.taskId, function (partial) {
+          if (!isCurrent() || !partial.layers || (t.data && t.data.layers)) return;
+          t.data = partial;
+          t.status = 'ready';
+          templateRead(t, false);
+        });
+      })
+      .then(function (result) {
+        if (!isCurrent()) return;
+        var hadLayers = Boolean(t.data && t.data.layers);
+        // The layers already shown (and picked) stay the same objects
+        if (hadLayers) result.layers = t.data.layers;
+        t.data = result;
+        t.status = 'ready';
+        t.missingFonts = result.missingFonts || [];
+        templateRead(t, hadLayers);
+      })
+      .catch(function (error) {
+        if (!isCurrent()) return;
+        t.status = 'error';
+        t.error = (error && error.message) || String(error);
+        renderTemplates();
+      });
+  }
+
+  // A template was read (its layers, or then its preview): its layers are linked to those picked in the other templates, and
+  // it is shown when it is the one of the layer step
+  function templateRead(t, previewOnly) {
+    if (!previewOnly) linkTemplate(t);
+    renderTemplates();
+    renderFonts();
+    if (t !== templates[active]) return;
+    if (previewOnly && t.data.previewUrl) showLatePreview(t.data.previewUrl, t.data.document || {});
+    else showActive();
+    if (!t.data.previewUrl && t.data.previewError) setStatus('Preview not available: ' + t.data.previewError);
+  }
+
+  // Size of a template, once read
+  function sizeOf(t) {
+    var doc = t.data && t.data.document;
+    return doc && doc.width && doc.height ? doc.width + ' x ' + doc.height : '';
+  }
+
+  var STATE_LABELS = { uploading: 'Uploading', importing: 'Importing from AEM', reading: 'Reading the layers' };
+
+  // The templates of step 1, one row each, and the drop zone, which takes more
+  function renderTemplates() {
+    templateList.hidden = !templates.length;
+    templateList.innerHTML = templates.map(function (t, i) {
+      var state = t.status === 'error' ? t.error : t.status === 'ready' ? sizeOf(t) : STATE_LABELS[t.status] + '...';
+      return '<div class="template-row"><span class="template-name" title="' + escapeHtml(t.name) + '">' + escapeHtml(t.name) + '</span>'
+        + '<span class="template-state' + (t.status === 'error' ? ' negative' : '') + '">' + escapeHtml(state || '') + '</span>'
+        + '<button type="button" class="template-remove" data-index="' + i + '" aria-label="Remove ' + escapeHtml(t.name) + '" title="Remove">&times;</button>'
+        + (t.status === 'uploading' ? '<sp-progress-bar size="s" label="Uploading" progress="' + t.progress + '"></sp-progress-bar>'
+          : t.status === 'importing' || t.status === 'reading' ? '<sp-progress-bar size="s" label="' + STATE_LABELS[t.status] + '" indeterminate></sp-progress-bar>' : '')
+        + '</div>';
+    }).join('');
+    messageHeading.textContent = templates.length ? templates.length + ' template' + (templates.length > 1 ? 's' : '') : 'Drop your PSD templates';
+    messageDescription.textContent = templates.length
+      ? (templates.length < MAX_TEMPLATES ? 'Drop or choose more files to add formats' : 'At most ' + MAX_TEMPLATES + ' templates')
+      : 'Layered .psd files, one per format';
+    if (active >= templates.length) active = Math.max(0, templates.length - 1);
+    renderTabs();
+    updateButton();
+    reportSize();
+  }
+
+  templateList.addEventListener('click', function (e) {
+    var button = e.target.closest('.template-remove');
+    if (!button) return;
+    var index = Number(button.getAttribute('data-index'));
+    var removed = templates.splice(index, 1)[0];
+    removed.read++;
+    if (active > index || active >= templates.length) active = Math.max(0, active - 1);
+    renderTemplates();
+    renderFonts();
+    if (currentStep === 2) showActive();
+  });
+
+  function upload(fileList) {
+    var list = Array.prototype.filter.call(fileList || [], function (file) { return /\\.psd$/i.test(file.name) || file.type === 'image/vnd.adobe.photoshop'; });
+    if (!list.length) return setStatus('Choose layered .psd files.', true);
+    list.forEach(function (file) {
+      addTemplate(file.name, 'uploading', function (t) {
+        return uploadOne(file, function (bytes) {
+          t.progress = Math.round(bytes / (file.size || 1) * 100);
+          var bar = templateList.querySelectorAll('.template-row')[templates.indexOf(t)];
+          bar = bar && bar.querySelector('sp-progress-bar');
+          if (bar) bar.progress = t.progress;
+        });
+      });
+    });
+  }
+
+  // The PSDs picked in AEM are copied to storage by the server, like uploads.
+  aemBtn.addEventListener('click', function () {
+    pickAemAssets(true, 'the PSD templates')
+      .then(function (assets) {
+        assets.forEach(function (asset) {
+          if (!/\.psd$/i.test(asset['repo:name'])) return setStatus(asset['repo:name'] + ' is not a PSD file.', true);
+          addTemplate(asset['repo:name'], 'importing', function () { return importAemAsset(asset); });
+        });
+      })
+      .catch(function (error) { setStatus((error && error.message) || String(error), true); });
   });
   loadAemConfig().then(function (config) { aemBtn.hidden = !config; reportSize(); });
+
+  // Tabs of the layer step, one per template, with the number of layers picked in it
+  function renderTabs() {
+    templateTabs.hidden = templates.length < 2;
+    templateTabs.innerHTML = templates.length < 2 ? '' : templates.map(function (t, i) {
+      var picked = checkedIds(t).length;
+      return '<button type="button" role="tab" class="template-tab' + (i === active ? ' active' : '') + '" data-index="' + i + '" aria-selected="' + (i === active) + '">'
+        + escapeHtml(t.name.replace(/\\.psd$/i, '')) + (sizeOf(t) ? ' · ' + sizeOf(t) : '') + (picked ? ' (' + picked + ')' : '') + '</button>';
+    }).join('');
+    renderLinked();
+  }
+
+  templateTabs.addEventListener('click', function (e) {
+    var tab = e.target.closest('.template-tab');
+    if (!tab) return;
+    active = Number(tab.getAttribute('data-index'));
+    showActive();
+  });
+
+  // Shows the template of the layer step, with the layers picked in it
+  function showActive() {
+    var t = templates[active];
+    switching = true;
+    clearTemplate();
+    if (t && t.data && t.data.layers) {
+      render(t.data);
+      layers.forEach(function (l, i) { document.getElementById('layer-' + i).checked = Boolean(t.checked[l.id]); });
+      if (layers.length) updateSelection();
+      if (!t.data.previewUrl && t.status === 'reading') showPreviewLoader();
+    } else if (t) {
+      setStatus(t.status === 'error' ? t.error : 'Reading the template...', t.status === 'error', t.status !== 'error');
+    }
+    switching = false;
+    renderTabs();
+    updateButton();
+    reportSize();
+  }
+
+  // Key of the layers linked between the templates: the same name and type
+  function linkKey(l) { return l.type + '|' + l.name; }
+
+  // The layers picked in the template shown, kept with it; a layer picked or left links the layers of the same name and type
+  // in the other templates
+  function syncSelection() {
+    var t = templates[active];
+    if (!t || !t.data || t.data.layers !== layers) return;
+    var changed = {};
+    layers.forEach(function (l, i) {
+      var box = document.getElementById('layer-' + i);
+      if (!box) return;
+      if (Boolean(t.checked[l.id]) !== box.checked) changed[linkKey(l)] = box.checked;
+      t.checked[l.id] = box.checked;
+    });
+    templates.forEach(function (other) {
+      if (other === t || !other.data || !other.data.layers) return;
+      other.data.layers.forEach(function (l) { if (changed[linkKey(l)] !== undefined) other.checked[l.id] = changed[linkKey(l)]; });
+    });
+  }
+
+  // A template read after layers were picked in others gets the layers of the same name and type picked
+  function linkTemplate(t) {
+    var picked = {};
+    templates.forEach(function (other) {
+      if (other === t || !other.data || !other.data.layers) return;
+      other.data.layers.forEach(function (l) { if (other.checked[l.id]) picked[linkKey(l)] = true; });
+    });
+    (t.data.layers || []).forEach(function (l) { if (picked[linkKey(l)]) t.checked[l.id] = true; });
+  }
+
+  // Layers picked in all the templates, those of the same name and type linked: [{ id, name, type, members: [{ t, layer }] }]
+  function linkedLayers() {
+    var links = [];
+    templates.forEach(function (t, ti) {
+      ((t.data && t.data.layers) || []).forEach(function (l) {
+        if (!t.checked[l.id]) return;
+        var link = links.filter(function (k) { return k.key === linkKey(l); })[0];
+        if (!link) links.push(link = { id: links.length + 1, key: linkKey(l), name: l.name, type: l.type, members: [] });
+        link.members.push({ t: ti, layer: l });
+      });
+    });
+    return links;
+  }
+
+  // With several templates: the layers picked, and in which templates each is
+  function renderLinked() {
+    if (templates.length < 2) { linkedEl.hidden = true; return; }
+    var links = linkedLayers();
+    linkedEl.hidden = !links.length;
+    linkedEl.textContent = 'Layers of the same name and type are linked: they get the same text or image in every template. Picked: '
+      + links.map(function (k) { return k.name + ' (' + k.members.length + '/' + templates.length + ')'; }).join(', ') + '.';
+  }
+
   showQuota(document.getElementById('quota'));
 
   countInput.addEventListener('input', updateButton);
@@ -885,11 +1130,11 @@ ${LAYERS_SCRIPT}
   });
   renderLanguages();
   document.getElementById('browse').addEventListener('click', function () { input.value = ''; input.click(); });
-  input.addEventListener('change', function () { upload(input.files[0]); });
+  input.addEventListener('change', function () { upload(input.files); });
   drop.addEventListener('sp-dropzone-should-accept', function (e) { e.detail.dataTransfer.dropEffect = 'copy'; });
-  drop.addEventListener('sp-dropzone-drop', function (e) { upload(e.detail.dataTransfer.files[0]); });
+  drop.addEventListener('sp-dropzone-drop', function (e) { upload(e.detail.dataTransfer.files); });
 
-  nextBtn.addEventListener('click', function () { showStep(2); });
+  nextBtn.addEventListener('click', function () { showStep(2); showActive(); });
   backBtn.addEventListener('click', function () { showStep(1); });
 
   continueBtn.addEventListener('click', function () {
@@ -899,16 +1144,71 @@ ${LAYERS_SCRIPT}
     continueBtn.disabled = true;
     backBtn.disabled = true;
     updateSteps();
-    var context = 'Variant creation started. Number of variants per language: ' + n + '. Languages: '
+    var intro = 'Variant creation started. Number of variants per language: ' + n + '. Languages: '
       + codes.map(function (code, i) { return names[i] + ' (' + code + ')'; }).join(', ') + '. Total: ' + n * codes.length
-      + ' variants, each of the ' + n + ' variants in each language. PSD template: ' + template.name
-      + ', URL (valid 24 hours): ' + template.url + '. File names: pass fileNamePattern "' + fileNamePattern()
-      + '" to every create-variant call. Layers selected by the user in the template (with their original texts and frames; '
-      + 'do not call get-psd-manifest): ' + JSON.stringify(selectedForModel()) + '. Next step: step 3 (texts) if text layers were '
-      + 'selected, otherwise step 4 (images).'
-      + (fonts.length ? ' Fonts added by the user: pass fonts ' + JSON.stringify(fontUrls()) + ' to every create-variant call.' : '');
-    var picked = selectedForModel().map(function (l) { return l.name; }).join(', ');
-    sendToModel(context, 'I want ' + n + ' variant(s) of ' + template.name + ' in ' + names.join(', ') + ', changing ' + picked + ', continue.', 'Template sent.')
+      + ' variants, each of the ' + n + ' variants in each language. ';
+    var fontsText = fonts.length ? ' Fonts added by the user: pass fonts ' + JSON.stringify(fontUrls()) + ' to every create-variant call.' : '';
+    var context, picked, title;
+    if (templates.length === 1) {
+      var t = templates[0];
+      var chosen = t.data.layers.filter(function (l) { return t.checked[l.id]; }).map(function (l) {
+        var layer = {};
+        Object.keys(l).forEach(function (key) { if (key !== 'area') layer[key] = l[key]; });
+        return layer;
+      });
+      title = t.name;
+      picked = chosen.map(function (l) { return l.name; }).join(', ');
+      context = intro + 'PSD template: ' + t.name + ', URL (valid 24 hours): ' + t.url + '. File names: pass fileNamePattern "' + fileNamePattern()
+        + '" to every create-variant call. Layers selected by the user in the template (with their original texts and frames; '
+        + 'do not call get-psd-manifest): ' + JSON.stringify(chosen) + '. Next step: step 3 (texts) if text layers were '
+        + 'selected, otherwise step 4 (images).' + fontsText;
+    } else {
+      var tNames = templateNames();
+      var links = linkedLayers();
+      var forModel = links.map(function (k) {
+        var first = k.members[0].layer;
+        var layer = { id: k.id, name: k.name, type: k.type, templates: k.members.map(function (m) { return tNames[m.t]; }) };
+        if (k.type === 'text_layer') {
+          layer.text = first.text;
+          var texts = {};
+          k.members.forEach(function (m) { if (m.layer.text !== first.text) texts[tNames[m.t]] = m.layer.text; });
+          if (Object.keys(texts).length) {
+            layer.textsByTemplate = {};
+            k.members.forEach(function (m) { layer.textsByTemplate[tNames[m.t]] = m.layer.text; });
+          }
+        } else {
+          var frames = [];
+          k.members.forEach(function (m) {
+            var f = m.layer.frame;
+            if (f && f.width && f.height && !frames.some(function (g) { return Math.abs(g.width / g.height - f.width / f.height) < 0.01; })) frames.push({ width: f.width, height: f.height });
+          });
+          if (frames[0]) { layer.frame = frames[0]; layer.frames = frames; }
+        }
+        return layer;
+      });
+      var templatesJson = templates.map(function (t, ti) {
+        var linked = [];
+        links.forEach(function (k) { k.members.forEach(function (m) { if (m.t === ti) linked.push({ id: k.id, layerId: m.layer.id }); }); });
+        return { name: tNames[ti], url: t.url, layers: linked };
+      });
+      var images = forModel.filter(function (l) { return l.type === 'smart_object_layer'; });
+      title = tNames.join(', ');
+      picked = forModel.map(function (l) { return l.name; }).join(', ');
+      context = intro + templates.length + ' PSD templates, one per format, each variant being created in each of them: '
+        + templates.map(function (t, ti) { return tNames[ti] + ' (' + sizeOf(t) + ')'; }).join(', ') + '. '
+        + 'For every create-variant call, pass templates (instead of templateUrl) exactly as this JSON (URLs valid 24 hours): '
+        + JSON.stringify(templatesJson) + ' and fileNamePattern "' + fileNamePattern() + '". '
+        + 'Layers selected by the user, those of the same name and type in several templates linked as one (do not call get-psd-manifest; '
+        + 'use these ids everywhere: in edit-variant-texts, upload-variant-images and the edits of create-variant): ' + JSON.stringify(forModel) + '. '
+        + 'Each text goes to its layer in every template listed for it: where the templates break its original text differently '
+        + '(textsByTemplate), write the text without line breaks, unless the user asks for them, so that each template spreads it over its own lines. '
+        + (images.length ? 'For the image grid, pass these layers as is (with their frames: the user frames each image for each ratio): '
+          + JSON.stringify(images.map(function (l) { return { id: l.id, name: l.name, width: l.frame && l.frame.width, height: l.frame && l.frame.height, frames: l.frames }; }))
+          + ', and pass the crops of each image (crops) to create-variant as given by the grid. ' : '')
+        + 'To change a variant in some templates only (e.g. a text too long in one format), pass the names of these templates in its templates. '
+        + 'Next step: step 3 (texts) if text layers were selected, otherwise step 4 (images).' + fontsText;
+    }
+    sendToModel(context, 'I want ' + n + ' variant(s) of ' + title + ' in ' + names.join(', ') + ', changing ' + picked + ', continue.', 'Template' + (templates.length > 1 ? 's' : '') + ' sent.')
       .catch(function (error) {
         backBtn.disabled = false;
         updateButton();
@@ -967,6 +1267,7 @@ const IMAGES_CSS = `
     text-align: center;
   }
   sp-dropzone img.thumb { max-width: 100%; max-height: 90px; object-fit: contain; border-radius: var(--spectrum-corner-radius-100); }
+  .frame-label { width: 100%; font-size: var(--spectrum-font-size-75); text-align: left; }
   .crop {
     position: relative;
     overflow: hidden;
@@ -1053,6 +1354,7 @@ const IMAGES_SCRIPT = `
   // onChange(done, total) is called when the images of the slots change
   var onChange = null;
   var CROP_MAX_HEIGHT = 160;
+  var CROP_MULTI_HEIGHT = 110;
   var MAX_ZOOM = 4;
   var grid = document.getElementById('grid');
   var input = document.getElementById('file');
@@ -1106,7 +1408,14 @@ const IMAGES_SCRIPT = `
 
   // Slots are stored row by row: index = variant * layers.length + layer.
   function layerOf(index) { return layers[index % layers.length]; }
-  function ratioOf(index) { var l = layerOf(index); return l.width && l.height ? l.width / l.height : null; }
+  // Frames of the layer of a slot: one, or one per ratio when the layer is in templates of different formats (frames), each
+  // with its own crop of the image (slot.crops, in the order of the frames)
+  function framesOf(index) {
+    var l = layerOf(index);
+    if (l.frames && l.frames.length > 1) return l.frames;
+    return l.width && l.height ? [{ width: l.width, height: l.height }] : [];
+  }
+  function ratioOf(index, k) { var f = framesOf(index)[k || 0]; return f ? f.width / f.height : null; }
 
   // Largest crop at the frame ratio that fits in the image (zoom 1).
   function maxCropSize(slot, ratio) {
@@ -1114,13 +1423,19 @@ const IMAGES_SCRIPT = `
     return { width: width, height: width / ratio };
   }
 
-  function clampCrop(slot, ratio) {
-    var c = slot.crop;
+  function clampCrop(slot, k, ratio) {
+    var c = slot.crops[k];
     var width = c.right - c.left;
     var height = width / ratio;
     var left = Math.min(Math.max(c.left, 0), slot.image.width - width);
     var top = Math.min(Math.max(c.top, 0), slot.image.height - height);
-    slot.crop = { left: left, top: top, right: left + width, bottom: top + height };
+    slot.crops[k] = { left: left, top: top, right: left + width, bottom: top + height };
+  }
+
+  // Crops of an image suggested for each frame of a slot, framed on its subject: the size of the image and the crops
+  function suggestCrops(index, url) {
+    return Promise.all(framesOf(index).map(function (f) { return suggestCrop(url, f.width / f.height); }))
+      .then(function (list) { return { image: list[0].image, crops: list.map(function (x) { return x.crop; }) }; });
   }
 
   function cellHtml(slot, index) {
@@ -1131,13 +1446,18 @@ const IMAGES_SCRIPT = `
     var html = '<sp-dropzone data-index="' + index + '">'
       + '<div class="slot-label">' + escapeHtml(label) + '</div>';
     if (slot.status === 'done') {
-      if (ratio && slot.crop) {
-        // The whole image is shown, with the crop frame on top
+      var frames = framesOf(index);
+      if (ratio && slot.crops && slot.crops.length === frames.length) {
+        // The whole image is shown, with the crop frame on top: once per frame ratio (several templates), smaller
         var imageRatio = slot.image.width / slot.image.height;
-        var zoom = maxCropSize(slot, ratio).width / (slot.crop.right - slot.crop.left);
-        html += '<div class="crop" data-index="' + index + '" style="width:' + Math.round(CROP_MAX_HEIGHT * imageRatio) + 'px;aspect-ratio:' + imageRatio + '">'
-          + '<img src="' + escapeHtml(slot.url) + '" alt="' + escapeHtml(slot.name) + '"><div class="shade"></div><div class="shade"></div><div class="shade"></div><div class="shade"></div><div class="frame"></div></div>'
-          + '<label class="zoom">Zoom <input type="range" data-index="' + index + '" min="1" max="' + MAX_ZOOM + '" step="0.01" value="' + zoom + '"></label>';
+        var height = frames.length > 1 ? CROP_MULTI_HEIGHT : CROP_MAX_HEIGHT;
+        frames.forEach(function (f, k) {
+          var zoom = maxCropSize(slot, f.width / f.height).width / (slot.crops[k].right - slot.crops[k].left);
+          html += (frames.length > 1 ? '<div class="subtle frame-label">Frame ' + f.width + ' x ' + f.height + '</div>' : '')
+            + '<div class="crop" data-index="' + index + '" data-frame="' + k + '" style="width:' + Math.round(height * imageRatio) + 'px;aspect-ratio:' + imageRatio + '">'
+            + '<img src="' + escapeHtml(slot.url) + '" alt="' + escapeHtml(slot.name) + '"><div class="shade"></div><div class="shade"></div><div class="shade"></div><div class="shade"></div><div class="frame"></div></div>'
+            + '<label class="zoom">Zoom <input type="range" data-index="' + index + '" data-frame="' + k + '" min="1" max="' + MAX_ZOOM + '" step="0.01" value="' + zoom + '"></label>';
+        });
       } else {
         html += '<img class="thumb" src="' + escapeHtml(slot.url) + '" alt="' + escapeHtml(slot.name) + '">';
       }
@@ -1161,13 +1481,17 @@ const IMAGES_SCRIPT = `
 
   // Positions the crop frame over the image. Percentages of the image keep it independent of when the layout is computed.
   function positionFrame(index) {
+    (slots[index].crops || []).forEach(function (crop, k) { positionCrop(index, k); });
+  }
+  function positionCrop(index, k) {
     var slot = slots[index];
-    var box = grid.querySelector('.crop[data-index="' + index + '"]');
-    if (!box || !slot.crop) return;
-    var l = slot.crop.left / slot.image.width * 100;
-    var t = slot.crop.top / slot.image.height * 100;
-    var r = slot.crop.right / slot.image.width * 100;
-    var b = slot.crop.bottom / slot.image.height * 100;
+    var box = grid.querySelector('.crop[data-index="' + index + '"][data-frame="' + k + '"]');
+    var crop = slot.crops && slot.crops[k];
+    if (!box || !crop) return;
+    var l = crop.left / slot.image.width * 100;
+    var t = crop.top / slot.image.height * 100;
+    var r = crop.right / slot.image.width * 100;
+    var b = crop.bottom / slot.image.height * 100;
     // [left, top, width, height] in % of the image: frame, then the shades above, below, left and right of it
     var rects = [[0, 0, 100, t], [0, b, 100, 100 - b], [0, t, l, b - t], [r, t, 100 - r, b - t], [l, t, r - l, b - t]];
     box.querySelectorAll('.shade, .frame').forEach(function (el, i) {
@@ -1218,13 +1542,12 @@ const IMAGES_SCRIPT = `
     transfer(slot)
       .then(function (uploaded) {
         slot.url = uploaded.url;
-        var ratio = ratioOf(index);
-        if (!ratio) return null;
+        if (!ratioOf(index)) return null;
         slot.status = 'framing';
         render();
-        return suggestCrop(uploaded.url, ratio).then(function (suggestion) {
+        return suggestCrops(index, uploaded.url).then(function (suggestion) {
           slot.image = suggestion.image;
-          slot.crop = suggestion.crop;
+          slot.crops = suggestion.crops;
         });
       })
       .then(function () {
@@ -1335,15 +1658,20 @@ const IMAGES_SCRIPT = `
   // Fills a slot with an image uploaded before (e.g. to re-crop after a generation): only fetches its size and a
   // suggested crop when they are not given.
   function prefillSlot(index, image) {
-    var slot = slots[index] = { status: 'done', url: image.url, name: image.fileName || 'image', crop: image.crop };
+    var frames = framesOf(index);
+    // The crop given for each frame: from crops (by ratio), or crop for a single frame
+    var given = frames.map(function (f, k) {
+      var match = (image.crops || []).filter(function (c) { return c.crop && Math.abs(c.width / c.height - f.width / f.height) < 0.01; })[0];
+      return match ? match.crop : k === 0 && image.crop ? image.crop : null;
+    });
+    var slot = slots[index] = { status: 'done', url: image.url, name: image.fileName || 'image', crops: given };
     if (image.width && image.height) slot.image = { width: image.width, height: image.height };
-    var ratio = ratioOf(index);
-    if (!ratio || (slot.image && slot.crop)) return;
+    if (!frames.length || (slot.image && given.every(Boolean))) return;
     slot.status = 'framing';
-    suggestCrop(image.url, ratio)
+    suggestCrops(index, image.url)
       .then(function (suggestion) {
         slot.image = suggestion.image;
-        if (!slot.crop) slot.crop = suggestion.crop;
+        slot.crops = given.map(function (crop, k) { return crop || suggestion.crops[k]; });
         slot.status = 'done';
       })
       .catch(function (error) {
@@ -1461,8 +1789,9 @@ const IMAGES_SCRIPT = `
     var box = e.target.closest('.crop');
     if (!box) return;
     var index = Number(box.getAttribute('data-index'));
+    var k = Number(box.getAttribute('data-frame'));
     var slot = slots[index];
-    drag = { index: index, box: box, x: e.clientX, y: e.clientY, crop: slot.crop,
+    drag = { index: index, k: k, box: box, x: e.clientX, y: e.clientY, crop: slot.crops[k],
       scale: box.clientWidth / slot.image.width };
     box.classList.add('dragging');
     box.setPointerCapture(e.pointerId);
@@ -1472,9 +1801,9 @@ const IMAGES_SCRIPT = `
     var slot = slots[drag.index];
     var dx = (e.clientX - drag.x) / drag.scale;
     var dy = (e.clientY - drag.y) / drag.scale;
-    slot.crop = { left: drag.crop.left + dx, top: drag.crop.top + dy, right: drag.crop.right + dx, bottom: drag.crop.bottom + dy };
-    clampCrop(slot, ratioOf(drag.index));
-    positionFrame(drag.index);
+    slot.crops[drag.k] = { left: drag.crop.left + dx, top: drag.crop.top + dy, right: drag.crop.right + dx, bottom: drag.crop.bottom + dy };
+    clampCrop(slot, drag.k, ratioOf(drag.index, drag.k));
+    positionCrop(drag.index, drag.k);
   });
   function endDrag() {
     if (!drag) return;
@@ -1489,39 +1818,46 @@ const IMAGES_SCRIPT = `
     if (e.target.classList.contains('prompt')) { prompts[Number(e.target.getAttribute('data-index'))] = e.target.value; return; }
     if (e.target.type !== 'range') return;
     var index = Number(e.target.getAttribute('data-index'));
+    var k = Number(e.target.getAttribute('data-frame'));
     var slot = slots[index];
-    var ratio = ratioOf(index);
+    var ratio = ratioOf(index, k);
     var size = maxCropSize(slot, ratio);
     var width = size.width / Number(e.target.value);
-    var cx = (slot.crop.left + slot.crop.right) / 2;
-    var cy = (slot.crop.top + slot.crop.bottom) / 2;
-    slot.crop = { left: cx - width / 2, top: cy - width / ratio / 2, right: cx + width / 2, bottom: cy + width / ratio / 2 };
-    clampCrop(slot, ratio);
-    positionFrame(index);
+    var crop = slot.crops[k];
+    var cx = (crop.left + crop.right) / 2;
+    var cy = (crop.top + crop.bottom) / 2;
+    slot.crops[k] = { left: cx - width / 2, top: cy - width / ratio / 2, right: cx + width / 2, bottom: cy + width / ratio / 2 };
+    clampCrop(slot, k, ratio);
+    positionCrop(index, k);
   });
 
   // The images chosen, for the model: what each variant and layer gets, and the JSON to pass again to re-crop them
   function result() {
+    var rounded = function (c) { return c && { left: Math.round(c.left), top: Math.round(c.top), right: Math.round(c.right), bottom: Math.round(c.bottom) }; };
+    var multiFrame = false;
     var mapping = slots.map(function (slot, i) {
       var layer = layerOf(i);
-      var crop = slot.crop && {
-        left: Math.round(slot.crop.left), top: Math.round(slot.crop.top),
-        right: Math.round(slot.crop.right), bottom: Math.round(slot.crop.bottom)
-      };
+      var frames = framesOf(i);
+      var crops = (slot.crops || []).map(rounded);
+      if (frames.length > 1) multiFrame = true;
       return { variant: variants[Math.floor(i / layers.length)], layerId: layer.id, layerName: layer.name,
-        fileName: slot.name, url: slot.url, crop: crop, size: slot.image };
+        fileName: slot.name, url: slot.url, crop: crops[0],
+        crops: frames.length > 1 && crops.length === frames.length ? frames.map(function (f, k) { return { width: f.width, height: f.height, crop: crops[k] }; }) : null,
+        size: slot.image };
     });
     // Ready-to-use JSON, so that the mapping between variants and images is copied rather than rebuilt
     var images = mapping.map(function (m) {
       var image = { variant: m.variant, layerId: m.layerId, url: m.url, fileName: m.fileName };
       if (m.crop) image.crop = m.crop;
+      if (m.crops) image.crops = m.crops;
       if (m.size) { image.width = m.size.width; image.height = m.size.height; }
       return image;
     });
     var context = 'Images chosen by the user for each variant and smart object layer (URLs valid 24 hours):\\n'
       + mapping.map(function (m) { return '- variant "' + m.variant + '", layer "' + m.layerName + '": ' + m.fileName; }).join('\\n')
       + '\\nFor create-variant, use for each variant exactly the entries below whose "variant" is its label '
-      + '(smart_object_layer edit = { id: layerId, type: "smart_object_layer", imageUrl: url, crop }). '
+      + '(smart_object_layer edit = { id: layerId, type: "smart_object_layer", imageUrl: url, crop' + (multiFrame ? ', crops' : '') + ' }'
+      + (multiFrame ? ': crops has the crop of the image for each frame ratio of the templates, pass it as is' : '') + '). '
       + 'To re-crop later, pass this "images" array as is to upload-variant-images:\\n'
       + JSON.stringify({ images: images });
     return context;
@@ -2580,6 +2916,7 @@ function getVariantViewHtml (scriptUrl) {
   .card-head { display: flex; align-items: center; gap: var(--spectrum-spacing-100); min-width: 0; }
   .card-head .card-name { flex: 1; min-width: 0; }
   .language { flex: none; padding: 0 6px; border-radius: 4px; background: var(--spectrum-gray-200); font-size: 11px; font-weight: bold; line-height: 18px; text-transform: uppercase; }
+  .language.format { flex: 0 1 auto; min-width: 0; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; }
   /* A variant of the earlier generation, not generated again */
   .unchanged { flex: none; font-size: 11px; color: var(--spectrum-neutral-subdued-content-color-default); }
   /* In place of the visual of a variant being rendered */
@@ -2714,10 +3051,12 @@ ${REPORT_SCRIPT}
   // Task of the generation, whose files are zipped by Download all
   var generationTaskId = null;
   var zipping = false;
-  // Text layers of the template ({ id, name, area, text, alignment }), from the review data of the generation, and the texts
-  // sent for each variant generated ({ fileName: [{ layerId, text, fontScale }] }): where to click a text on the visuals
-  var textLayers = [];
+  // Text layers of the template of each variant generated ({ fileName: [{ id, name, area, text, alignment }] }: each template
+  // has its own, with several templates), from the review data of the generation, and the texts sent for each variant
+  // ({ fileName: [{ layerId, text, fontScale }] }): where to click a text on the visuals
+  var textLayersByFile = {};
   var sentTexts = {};
+  function textLayersOf(index) { return (variants[index] && textLayersByFile[variants[index].fileName]) || []; }
   var FORMAT_LABELS = { png: 'PNG', jpeg: 'JPEG', psd: 'PSD' };
   // Download icon (arrow into a tray), in the text color of the button
   var DOWNLOAD_ICON = '<svg slot="icon" viewBox="0 0 18 18" width="16" height="16" aria-hidden="true">'
@@ -2767,6 +3106,7 @@ ${REPORT_SCRIPT}
   function cardHead(v) {
     return '<div class="card-head"><span class="subtle card-name">' + escapeHtml(v.fileName) + '</span>'
       + (v.kept ? '<span class="unchanged" title="Not generated again: as in the earlier generation">Unchanged</span>' : '')
+      + (v.template ? '<span class="language format" title="Template">' + escapeHtml(v.template) + '</span>' : '')
       + (v.language ? '<span class="language">' + escapeHtml(v.language) + '</span>' : '') + '</div>';
   }
 
@@ -2798,7 +3138,7 @@ ${REPORT_SCRIPT}
     var active = document.activeElement && document.activeElement.classList.contains('change-request')
       ? { index: document.activeElement.getAttribute('data-index'), start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd }
       : null;
-    // The languages of each variant side by side, when the variants are in several languages
+    // The languages and formats (templates) of each variant side by side, when there are several
     var groups = [];
     variants.forEach(function (v, i) {
       var name = v.group || v.fileName;
@@ -2954,7 +3294,7 @@ ${REPORT_SCRIPT}
   // A text of a variant can be clicked, to write a change for it, when the layer is known and the variant shown
   function clickable(index, layerId) {
     var v = variants[index];
-    return Boolean(v && !v.pending && !v.error && v.canvas && textLayers.some(function (l) { return l.id === layerId; }));
+    return Boolean(v && !v.pending && !v.error && v.canvas && textLayersOf(index).some(function (l) { return l.id === layerId; }));
   }
 
   function linesOf(text) { return String(text || '').split(/\\r\\n|\\r|\\n/); }
@@ -2995,7 +3335,7 @@ ${REPORT_SCRIPT}
   function addEditZones(index) {
     var v = variants[index];
     var box = previewVisual.querySelector('.visual');
-    var zones = textLayers.filter(function (l) { return l.area && clickable(index, l.id); });
+    var zones = textLayersOf(index).filter(function (l) { return l.area && clickable(index, l.id); });
     document.getElementById('edit-hint').hidden = !zones.length;
     if (!box) return;
     zones.forEach(function (l) {
@@ -3014,7 +3354,7 @@ ${REPORT_SCRIPT}
   // its layer (added unless there already), the caret after it
   function writeChange(index, layerId) {
     var v = variants[index];
-    var layer = textLayers.filter(function (l) { return l.id === layerId; })[0];
+    var layer = textLayersOf(index).filter(function (l) { return l.id === layerId; })[0];
     if (!v || !layer) return;
     showPreview(-1);
     var prefix = '"' + layer.name + '": ';
@@ -3216,9 +3556,15 @@ ${REPORT_SCRIPT}
       .then(function (generation) {
         generating = false;
         variants = generation.variants ? withKept(generation.variants) : variants;
-        textLayers = ((generation.review && generation.review.layers) || []).filter(function (l) { return l.type === 'text_layer'; });
+        var review = generation.review || {};
+        var isText = function (l) { return l.type === 'text_layer'; };
+        textLayersByFile = {};
         sentTexts = {};
-        (generation.variants || []).forEach(function (v, i) { sentTexts[v.fileName] = ((generation.review && generation.review.texts) || [])[i] || []; });
+        (generation.variants || []).forEach(function (v, i) {
+          var set = review.layerSets ? review.layerSets[review.layerSet[i]] : review.layers;
+          textLayersByFile[v.fileName] = (set || []).filter(isText);
+          sentTexts[v.fileName] = (review.texts || [])[i] || [];
+        });
         render();
         showReport(generation.report);
         if (generation.review) return startReview(generation);
