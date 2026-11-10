@@ -183,12 +183,15 @@ const BRIDGE_SCRIPT = `
   // Sends the result of a view to Claude, then a user message so that it continues. The result is stored on the server
   // under a short reference carried by the message (get-widget-result), because some models do not reliably see the
   // model context the host is given with ui/update-model-context; it is still given there too.
-  function sendToModel(context, message, sentStatus) {
-    return callTool('save-widget-result', { text: context })
+  // Sends a result to the model: kept by the server (with data, when given: the texts and images confirmed) under a short
+  // reference that ends the user message; {{ref}} in the context is replaced with it
+  function sendToModel(context, message, sentStatus, data) {
+    return callTool('save-widget-result', data ? { text: context, data: data } : { text: context })
       .then(function (saved) { return saved.ref; })
       // Without a reference, Claude can still read the result in the model context
       .catch(function () { return null; })
       .then(function (ref) {
+        context = context.split('{{ref}}').join(ref || '(none: pass the variants)');
         return request('ui/update-model-context', { content: [{ type: 'text', text: context }] })
           .then(function () {
             if (sentStatus) setStatus(sentStatus);
@@ -1982,7 +1985,22 @@ const IMAGES_SCRIPT = `
     return context;
   }
 
-  return { init: init, onChange: function (handler) { onChange = handler; }, result: result, count: function () { return variants.length; } };
+  // The images chosen, as data for the server (create-variant with widgetRef)
+  function data() {
+    var rounded = function (c) { return c && { left: Math.round(c.left), top: Math.round(c.top), right: Math.round(c.right), bottom: Math.round(c.bottom) }; };
+    return slots.map(function (slot, i) {
+      var layer = layerOf(i);
+      var frames = framesOf(i);
+      var crops = (slot.crops || []).map(rounded);
+      var image = { variant: variants[Math.floor(i / layers.length)], layerId: layer.id, url: slot.url, fileName: slot.name };
+      if (crops[0]) image.crop = crops[0];
+      if (frames.length > 1 && crops.length === frames.length) image.crops = frames.map(function (f, k) { return { width: f.width, height: f.height, crop: crops[k] }; });
+      if (slot.image) { image.width = slot.image.width; image.height = slot.image.height; }
+      return image;
+    });
+  }
+
+  return { init: init, onChange: function (handler) { onChange = handler; }, result: result, data: data, count: function () { return variants.length; } };
   })();
 `
 
@@ -2016,7 +2034,10 @@ ${IMAGES_SCRIPT}
 
   confirmBtn.addEventListener('click', function () {
     confirmBtn.disabled = true;
-    sendToModel(imagesPicker.result(), 'I added and framed the images for the ' + imagesPicker.count() + ' variant(s), continue.', 'Images sent.')
+    sendToModel('To generate the variants with these images, call create-variant with widgetRef "{{ref}}" (with the reference of the '
+      + 'texts too, if they were confirmed apart, and languages for the languages of the start widget when there are no texts) instead of '
+      + 'copying the images: the server builds the variants from them.\\n' + imagesPicker.result(),
+      'I added and framed the images for the ' + imagesPicker.count() + ' variant(s), continue.', 'Images sent.', { images: imagesPicker.data() })
       .catch(function (error) {
         confirmBtn.disabled = false;
         setStatus((error && error.message) || String(error), true);
@@ -2904,13 +2925,17 @@ ${IMAGES_SCRIPT}
     confirmBtn.setAttribute('data-sending', '');
     updateConfirm();
     var confirmed = currentTexts();
-    var context = 'Texts confirmed by the user for each variant. Use them exactly, as text_layer edits '
-      + '{ id: layerId, type: "text_layer", text, fontScale } in create-variant (fontScale only where given):\\n' + JSON.stringify({ variants: confirmed })
-      + (withImages ? '\\n\\n' + imagesPicker.result() + '\\nThe images are chosen: do not call upload-variant-images, call create-variant now.' : '');
+    var context = 'Texts confirmed by the user for each variant'
+      + (withImages ? ', and their images (below)' : '') + '. To generate them, call create-variant with widgetRef "{{ref}}" '
+      + 'instead of variants: the server builds every variant from what the user confirmed (texts, font scales, '
+      + (withImages ? 'images and crops, ' : '') + 'groups and languages from the labels). Do not copy the texts'
+      + (withImages ? ', image URLs or crops' : '') + ' into the call. Texts, for reference:\\n' + JSON.stringify({ variants: confirmed })
+      + (withImages ? '\\n\\n' + imagesPicker.result() + '\\nThe images are chosen: do not call upload-variant-images, call create-variant now (with widgetRef).' : '');
     var message = withImages
       ? 'I confirmed the texts and the images of the ' + confirmed.length + ' variant(s), continue.'
       : 'I confirmed the texts of the ' + confirmed.length + ' variant(s), continue.';
-    sendToModel(context, message, withImages ? 'Texts and images sent.' : 'Texts sent.')
+    sendToModel(context, message, withImages ? 'Texts and images sent.' : 'Texts sent.',
+      { variants: confirmed, images: withImages ? imagesPicker.data() : undefined })
       .catch(function (error) {
         confirmBtn.removeAttribute('data-sending');
         updateConfirm();

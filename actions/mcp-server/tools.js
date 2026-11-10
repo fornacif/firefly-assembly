@@ -58,7 +58,7 @@ const WORKFLOW = `Variant creation workflow. When the user asks to create varian
 2. Layer selection: done in the start widget. Call get-psd-manifest with the template URL only when the user wants to pick other layers later, or did not pick them in the start widget.
 3. Texts: right after the start widget, if text layers were selected, get the texts of each variant: the user provides them, or you write them from a brief (subject, tone, language). The user's requests always come first (length, number of words or lines, wording): follow them exactly, even if the text may not fit, and never shorten or change a text the user asked for to make it fit. Otherwise, write each text about as long as the original text of its layer (given by get-psd-manifest): the same number of lines and about the same number of characters per line (within 10%), so that it fits the layout. Write the line breaks yourself (\\n), where the original text has them: a point text layer does not wrap its lines by itself (a text without any line break is spread over the lines of the original text, by length). Each variant is created in each language chosen in the start widget (the total is the number of variants times the number of languages): write the texts of each variant in each language (the same message, translated and adapted, not word for word), and give each a short label ending with its language code (e.g. "Winter sale FR"), in the order variant by variant then language by language. Then call edit-variant-texts with the texts and the original text of each layer; if smart object layers were selected too, pass images as well (as for upload-variant-images in step 4, see there): the widget then asks for the images in a second step, and gives you the texts and the images together. Then wait. When the user has the texts in a spreadsheet or an Excel file, do not ask for them in chat: call edit-variant-texts with the labels and the original texts as texts; the user imports the Excel file (.xlsx, a column per layer) or pastes the cells in the widget.
 4. Images: done in the second step of edit-variant-texts when text layers were selected too. Otherwise (smart object layers only), call upload-variant-images ONCE with the labels of the variants without their languages (one row per variant, e.g. "Winter sale" for "Winter sale FR" and "Winter sale DE": all the languages of a variant share its images) and the selected smart object layers (id, name and frame width and height from get-psd-manifest), so the user drops (or picks from AEM Assets, or generates with Firefly) one image per variant and layer in a grid and adjusts how each one is cropped to its frame. When the user has no images or wants generated ones, pass prompts (one per variant and layer, in English, from the brief): each slot then offers to generate its image, with the prompt that the user can edit. When the user confirms, the widget gives you the URL, size and crop of each image the same way. Never ask for image URLs in chat. Then wait.
-5. Generation: as soon as the images are confirmed (or the texts, without smart object layers), call create-variant ONCE with all variants (up to ${MAX_VARIANTS}), passing for each image the crop chosen in the grid (each language of a variant gets the images and crops of its row of the grid, and its label in the grid as group) and for each variant its language and its group (its label without its language, also without images), and the fileNamePattern and fonts given by the start widget, if any; do not recap the variants or ask for another approval. The widget shows the generated files with download buttons.
+5. Generation: as soon as the images are confirmed (or the texts, without smart object layers), call create-variant ONCE with widgetRef, the reference at the end of the user's confirmation message (both references when the texts and the images were confirmed apart; with images only, also the languages of the start widget), instead of variants: the server builds all the variants (up to ${MAX_VARIANTS}) from what the user confirmed (texts, font scales, images, crops, groups and languages), so do not copy texts, image URLs or crops into the call. Pass also the templateUrl (or templates), fileNamePattern and fonts given by the start widget, and the formats; do not recap the variants or ask for another approval. Without a reference (e.g. a widget result missing), pass the variants as before: for each image the crop chosen in the grid (each language of a variant gets the images and crops of its row of the grid, and its label in the grid as group) and for each variant its language and its group (its label without its language). The widget shows the generated files with download buttons.
 6. Review: right after create-variant, in the same turn and without asking the user, check the texts of the generated files: call review-variants with the task id create-variant gives (it waits for the generation; while it answers that it is not finished, call it again): it shows you each visual with the texts sent. Look at each edited text on its visual: cut or past an edge of the visual or of its panel, letters or words hidden, overlapping another element (logo, image, other text) more than in the template, too small or hard to read on its background, lines broken badly, or not the text sent. Then call report-variant-issues with every variant reviewed (no issues for those that are fine; when review-variants shows the variants in several parts, after each part): per problem, the layer, a short description, the fix you propose (e.g. Reduce the font size of "headline" to 85%.) and the rectangle of the text on the visual, in pixels of the canvas. The widget marks each problem on the visual, with your proposed fix. Each variant has a field of changes, pre-filled with its proposed fixes, that the user edits, then sends to you: nothing is generated again before. Do not list the problems in chat: briefly say that the widget shows them and takes the changes. The user can also click a text on a visual to write a change for it in its field. When the user asks for changes (in the widget or in chat), make exactly the changes asked, nothing else: change a font size only when asked; to change the words of a text, rewrite it as asked (e.g. twice as many words, at most two lines) and keep its font size, even if it may not fit; then call create-variant again with the variants to change only, with the same file names and the same edits except the changes (a font size of N% is fontScale N/100): with previousTaskId, the task id of the generation changed: the new widget shows these variants generated again, and the others of that generation unchanged. The texts are checked once generated: do not adjust them beforehand. If a text the user asked for does not fit, you may then suggest a fix (a smaller font size or a shorter text), without applying it.
 Changes after generation: to re-crop or swap images, call upload-variant-images again with images pre-filled from the previous confirmation (never ask to upload again the images you already have, unless their URLs expired); to change texts, call create-variant again with the variants to change only (same file names, groups, languages, fileNamePattern and fonts), with previousTaskId. To get other formats of variants already generated (e.g. PSD after JPEG), call create-variant with these variants unchanged (same file names and edits), only the new formats, and previousTaskId: each variant keeps its earlier files in the widget and the ZIP.
 Widgets send their result (template URL, layers, texts, images) in your context and end the user's message with a reference in parentheses like "(r7k2p9)": if you do not have that result in your context, call get-widget-result with this ref before going on; never ask the user to redo a step because a result seems missing.
@@ -1301,20 +1301,67 @@ function currentUserId (params) {
 
 const shortHash = value => crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 16)
 
-async function saveWidgetResult (params, text) {
+// A widget result is kept as the text given to the model and, for the texts and images confirmed, as data (texts and images of
+// each variant), from which create-variant builds the variants (widgetRef) instead of the model copying them
+async function saveWidgetResult (params, text, data) {
   const ref = 'r' + Array.from({ length: 6 }, () => REF_ALPHABET[crypto.randomInt(REF_ALPHABET.length)]).join('')
   const userId = currentUserId(params)
   const state = await initState()
-  await state.put(widgetResultKey(userId, ref), { userId, text }, { ttl: WIDGET_RESULT_TTL_SECONDS })
+  await state.put(widgetResultKey(userId, ref), { userId, text, ...(data ? { data } : {}) }, { ttl: WIDGET_RESULT_TTL_SECONDS })
   return ref
 }
 
-async function readWidgetResult (params, ref) {
+async function readWidgetStored (params, ref) {
+  ref = String(ref || '').trim().replace(/^[·(\s]+|[)\s]+$/g, '').toLowerCase()
   if (!WIDGET_RESULT_REF.test(ref)) return null
   const userId = currentUserId(params)
   const state = await initState()
   const stored = (await state.get(widgetResultKey(userId, ref)))?.value
-  return stored && stored.userId === userId ? stored.text : null
+  return stored && stored.userId === userId ? stored : null
+}
+
+async function readWidgetResult (params, ref) {
+  return (await readWidgetStored(params, ref))?.text ?? null
+}
+
+// Language code at the end of a variant label ("Winter sale FR", "Winter sale (fr)"): { group, language }
+function labelParts (label) {
+  const match = /^(.*?)[\s_-]+\(?([A-Za-z]{2})\)?$/.exec(String(label).trim())
+  return match && LANGUAGES.includes(match[2].toLowerCase())
+    ? { group: match[1].trim(), language: match[2].toLowerCase() }
+    : { group: String(label).trim() }
+}
+
+// Variants built from the texts and images confirmed in the widgets (data of their results): one per row of the texts, with
+// its language and group from its label, its text edits, and the images of its group (row of the image grid); with images only,
+// one per row of the grid and language.
+async function variantsFromWidgets (params, refs, languages) {
+  const stored = await Promise.all(refs.map(async ref => {
+    const result = await readWidgetStored(params, ref)
+    if (!result) throw new Error(`No widget result for ${ref}: it expired (24 hours) or belongs to another user.`)
+    if (!result.data) throw new Error(`The widget result ${ref} has no texts or images: pass the variants.`)
+    return result.data
+  }))
+  const rows = stored.map(data => data.variants).filter(Boolean).pop()
+  const images = stored.map(data => data.images).filter(Boolean).pop() || []
+  const imageEdits = group => images.filter(image => String(image.variant) === group && image.url).map(image => ({
+    id: image.layerId,
+    type: 'smart_object_layer',
+    imageUrl: image.url,
+    ...(image.crop ? { crop: image.crop } : {}),
+    ...(image.crops ? { crops: image.crops } : {})
+  }))
+  if (rows) {
+    return rows.map(row => {
+      const { group, language } = labelParts(row.label)
+      const texts = row.texts.map(text => ({ id: text.layerId, type: 'text_layer', text: text.text, ...(text.fontScale && text.fontScale !== 1 ? { fontScale: text.fontScale } : {}) }))
+      const groupImages = imageEdits(group).length ? imageEdits(group) : imageEdits(String(row.label))
+      return { fileName: row.label, group, ...(language ? { language } : {}), layers: [...texts, ...groupImages] }
+    })
+  }
+  const groups = [...new Set(images.map(image => String(image.variant)))]
+  return groups.flatMap(group => (languages?.length ? languages : [null])
+    .map(language => ({ fileName: language ? `${group} ${language.toUpperCase()}` : group, group, ...(language ? { language } : {}), layers: imageEdits(group) })))
 }
 
 // Long operations run as tasks, each in its own activation of this action, invoked without waiting for it: a task has the
@@ -1847,7 +1894,8 @@ function registerTools (server, params) {
       description: 'Step 5 of the variant workflow. Generates variants of a PSD template with the Photoshop API, in parallel: ' +
         'for each variant, replaces the text of text layers and the content of smart object layers (with image URLs from upload-variant-images), ' +
         'then saves it in the requested formats (PNG, JPEG and/or layered PSD, several at once if asked). Only call it once the layers are selected (get-psd-manifest) and all values are known. ' +
-        'Pass all variants in a single call (up to ' + MAX_VARIANTS + '), even when their formats differ (set formats on those variants). It starts the generation and answers at once: the widget shows each variant as soon as it is rendered, with download buttons, and gives you the result (failures, text problems) when all are done; do not print the image URLs. ' +
+        'For the first generation, pass widgetRef (the reference of the confirmation of the texts and images) instead of variants: the server builds them from what the user confirmed, much faster than copying them. ' +
+        'Otherwise pass all variants in a single call (up to ' + MAX_VARIANTS + '), even when their formats differ (set formats on those variants). It starts the generation and answers at once: the widget shows each variant as soon as it is rendered, with download buttons, and gives you the result (failures, text problems) when all are done; do not print the image URLs. ' +
         'Use layer ids and types from get-psd-manifest. For each smart object image, pass the crop chosen in upload-variant-images; ' +
         'without crop, the image is cropped centered to its frame (fit "fill", default). Do not crop or resize images with other tools. ' +
         'Pass the fontScale of each text as confirmed in edit-variant-texts or in the changes sent from the widget of the generated variants. The ' +
@@ -1889,16 +1937,26 @@ function registerTools (server, params) {
           '"banner_{variant}_{language}"), passed as is to every call: each file is named from it with the group and the language ' +
           'of its variant, instead of its fileName'),
         fonts: FONTS_INPUT.describe('URLs of the font files added by the user, given by the start widget: passed as is to every call'),
+        widgetRef: z.union([z.string(), z.array(z.string()).max(2)]).optional().describe('Instead of variants, for the first ' +
+          'generation: the reference of the confirmation of the texts (with or without images) or of the images, at the end of the ' +
+          'user\'s message (e.g. "r7k2p9"; both references when the texts and the images were confirmed apart). The server builds ' +
+          'all the variants from what the user confirmed (texts, images, crops, groups and languages): do not copy them'),
+        languages: z.array(z.enum(LANGUAGES)).optional().describe('With widgetRef of an image grid only (no texts): the languages ' +
+          'of the variants, as chosen in the start widget; each row of the grid is created in each language'),
         previousTaskId: z.string().optional().describe('When changing variants of an earlier generation (the changes sent from its ' +
           'widget give its task id): that task id. The new widget also shows the variants of that generation not passed here, as they are')
       },
       _meta: uiMeta(VIEWS.variant)
     },
-    async ({ templateUrl, templates, formats, format, variants, layers, fileName, fileNamePattern, fonts, previousTaskId }) => {
+    async ({ templateUrl, templates, formats, format, variants, layers, fileName, fileNamePattern, fonts, previousTaskId, widgetRef, languages }) => {
       try {
-        if (!variants && !layers) throw new Error('Missing "variants": pass a list of variants, each with its "layers".')
+        if (!variants && !layers && !widgetRef) throw new Error('Missing "widgetRef" (or "variants": a list of variants, each with its "layers").')
         if (!templateUrl && !templates) throw new Error('Missing "templateUrl" (or "templates" given by the start widget).')
-        const given = variants || [{ fileName, layers }]
+        // Built from the widget results, the variants given replacing those of the same label
+        const fromWidgets = widgetRef ? await variantsFromWidgets(params, [].concat(widgetRef), languages) : []
+        const explicit = variants || (layers ? [{ fileName, layers }] : [])
+        const given = [...fromWidgets.filter(v => !explicit.some(e => e.fileName && e.fileName === v.fileName)), ...explicit]
+        if (given.length > MAX_VARIANTS) throw new Error(`${given.length} variants: at most ${MAX_VARIANTS} per call.`)
         const variantList = templates
           ? expandTemplates(given, templates, fileNamePattern)
           : given.map((variant, index) => fileNamePattern ? { ...variant, fileName: patternFileName(fileNamePattern, variant, index) } : variant)
@@ -2138,7 +2196,7 @@ function registerTools (server, params) {
     },
     async ({ ref }) => {
       try {
-        const text = await readWidgetResult(params, ref.trim().replace(/^[·(\s]+|[)\s]+$/g, '').toLowerCase())
+        const text = await readWidgetResult(params, ref)
         if (!text) return errorResult(new Error(`No widget result for ${ref}: it expired (24 hours) or belongs to another user.`))
         return { content: [{ type: 'text', text }] }
       } catch (error) {
@@ -2203,12 +2261,21 @@ function registerTools (server, params) {
     {
       title: 'Save Widget Result',
       description: 'Used by the widgets: stores what the user confirmed and returns a reference for get-widget-result.',
-      inputSchema: { text: z.string().min(1).max(500000).describe('Result of the widget, as sent to the model context') },
+      inputSchema: {
+        text: z.string().min(1).max(500000).describe('Result of the widget, as sent to the model context'),
+        data: z.object({
+          variants: z.array(z.object({
+            label: z.string(),
+            texts: z.array(z.object({ layerId: z.number().int(), text: z.string(), fontScale: z.number().optional() }).passthrough())
+          }).passthrough()).optional(),
+          images: z.array(z.object({ variant: z.union([z.string(), z.number()]), layerId: z.number().int(), url: z.string().optional() }).passthrough()).optional()
+        }).passthrough().optional().describe('Texts and images confirmed, from which create-variant builds the variants (widgetRef)')
+      },
       _meta: { ui: { visibility: ['app'] } }
     },
-    async ({ text }) => {
+    async ({ text, data }) => {
       try {
-        return jsonResult({ ref: await saveWidgetResult(params, text) })
+        return jsonResult({ ref: await saveWidgetResult(params, text, data) })
       } catch (error) {
         return errorResult(error)
       }
