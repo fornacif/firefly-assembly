@@ -2846,9 +2846,26 @@ const REPORT_SCRIPT = `
     return list.length ? list.reduce(function (total, ms) { return total + ms; }, 0) / list.length : 0;
   }
 
-  // 429 answers of the API (rate limit) and time waited for them, as a tile
-  function rateLimitTile(count, waitMs) {
-    return tileHtml('Rate limit (429)', String(count || 0), count || waitMs ? seconds(waitMs || 0) + ' waited' : 'no request refused');
+  // 429 answers of the API (rate limit) and the delay they caused (the time during which calls waited, those waiting at once
+  // counted once), with the sum of the waits of the calls; records without the delay give the sum only
+  function rateLimitTile(count, waitMs, delayMs) {
+    if (!count && !waitMs) return tileHtml('Rate limit (429)', '0', 'no request refused');
+    return tileHtml('Rate limit (429)', String(count || 0), delayMs != null
+      ? seconds(delayMs) + ' of delay (' + seconds(waitMs || 0) + ' waited by the calls in all)'
+      : seconds(waitMs || 0) + ' waited by the calls in all');
+  }
+  // Delay caused by the rate limit: the periods of wait of the calls ([start, end]) joined
+  function rateLimitDelay(calls) {
+    var periods = [];
+    calls.forEach(function (c) { (c.waits || []).forEach(function (p) { periods.push(p); }); });
+    periods.sort(function (a, b) { return a[0] - b[0]; });
+    var total = 0, end = -Infinity;
+    periods.forEach(function (p) {
+      if (p[1] <= end) return;
+      total += p[1] - Math.max(p[0], end);
+      end = p[1];
+    });
+    return total;
   }
   // Same, in the tooltip of a kind of call
   function rateLimitTip(count, waitMs) {
@@ -3459,7 +3476,7 @@ ${REPORT_SCRIPT}
       + tileHtml('Variants generated', String(report.variants), report.failed ? report.failed + ' failed' : '')
       + tileHtml('API calls', String(calls.length), since + ', ' + requests + ' requests with the status checks')
       + (ownRenders.length ? tileHtml('Average render', seconds(average(ownRenders)), seconds(average(allRenders)) + ' ' + since) : '')
-      + rateLimitTile(rateLimited, waitMs)
+      + rateLimitTile(rateLimited, waitMs, calls.some(function (c) { return c.waits; }) ? rateLimitDelay(calls) : null)
       + '</div>'
       + (calls.length ? '<div class="charts"><div class="chart"><span class="chart-title">Execution time by call</span>' + opsHtml
         + '<span class="chart-note">Bar: average time; line: from the fastest to the slowest call</span></div></div>' : '');
@@ -3659,7 +3676,7 @@ ${REPORT_SCRIPT}
 
   // 429 answers of a row, with the time waited
   function rateLimitCell(row) {
-    return row.rateLimited ? row.rateLimited + ' (' + seconds(row.waitMs || 0) + ')' : '0';
+    return row.rateLimited ? row.rateLimited + ' (' + seconds(row.rateLimitDelayMs || row.waitMs || 0) + ')' : '0';
   }
 
   function tableHtml(title, head, rows) {
@@ -3703,7 +3720,7 @@ ${REPORT_SCRIPT}
       + tileHtml('Variants generated', String(totals.variants), totals.failed ? totals.failed + ' failed' : '')
       + tileHtml('API calls', String(totals.apiCalls), totals.requests + ' requests with the status checks')
       + (totals.averageRenderMs != null ? tileHtml('Average render', seconds(totals.averageRenderMs), '') : '')
-      + rateLimitTile(totals.rateLimited, totals.waitMs)
+      + rateLimitTile(totals.rateLimited, totals.waitMs, totals.rateLimitDelayMs || null)
       + '</div>' + perDayHtml(data) + operationsHtml(data.apiCalls) + table;
     reportEl.hidden = false;
     setStatus('');

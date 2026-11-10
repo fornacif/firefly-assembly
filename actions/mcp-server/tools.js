@@ -290,14 +290,16 @@ const currentCall = new AsyncLocalStorage()
 
 // Starts the record of a call: request() counts each HTTP request (the submission and the status polls), begin() starts its
 // time (once, when it gets out of the queue of jobs), end(ok) adds it to the calls of the task. rateLimited() counts a 429
-// answer and waited(ms) the time waited for the rate limit, by the requests made within run(fn).
+// answer and waited(ms) the time waited for the rate limit, by the requests made within run(fn) (waitMs in all, and waits, the
+// periods of wait).
 function recordApiCall (api, operation) {
   const calls = apiCalls.getStore()
-  const call = { api, operation, at: null, ms: null, requests: 0, rateLimited: 0, waitMs: 0, ok: false }
+  const call = { api, operation, at: null, ms: null, requests: 0, rateLimited: 0, waitMs: 0, waits: [], ok: false }
   const handle = {
     run (fn) { return currentCall.run(handle, fn) },
     rateLimited () { call.rateLimited++ },
-    waited (ms) { call.waitMs += Math.round(ms) },
+    // Each wait is also kept as a period ([start, end]): the calls waiting at once delay the task once
+    waited (ms) { call.waitMs += Math.round(ms); call.waits.push([Date.now(), Date.now() + Math.round(ms)]) },
     request () { call.requests++ },
     begin () { call.at = call.at || Date.now() },
     end (ok) {

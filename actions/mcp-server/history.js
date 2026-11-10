@@ -35,6 +35,20 @@ async function withActivity (params, fn) {
   }
 }
 
+// Time during which at least one call waited for the rate limit, in ms: the periods of wait of the calls ([start, end]) joined,
+// the calls waiting at once counting once (the delay of the task, unlike the sum of the waits)
+function rateLimitDelay (calls) {
+  const periods = calls.flatMap(call => call.waits || []).sort((a, b) => a[0] - b[0])
+  let total = 0
+  let end = -Infinity
+  periods.forEach(([from, to]) => {
+    if (to <= end) return
+    total += to - Math.max(from, end)
+    end = to
+  })
+  return total
+}
+
 // API calls of a task by kind: [{ api, operation, count, failed, totalMs, requests, rateLimited, waitMs }], rateLimited being the
 // 429 answers and waitMs the time waited for the rate limit
 function callsByKind (calls) {
@@ -73,6 +87,7 @@ async function recordActivity (params, task, { ok, durationMs, calls, result }) 
     requests: calls.reduce((total, call) => total + (call.requests || 0), 0),
     rateLimited: calls.reduce((total, call) => total + (call.rateLimited || 0), 0),
     waitMs: calls.reduce((total, call) => total + (call.waitMs || 0), 0),
+    rateLimitDelayMs: rateLimitDelay(calls),
     renders: renders.length,
     renderMs: renders.reduce((total, call) => total + call.ms, 0),
     calls: callsByKind(calls),
@@ -95,7 +110,7 @@ const num = value => value && typeof value === 'object' && 'low' in value ? valu
 const average = (totalMs, count) => num(count) ? Math.round(num(totalMs) / num(count)) : null
 const isoDate = value => new Date(value?.$date ?? value).toISOString()
 
-const SUMS = { generations: { $sum: '$generations' }, variants: { $sum: '$variants' }, failed: { $sum: '$failed' }, apiCalls: { $sum: '$apiCalls' }, requests: { $sum: '$requests' }, rateLimited: { $sum: '$rateLimited' }, waitMs: { $sum: '$waitMs' }, renders: { $sum: '$renders' }, renderMs: { $sum: '$renderMs' } }
+const SUMS = { generations: { $sum: '$generations' }, variants: { $sum: '$variants' }, failed: { $sum: '$failed' }, apiCalls: { $sum: '$apiCalls' }, requests: { $sum: '$requests' }, rateLimited: { $sum: '$rateLimited' }, waitMs: { $sum: '$waitMs' }, rateLimitDelayMs: { $sum: '$rateLimitDelayMs' }, renders: { $sum: '$renders' }, renderMs: { $sum: '$renderMs' } }
 const numbers = object => Object.fromEntries(Object.entries(object).map(([key, value]) => [key, typeof value === 'string' ? value : num(value)]))
 const withAverage = ({ renders, renderMs, ...rest }) => ({ ...numbers(rest), averageRenderMs: average(renderMs, renders) })
 
@@ -140,7 +155,7 @@ async function usageHistory (params, userId, { days, limit }) {
     const [summary, generations] = await Promise.all([
       usage(activity, filter),
       activity.find({ ...filter, kind: 'variants' })
-        .project({ _id: 0, at: 1, template: 1, variants: 1, failed: 1, durationMs: 1, apiCalls: 1, rateLimited: 1, waitMs: 1, formats: 1, languages: 1, renders: 1, renderMs: 1 })
+        .project({ _id: 0, at: 1, template: 1, variants: 1, failed: 1, durationMs: 1, apiCalls: 1, rateLimited: 1, waitMs: 1, rateLimitDelayMs: 1, formats: 1, languages: 1, renders: 1, renderMs: 1 })
         .sort({ at: -1 }).limit(limit).toArray()
     ])
     return {
@@ -158,6 +173,7 @@ async function usageHistory (params, userId, { days, limit }) {
         apiCalls: num(g.apiCalls),
         rateLimited: num(g.rateLimited),
         waitMs: num(g.waitMs),
+        rateLimitDelayMs: g.rateLimitDelayMs == null ? null : num(g.rateLimitDelayMs),
         averageRenderMs: average(g.renderMs, g.renders),
         formats: g.formats,
         languages: g.languages
