@@ -2806,8 +2806,8 @@ const REPORT_CSS = `
   .op-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* Number of calls, as a pill next to the name */
   .op-count { flex: none; padding: 1px 8px; border-radius: 999px; background: var(--spectrum-gray-200); color: var(--spectrum-neutral-content-color-default); font-weight: var(--spectrum-bold-font-weight); font-variant-numeric: tabular-nums; }
-  /* 429 answers of a kind of call: text in the orange of Spectrum notices */
-  .op-429 { flex: none; color: var(--spectrum-orange-900, #e68619); font-weight: var(--spectrum-bold-font-weight); font-variant-numeric: tabular-nums; }
+  /* 429 answers of a kind of call, in the orange of Spectrum notices */
+  .op-count.op-429 { background: var(--spectrum-notice-background-color-default, #e68619); color: #ffffff; }
   .op-value { color: var(--spectrum-neutral-subdued-content-color-default); font-variant-numeric: tabular-nums; text-align: right; }
   .op-track { grid-column: 1 / -1; position: relative; height: 10px; }
   .op-range { position: absolute; top: 4px; height: 2px; background: var(--spectrum-gray-400); border-radius: 1px; }
@@ -2837,7 +2837,7 @@ const REPORT_SCRIPT = `
   // Name of a kind of call with the number of calls in a pill
   function opLabel(name, count, rateLimited) {
     return '<span class="op-label"><span class="op-name">' + escapeHtml(name) + '</span><span class="op-count">' + count + (count > 1 ? ' calls' : ' call') + '</span>'
-      + (rateLimited ? '<span class="op-429" title="Answers 429 (rate limit)">' + rateLimited + ' × 429</span>' : '') + '</span>';
+      + (rateLimited ? '<span class="op-count op-429" title="Answers 429 (rate limit)">' + rateLimited + ' × 429</span>' : '') + '</span>';
   }
   function seconds(ms) {
     var s = ms / 1000;
