@@ -35,14 +35,17 @@ async function withActivity (params, fn) {
   }
 }
 
-// API calls of a task by kind: [{ api, operation, count, failed, totalMs, requests }]
+// API calls of a task by kind: [{ api, operation, count, failed, totalMs, requests, rateLimited, waitMs }], rateLimited being the
+// 429 answers and waitMs the time waited for the rate limit
 function callsByKind (calls) {
   const kinds = new Map()
   calls.forEach(call => {
-    const kind = kinds.get(call.operation) || { api: call.api, operation: call.operation, count: 0, failed: 0, totalMs: 0, requests: 0 }
+    const kind = kinds.get(call.operation) || { api: call.api, operation: call.operation, count: 0, failed: 0, totalMs: 0, requests: 0, rateLimited: 0, waitMs: 0 }
     kind.count++
     if (call.ok) kind.totalMs += call.ms; else kind.failed++
     kind.requests += call.requests || 0
+    kind.rateLimited += call.rateLimited || 0
+    kind.waitMs += call.waitMs || 0
     kinds.set(call.operation, kind)
   })
   return [...kinds.values()]
@@ -68,6 +71,8 @@ async function recordActivity (params, task, { ok, durationMs, calls, result }) 
     failed: generation ? (result?.variants || []).filter(v => v.error).length || (ok ? 0 : task.args.variants?.length || 0) : 0,
     apiCalls: calls.length,
     requests: calls.reduce((total, call) => total + (call.requests || 0), 0),
+    rateLimited: calls.reduce((total, call) => total + (call.rateLimited || 0), 0),
+    waitMs: calls.reduce((total, call) => total + (call.waitMs || 0), 0),
     renders: renders.length,
     renderMs: renders.reduce((total, call) => total + call.ms, 0),
     calls: callsByKind(calls),
@@ -90,7 +95,7 @@ const num = value => value && typeof value === 'object' && 'low' in value ? valu
 const average = (totalMs, count) => num(count) ? Math.round(num(totalMs) / num(count)) : null
 const isoDate = value => new Date(value?.$date ?? value).toISOString()
 
-const SUMS = { generations: { $sum: '$generations' }, variants: { $sum: '$variants' }, failed: { $sum: '$failed' }, apiCalls: { $sum: '$apiCalls' }, requests: { $sum: '$requests' }, renders: { $sum: '$renders' }, renderMs: { $sum: '$renderMs' } }
+const SUMS = { generations: { $sum: '$generations' }, variants: { $sum: '$variants' }, failed: { $sum: '$failed' }, apiCalls: { $sum: '$apiCalls' }, requests: { $sum: '$requests' }, rateLimited: { $sum: '$rateLimited' }, waitMs: { $sum: '$waitMs' }, renders: { $sum: '$renders' }, renderMs: { $sum: '$renderMs' } }
 const numbers = object => Object.fromEntries(Object.entries(object).map(([key, value]) => [key, typeof value === 'string' ? value : num(value)]))
 const withAverage = ({ renders, renderMs, ...rest }) => ({ ...numbers(rest), averageRenderMs: average(renderMs, renders) })
 
@@ -102,7 +107,7 @@ function mergeRenamed (operations) {
   const merged = new Map()
   operations.forEach(({ _id, api, ...sums }) => {
     const name = RENAMED_OPERATIONS[_id] || _id
-    const kind = merged.get(name) || { _id: name, api, count: 0, failed: 0, totalMs: 0, requests: 0 }
+    const kind = merged.get(name) || { _id: name, api, count: 0, failed: 0, totalMs: 0, requests: 0, rateLimited: 0, waitMs: 0 }
     Object.keys(sums).forEach(key => { kind[key] += num(sums[key]) })
     merged.set(name, kind)
   })
@@ -116,7 +121,7 @@ async function usage (activity, filter) {
     activity.aggregate([match, { $group: { _id: null, users: { $addToSet: '$userId' }, ...SUMS } }]).toArray(),
     activity.aggregate([match, { $group: { _id: '$day', users: { $addToSet: '$userId' }, ...SUMS } }, { $sort: { _id: 1 } }]).toArray(),
     activity.aggregate([match, { $unwind: '$calls' }, {
-      $group: { _id: '$calls.operation', api: { $first: '$calls.api' }, count: { $sum: '$calls.count' }, failed: { $sum: '$calls.failed' }, totalMs: { $sum: '$calls.totalMs' }, requests: { $sum: '$calls.requests' } }
+      $group: { _id: '$calls.operation', api: { $first: '$calls.api' }, count: { $sum: '$calls.count' }, failed: { $sum: '$calls.failed' }, totalMs: { $sum: '$calls.totalMs' }, requests: { $sum: '$calls.requests' }, rateLimited: { $sum: '$calls.rateLimited' }, waitMs: { $sum: '$calls.waitMs' } }
     }, { $sort: { count: -1 } }]).toArray()
   ])
   const { _id, users = [], ...total } = totals[0] || {}
@@ -135,7 +140,7 @@ async function usageHistory (params, userId, { days, limit }) {
     const [summary, generations] = await Promise.all([
       usage(activity, filter),
       activity.find({ ...filter, kind: 'variants' })
-        .project({ _id: 0, at: 1, template: 1, variants: 1, failed: 1, durationMs: 1, apiCalls: 1, formats: 1, languages: 1, renders: 1, renderMs: 1 })
+        .project({ _id: 0, at: 1, template: 1, variants: 1, failed: 1, durationMs: 1, apiCalls: 1, rateLimited: 1, waitMs: 1, formats: 1, languages: 1, renders: 1, renderMs: 1 })
         .sort({ at: -1 }).limit(limit).toArray()
     ])
     return {
@@ -151,6 +156,8 @@ async function usageHistory (params, userId, { days, limit }) {
         failed: num(g.failed),
         durationMs: num(g.durationMs),
         apiCalls: num(g.apiCalls),
+        rateLimited: num(g.rateLimited),
+        waitMs: num(g.waitMs),
         averageRenderMs: average(g.renderMs, g.renders),
         formats: g.formats,
         languages: g.languages

@@ -2510,6 +2510,15 @@ const REPORT_SCRIPT = `
     return list.length ? list.reduce(function (total, ms) { return total + ms; }, 0) / list.length : 0;
   }
 
+  // 429 answers of the API (rate limit) and time waited for them, as a tile
+  function rateLimitTile(count, waitMs) {
+    return tileHtml('Rate limit (429)', String(count || 0), count || waitMs ? seconds(waitMs || 0) + ' waited' : 'no request refused');
+  }
+  // Same, in the tooltip of a kind of call
+  function rateLimitTip(count, waitMs) {
+    return count || waitMs ? ', ' + (count || 0) + ' answer(s) 429, ' + seconds(waitMs || 0) + ' waited for the rate limit' : '';
+  }
+
   function tileHtml(label, value, note) {
     return '<div class="tile"><span class="tile-label">' + escapeHtml(label) + '</span><span class="tile-value">' + escapeHtml(value)
       + '</span>' + (note ? '<span class="tile-note">' + escapeHtml(note) + '</span>' : '') + '</div>';
@@ -3081,21 +3090,25 @@ ${REPORT_SCRIPT}
     var allRenders = calls.filter(function (c) { return isRender(c) && c.ok; }).map(function (c) { return c.ms; });
     var ownRenders = calls.filter(function (c) { return c.generation && isRender(c) && c.ok; }).map(function (c) { return c.ms; });
     var requests = calls.reduce(function (total, c) { return total + (c.requests || 0); }, 0);
+    var rateLimited = calls.reduce(function (total, c) { return total + (c.rateLimited || 0); }, 0);
+    var waitMs = calls.reduce(function (total, c) { return total + (c.waitMs || 0); }, 0);
     var since = report.sinceImport ? 'since the template was imported' : 'of this generation';
 
     // Kinds of calls, in the order of their first call
     var kinds = [];
     calls.forEach(function (c) {
       var kind = kinds.filter(function (k) { return k.name === c.operation; })[0];
-      if (!kind) kinds.push(kind = { name: c.operation, api: c.api, times: [], failed: 0 });
+      if (!kind) kinds.push(kind = { name: c.operation, api: c.api, times: [], failed: 0, rateLimited: 0, waitMs: 0 });
       if (c.ok) kind.times.push(c.ms); else kind.failed++;
+      kind.rateLimited += c.rateLimited || 0;
+      kind.waitMs += c.waitMs || 0;
     });
     var longest = Math.max.apply(null, [1].concat(calls.map(function (c) { return c.ms || 0; })));
     var opsHtml = kinds.map(function (k) {
       var count = k.times.length + k.failed;
       var min = k.times.length ? Math.min.apply(null, k.times) : 0, max = k.times.length ? Math.max.apply(null, k.times) : 0;
       var tip = k.api + ': ' + count + ' call(s), average ' + seconds(average(k.times)) + ', from ' + seconds(min) + ' to ' + seconds(max)
-        + (k.failed ? ', ' + k.failed + ' failed' : '');
+        + (k.failed ? ', ' + k.failed + ' failed' : '') + rateLimitTip(k.rateLimited, k.waitMs);
       return '<div class="op" title="' + escapeHtml(tip) + '">' + opLabel(k.name, count)
         + '<span class="op-value">' + (k.times.length ? 'avg ' + seconds(average(k.times)) : 'failed') + '</span>'
         + '<div class="op-track"><span class="op-range" style="left:' + (min / longest * 100) + '%;width:' + ((max - min) / longest * 100) + '%"></span>'
@@ -3106,6 +3119,7 @@ ${REPORT_SCRIPT}
       + tileHtml('Variants generated', String(report.variants), report.failed ? report.failed + ' failed' : '')
       + tileHtml('API calls', String(calls.length), since + ', ' + requests + ' requests with the status checks')
       + (ownRenders.length ? tileHtml('Average render', seconds(average(ownRenders)), seconds(average(allRenders)) + ' ' + since) : '')
+      + rateLimitTile(rateLimited, waitMs)
       + '</div>'
       + (calls.length ? '<div class="charts"><div class="chart"><span class="chart-title">Execution time by call</span>' + opsHtml
         + '<span class="chart-note">Bar: average time; line: from the fastest to the slowest call</span></div></div>' : '');
@@ -3290,11 +3304,16 @@ ${REPORT_SCRIPT}
     if (!apiCalls || !apiCalls.length) return '';
     var longest = Math.max.apply(null, [1].concat(apiCalls.map(function (op) { return op.averageMs || 0; })));
     return '<div class="chart"><span class="chart-title">Execution time by call</span>' + apiCalls.map(function (op) {
-      var tip = op.api + ': ' + op.count + ' call(s)' + (op.failed ? ', ' + op.failed + ' failed' : '') + ', ' + op.requests + ' requests with the status checks';
+      var tip = op.api + ': ' + op.count + ' call(s)' + (op.failed ? ', ' + op.failed + ' failed' : '') + ', ' + op.requests + ' requests with the status checks' + rateLimitTip(op.rateLimited, op.waitMs);
       return '<div class="op" title="' + escapeHtml(tip) + '">' + opLabel(op.operation, op.count)
         + '<span class="op-value">' + (op.averageMs != null ? 'avg ' + seconds(op.averageMs) : 'failed') + '</span>'
         + '<div class="op-track"><span class="op-bar" style="width:' + ((op.averageMs || 0) / longest * 100) + '%"></span></div></div>';
     }).join('') + '<span class="chart-note">Bar: average time of a call</span></div>';
+  }
+
+  // 429 answers of a row, with the time waited
+  function rateLimitCell(row) {
+    return row.rateLimited ? row.rateLimited + ' (' + seconds(row.waitMs || 0) + ')' : '0';
   }
 
   function tableHtml(title, head, rows) {
@@ -3323,13 +3342,13 @@ ${REPORT_SCRIPT}
       return;
     }
     var table = all
-      ? tableHtml('Users', [{ label: 'User' }, { label: 'Generations', n: true }, { label: 'Variants', n: true }, { label: 'Failed', n: true }, { label: 'API calls', n: true }, { label: 'Avg render', n: true }, { label: 'Last activity' }],
+      ? tableHtml('Users', [{ label: 'User' }, { label: 'Generations', n: true }, { label: 'Variants', n: true }, { label: 'Failed', n: true }, { label: 'API calls', n: true }, { label: '429', n: true }, { label: 'Avg render', n: true }, { label: 'Last activity' }],
         (data.users || []).map(function (u) {
-          return [u.user, u.generations, u.variants, u.failed, u.apiCalls, u.averageRenderMs != null ? seconds(u.averageRenderMs) : '', dateTime(u.lastActivity)];
+          return [u.user, u.generations, u.variants, u.failed, u.apiCalls, rateLimitCell(u), u.averageRenderMs != null ? seconds(u.averageRenderMs) : '', dateTime(u.lastActivity)];
         }))
-      : tableHtml('Latest generations', [{ label: 'Date' }, { label: 'Template' }, { label: 'Variants', n: true }, { label: 'Failed', n: true }, { label: 'Avg render', n: true }, { label: 'Formats' }, { label: 'Languages' }],
+      : tableHtml('Latest generations', [{ label: 'Date' }, { label: 'Template' }, { label: 'Variants', n: true }, { label: 'Failed', n: true }, { label: '429', n: true }, { label: 'Avg render', n: true }, { label: 'Formats' }, { label: 'Languages' }],
         (data.generations || []).map(function (g) {
-          return [dateTime(g.at), g.template || '', g.variants, g.failed, g.averageRenderMs != null ? seconds(g.averageRenderMs) : '',
+          return [dateTime(g.at), g.template || '', g.variants, g.failed, rateLimitCell(g), g.averageRenderMs != null ? seconds(g.averageRenderMs) : '',
             (g.formats || []).join(', ').toUpperCase(), (g.languages || []).join(', ').toUpperCase()];
         }));
     reportEl.innerHTML = '<div class="tiles">'
@@ -3338,6 +3357,7 @@ ${REPORT_SCRIPT}
       + tileHtml('Variants generated', String(totals.variants), totals.failed ? totals.failed + ' failed' : '')
       + tileHtml('API calls', String(totals.apiCalls), totals.requests + ' requests with the status checks')
       + (totals.averageRenderMs != null ? tileHtml('Average render', seconds(totals.averageRenderMs), '') : '')
+      + rateLimitTile(totals.rateLimited, totals.waitMs)
       + '</div>' + perDayHtml(data) + operationsHtml(data.apiCalls) + table;
     reportEl.hidden = false;
     setStatus('');

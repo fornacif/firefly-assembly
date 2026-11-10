@@ -210,7 +210,11 @@ async function fetchWithRetry (url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS
     const usedUp = (await usedUpQuotas())[host]
     if (usedUp) throw quotaError(host, usedUp)
     const until = rateLimitedUntil.get(host) || 0
-    if (until > Date.now()) await wait(until - Date.now())
+    if (until > Date.now()) {
+      const waitMs = until - Date.now()
+      currentCall.getStore()?.waited(waitMs)
+      await wait(waitMs)
+    }
     let response
     try {
       response = await fetch(url, { ...options, signal: AbortSignal.timeout(timeoutMs) })
@@ -220,6 +224,7 @@ async function fetchWithRetry (url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS
       await wait(backoff(attempt))
       continue
     }
+    if (response.status === 429 && attempt >= RATE_LIMIT_RETRIES) currentCall.getStore()?.rateLimited()
     const retry = response.status === 429
       ? attempt < RATE_LIMIT_RETRIES
       : TRANSIENT_STATUSES.includes(response.status) && attempt < TRANSIENT_RETRIES
@@ -227,6 +232,7 @@ async function fetchWithRetry (url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS
     // Frees the connection
     await response.body?.cancel().catch(() => {})
     if (response.status === 429) {
+      currentCall.getStore()?.rateLimited()
       const header = response.headers.get('retry-after')
       const asked = retryAfterMs(header)
       if (asked > RATE_LIMIT_MAX_WAIT_MS) {
@@ -267,13 +273,19 @@ async function fireflyHeaders (params) {
 // API calls of the current task (jobs of the Photoshop API, Firefly image generations, subject detections): what the generation
 // report of the widget shows. Each task collects its own calls, kept in state by runTask (see saveApiCalls).
 const apiCalls = new AsyncLocalStorage()
+// Record of the call whose requests are made (see recordApiCall): the 429 answers it gets and the time it waits for the rate limit
+const currentCall = new AsyncLocalStorage()
 
 // Starts the record of a call: request() counts each HTTP request (the submission and the status polls), begin() starts its
-// time (once, when it gets out of the queue of jobs), end(ok) adds it to the calls of the task.
+// time (once, when it gets out of the queue of jobs), end(ok) adds it to the calls of the task. rateLimited() counts a 429
+// answer and waited(ms) the time waited for the rate limit, by the requests made within run(fn).
 function recordApiCall (api, operation) {
   const calls = apiCalls.getStore()
-  const call = { api, operation, at: null, ms: null, requests: 0, ok: false }
-  return {
+  const call = { api, operation, at: null, ms: null, requests: 0, rateLimited: 0, waitMs: 0, ok: false }
+  const handle = {
+    run (fn) { return currentCall.run(handle, fn) },
+    rateLimited () { call.rateLimited++ },
+    waited (ms) { call.waitMs += Math.round(ms) },
     request () { call.requests++ },
     begin () { call.at = call.at || Date.now() },
     end (ok) {
@@ -282,6 +294,7 @@ function recordApiCall (api, operation) {
       calls?.push(call)
     }
   }
+  return handle
 }
 
 // Ends the record of a call when the promise settles; returns the promise.
@@ -353,7 +366,7 @@ const JOB_RESUBMIT_AFTER_MS = 60000
 // longer than JOB_RESUBMIT_AFTER_MS is submitted once more (the same outputs: either job writes them).
 function runPhotoshopJob (params, path, body, operation) {
   const call = recordApiCall('Photoshop API', operation)
-  const run = limit => limitJob(async () => {
+  const run = limit => limitJob(() => call.run(async () => {
     call.begin()
     call.request()
     const { jobId } = await callPhotoshop(params, path, { method: 'POST', body: JSON.stringify(body) })
@@ -364,7 +377,7 @@ function runPhotoshopJob (params, path, body, operation) {
       if (status.status === 'succeeded') return status.result
       if (status.status === 'failed') throw new Error(`Photoshop job failed: ${JSON.stringify(status.errorDetails)}`)
     }, `Photoshop job ${jobId}`, limit)
-  })
+  }))
   const first = run(POLL_TIMEOUT_MS)
   let settled = false
   first.then(() => { settled = true }, () => { settled = true })
@@ -859,7 +872,7 @@ function closestAutoCropRatio (ratio) {
 // Returns the box auto-crop suggests around the subject, in auto-crop coordinates (see toImageCoordinates).
 function detectSubjectBox (params, imageUrl, ratio) {
   const call = recordApiCall('Firefly Services', 'Crop suggestion')
-  return recorded(call, limitJob(async () => {
+  return recorded(call, limitJob(() => call.run(async () => {
     call.begin()
     call.request()
     const { statusUrl } = await callFirefly(params, 'auto-crop', AUTO_CROP_API, {
@@ -873,7 +886,7 @@ function detectSubjectBox (params, imageUrl, ratio) {
       if (status.status === 'failed') throw new Error(`auto-crop failed: ${JSON.stringify(status)}`)
       if (status.status === 'succeeded') return status.output?.crops?.[0]?.boundingBoxes?.[0] || null
     }, 'auto-crop')
-  }))
+  })))
 }
 
 function toImageCoordinates (box, image) {
@@ -919,7 +932,7 @@ function fireflySize (width, height) {
 async function generateImage (params, { prompt, width, height }, deadline) {
   const size = fireflySize(width, height)
   const call = recordApiCall('Firefly API', 'Image generation (Firefly)')
-  const result = await recorded(call, (async () => {
+  const result = await recorded(call, call.run(async () => {
     call.begin()
     call.request()
     const job = await callFirefly(params, 'Firefly API', FIREFLY_GENERATE_API, {
@@ -935,7 +948,7 @@ async function generateImage (params, { prompt, width, height }, deadline) {
         throw new Error(`The image could not be generated: ${status.message || status.error_code || status.status}`)
       }
     }, 'Firefly image generation', Math.max(10000, deadline - Date.now()))
-  })())
+  }))
   const imageUrl = result?.outputs?.[0]?.image?.url
   if (!imageUrl) throw new Error('Firefly API: no image in the result')
   const response = await fetchWithRetry(imageUrl)
