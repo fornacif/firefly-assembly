@@ -440,7 +440,7 @@ const cropCache = createCache(100)
 // Manifests are also kept in App Builder state for an hour, so that the tasks run in other containers (parallel generations,
 // edits from the widget) do not read the same template again; a manifest too large for the state is only kept in memory.
 const MANIFEST_TTL_SECONDS = 3600
-const manifestKey = url => `manifest-${shortHash(url)}`
+const manifestKey = url => `manifest-${shortHash(storageKey(url))}`
 
 async function sharedManifest (params, url) {
   const stored = (await stateStore.get(manifestKey(url)).catch(() => undefined))?.value
@@ -453,7 +453,7 @@ async function sharedManifest (params, url) {
 
 // Manifest of a template or image, from the cache of the container, then from state.
 function getManifest (params, url) {
-  return manifestCache(url, () => sharedManifest(params, url))
+  return manifestCache(storageKey(url), () => sharedManifest(params, url))
 }
 
 // Size of an image read from the header of its file (PNG, JPEG, GIF, WebP), without a Photoshop job; null when it cannot be
@@ -647,6 +647,32 @@ function renderPreview (params, url, fonts = []) {
       return { url: await render('use_default', texts), missingFonts }
     }
   })
+}
+
+// A file of the storage of the action: the same file whatever its presigned URL (signature and expiry in the query), for the
+// keys of the caches and the hash of the edits
+const STORAGE_PATH = /^\/[0-9a-f]{32}\/((?:uploads|aem|generated|crops|variants|previews)\/\d+-[0-9a-f]{8}-[\w.-]+)$/
+function storageKey (url) {
+  try {
+    const parsed = new URL(url)
+    return parsed.origin === STORAGE_ORIGIN && STORAGE_PATH.test(parsed.pathname) ? parsed.origin + parsed.pathname : url
+  } catch (_) {
+    return url
+  }
+}
+
+// A presigned URL of the storage of the action, signed again (valid 24 hours): the URLs that the assistant passes on are copied
+// from the widget results, and a URL copied with a character changed, or expired, is refused by the storage (403). Other URLs
+// are returned as they are.
+async function freshStorageUrl (url) {
+  let parsed
+  try { parsed = new URL(url) } catch (_) { return url }
+  const match = parsed.origin === STORAGE_ORIGIN && parsed.pathname.match(STORAGE_PATH)
+  if (!match) return url
+  const files = await initFiles()
+  const fresh = await files.generatePresignURL(match[1], { expiryInSeconds: URL_EXPIRY_SECONDS, permissions: 'r' })
+  // Only a file of this storage (the same container) is signed again
+  return new URL(fresh).pathname === parsed.pathname ? fresh : url
 }
 
 function newStoragePath (folder, fileName) {
@@ -1023,7 +1049,7 @@ function cropLayerImage (params, manifest, layer) {
   if (layer.type !== 'smart_object_layer' || !(layer.crop || layer.fit !== 'fit')) return layer
   const frame = layer.crop ? null : findLayer(manifest.layers, layer.id)?.referenceFrame
   if (!layer.crop && !frame) return layer
-  const key = `${layer.imageUrl}|${JSON.stringify(layer.crop || boundsSize(frame))}`
+  const key = `${storageKey(layer.imageUrl)}|${JSON.stringify(layer.crop || boundsSize(frame))}`
   return cropCache(key, () => sharedCrop(key, () => layer.crop
     ? cropImage(params, layer.imageUrl, layer.crop)
     : cropToFrameCenter(params, layer.imageUrl, boundsSize(frame))))
@@ -1401,7 +1427,8 @@ const reviewKey = (userId, taskId) => `review-${shortHash(userId)}-${taskId}`
 // edits (in other formats) keeps the files of the earlier one
 function editsHash (layers) {
   const stable = value => Array.isArray(value) ? value.map(stable)
-    : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, stable(value[key])])) : value
+    : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, stable(value[key])]))
+      : typeof value === 'string' ? storageKey(value) : value
   return shortHash(JSON.stringify(stable([...layers].sort((a, b) => a.id - b.id))))
 }
 
@@ -1699,6 +1726,7 @@ function registerTools (server, params) {
     },
     async ({ url }) => {
       try {
+        url = await freshStorageUrl(url)
         const taskId = await startTask(params, 'template', { url })
         // The model needs the layers: they are waited for here, the preview is waited for by the view
         const ready = await awaitTask(params, taskId, Date.now() + RESPONSE_BUDGET_MS,
@@ -1818,6 +1846,18 @@ function registerTools (server, params) {
           throw new Error(`${variantList.length} files to render (variants x templates): at most ${MAX_RENDERS} per call. Generate the variants in several calls.`)
         }
         templateUrl = templateUrl || templates[0].url
+        // The URLs of the storage are signed again: one copied with a character changed would be refused by the storage
+        const fresh = new Map()
+        const resign = url => {
+          if (!fresh.has(url)) fresh.set(url, freshStorageUrl(url))
+          return fresh.get(url)
+        }
+        templateUrl = await resign(templateUrl)
+        fonts = fonts && await Promise.all(fonts.map(resign))
+        for (const variant of variantList) {
+          if (variant.templateUrl) variant.templateUrl = await resign(variant.templateUrl)
+          variant.layers = await Promise.all(variant.layers.map(async layer => layer.imageUrl ? { ...layer, imageUrl: await resign(layer.imageUrl) } : layer))
+        }
         const warnings = findSharedImages(given).map(shared => `\nWarning: variants ${shared.variants.join(', ')} use the same image for layer ` +
           `${shared.layerId}. If the user chose different images in upload-variant-images, check the image of each variant in its ` +
           'confirmation (one line per variant and layer) and call create-variant again with the right URLs and crops.').join('')
