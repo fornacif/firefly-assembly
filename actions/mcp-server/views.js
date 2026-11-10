@@ -705,6 +705,19 @@ ${LAYERS_SCRIPT}
     }).join('');
     reportSize();
   }
+  // Fonts of the library that a template uses, given to its preview by the server: used for the other renders too (checked),
+  // without rendering again
+  function useFontsFromRead(list) {
+    (list || []).forEach(function (font) {
+      neededFonts[fontKey(font.postScriptName)] = true;
+      var known = library.filter(function (f) { return f.id === font.id; })[0];
+      if (known) known.url = font.url;
+      if (fonts.some(function (f) { return f.libraryId === font.id; })) return;
+      fonts.push({ name: font.fileName, url: font.url, libraryId: font.id });
+      if (autoAdded.indexOf(font.fileName) < 0) autoAdded.push(font.fileName);
+    });
+    if (list && list.length) renderLibrary();
+  }
   function useLibraryFont(font) {
     if (inUse(font)) return;
     fonts.push({ name: font.fileName, url: font.url, libraryId: font.id });
@@ -1034,6 +1047,7 @@ ${LAYERS_SCRIPT}
         t.status = 'ready';
         t.previewPending = false;
         t.missingFonts = result.missingFonts || [];
+        useFontsFromRead(result.libraryFonts);
         templateRead(t, hadLayers);
       })
       .catch(function (error) {
