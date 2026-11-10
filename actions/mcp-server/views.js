@@ -3104,6 +3104,8 @@ function getVariantViewHtml (scriptUrl) {
   .change-request:focus { outline: none; border-color: var(--spectrum-accent-background-color-default); }
   .downloads { display: flex; flex-wrap: wrap; gap: var(--spectrum-spacing-100); }
   .card-error { color: var(--spectrum-negative-content-color-default); font-size: var(--spectrum-font-size-75); word-break: break-word; }
+  /* The bar of the texts being checked as wide as the card, its moving fill kept inside its track */
+  .card sp-progress-bar { width: 100%; min-width: 0; --mod-progressbar-inline-size: 100%; overflow: hidden; }
   .card-warning { color: var(--spectrum-notice-content-color-default, var(--spectrum-negative-content-color-default)); font-size: var(--spectrum-font-size-75); word-break: break-word; }
   /* The enlarged view is drawn over the grid, at the height of the card clicked (the widget is as high as its content, the page
      of the host scrolls): it opens where the user looks, and the card is there again when it closes */
