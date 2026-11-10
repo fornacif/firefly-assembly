@@ -628,6 +628,9 @@ function missingFontsOf (error) {
 // that the render does not have: { url, missingFonts }. A text is only drawn again, with its font, when it is edited: the
 // texts are given their own content, with the 'fail' strategy (the manifest lists as missing the fonts that the render gets
 // from Adobe Fonts). When fonts are missing, the preview is rendered again with a default font in their place, as the variants.
+// Wait before a preview is rendered again when fonts given are said to be missing
+const FONT_RETRY_DELAY_MS = 3000
+
 function renderPreview (params, url, fonts = []) {
   return previewCache([url, ...fonts].join('|'), async () => {
     const texts = drawnLayers((await getManifest(params, url)).layers)
@@ -645,8 +648,20 @@ function renderPreview (params, url, fonts = []) {
     try {
       return { url: await render('fail', texts), missingFonts: [] }
     } catch (error) {
-      const missingFonts = missingFontsOf(error)
+      let missingFonts = missingFontsOf(error)
       if (!missingFonts) throw error
+      // A font file just uploaded can be missed by the first job that reads it (the storage is served through a CDN): with
+      // fonts given, the render is tried once more before the fonts are said to be missing
+      if (fonts.length) {
+        await wait(FONT_RETRY_DELAY_MS)
+        try {
+          return { url: await render('fail', texts), missingFonts: [] }
+        } catch (again) {
+          missingFonts = missingFontsOf(again)
+          if (!missingFonts) throw again
+          console.warn(`Fonts still missing with the fonts given: ${missingFonts.join(', ')}`)
+        }
+      }
       return { url: await render('use_default', texts), missingFonts }
     }
   })
