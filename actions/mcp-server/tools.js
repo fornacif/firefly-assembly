@@ -14,7 +14,9 @@ const spectrumAsset = require('./spectrum-asset.js')
 
 const IMS_TOKEN_URL = 'https://ims-na1.adobelogin.com/ims/token/v3'
 const PHOTOSHOP_API = 'https://photoshop-api.adobe.io/v2'
-const POLL_FIRST_DELAY_MS = 3000
+const POLL_FIRST_DELAY_MS = 2500
+const POLL_FAST_DELAY_MS = 1500
+const POLL_FAST_UNTIL_MS = 10000
 const POLL_MAX_DELAY_MS = 8000
 const POLL_TIMEOUT_MS = 240000
 const URL_EXPIRY_SECONDS = 24 * 3600
@@ -328,11 +330,14 @@ const limitJob = createLimiter(MAX_CONCURRENT_JOBS)
 // Average time of the calls of a generation before any is kept in the history (ms), for the estimate of the start widget
 const ESTIMATE_DEFAULT_MS = { 'Variant render': 8000, 'Image crop (Photoshop)': 3500, 'Crop suggestion': 8000 }
 
-// Polls check() until it returns a value (undefined: not finished), more often at first, as most jobs take a few seconds; each
-// status request counts against the rate limit of the API, as the jobs do.
+// Polls check() until it returns a value (undefined: not finished): after 2.5s, then every 1.5s for the first 10s, as most jobs
+// take 3 to 5s (a job done is seen at most 1.5s later), then less and less often, up to every 8s; each status request counts
+// against the rate limit of the API, as the jobs do.
 async function pollJob (check, label, timeoutMs = POLL_TIMEOUT_MS) {
-  const deadline = Date.now() + timeoutMs
-  for (let delay = POLL_FIRST_DELAY_MS; Date.now() < deadline; delay = Math.min(delay * 1.5, POLL_MAX_DELAY_MS)) {
+  const started = Date.now()
+  const deadline = started + timeoutMs
+  for (let delay = POLL_FIRST_DELAY_MS; Date.now() < deadline;
+    delay = Date.now() - started < POLL_FAST_UNTIL_MS ? POLL_FAST_DELAY_MS : Math.min(Math.max(delay, 2000) * 1.5, POLL_MAX_DELAY_MS)) {
     await wait(delay)
     const result = await check()
     if (result !== undefined) return result
