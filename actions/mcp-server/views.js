@@ -498,6 +498,10 @@ function getStartViewHtml (scriptUrl) {
   .font-chip button { font: inherit; color: var(--spectrum-neutral-content-color-default); background: transparent; border: none; cursor: pointer;
     padding: 3px 8px; }
   .font-chip button:hover { background: var(--spectrum-gray-200); }
+  .font-chip.used { border-color: var(--spectrum-accent-background-color-default); background: var(--spectrum-accent-background-color-default); }
+  .font-chip.used button { color: #ffffff; }
+  .font-chip.used button:hover { background: rgba(0, 0, 0, 0.15); }
+  .font-chip.used .font-forget { border-left-color: rgba(255, 255, 255, 0.4); color: #ffffff; }
   .font-chip .font-forget { padding: 3px 7px; border-left: 1px solid var(--spectrum-gray-300); color: var(--spectrum-neutral-subdued-content-color-default); }
 ${STEPS_CSS}
 ${LAYERS_CSS}
@@ -680,12 +684,14 @@ ${LAYERS_SCRIPT}
   var autoAdded = [];
   var libraryEl = document.getElementById('font-library');
   function inUse(font) { return fonts.some(function (f) { return f.libraryId === font.id || f.url === font.url; }); }
+  // All the fonts of the library: those in use checked (a click removes them from the render), the others to add
   function renderLibrary() {
-    var offered = library.filter(function (font) { return !inUse(font); });
-    libraryEl.hidden = !offered.length;
-    libraryEl.innerHTML = '<span class="library-label">Your fonts:</span>' + offered.map(function (font) {
+    libraryEl.hidden = !library.length;
+    libraryEl.innerHTML = '<span class="library-label">Your fonts (' + library.length + '):</span>' + library.map(function (font) {
       var title = (font.postScriptName || font.fileName) + (font.fullName && font.fullName !== font.postScriptName ? ' (' + font.fullName + ')' : '');
-      return '<span class="font-chip"><button type="button" class="font-use" data-id="' + escapeHtml(font.id) + '" title="Add ' + escapeHtml(title) + '">+ ' + escapeHtml(font.fileName) + '</button>'
+      var used = inUse(font);
+      return '<span class="font-chip' + (used ? ' used' : '') + '"><button type="button" class="font-use" data-id="' + escapeHtml(font.id) + '" aria-pressed="' + used + '"'
+        + ' title="' + (used ? 'Used for the render, click to remove it: ' : 'Add ') + escapeHtml(title) + '">' + (used ? '✓ ' : '+ ') + escapeHtml(font.fileName) + '</button>'
         + '<button type="button" class="font-forget" data-id="' + escapeHtml(font.id) + '" aria-label="Remove ' + escapeHtml(font.fileName) + ' from your fonts" title="Remove from your fonts">&times;</button></span>';
     }).join('');
     reportSize();
@@ -702,7 +708,9 @@ ${LAYERS_SCRIPT}
     var font = library.filter(function (f) { return f.id === id; })[0];
     if (!font) return;
     if (button.classList.contains('font-use')) {
-      useLibraryFont(font);
+      if (inUse(font)) fonts = fonts.filter(function (f) { return f.libraryId !== font.id && f.url !== font.url; });
+      else useLibraryFont(font);
+      renderLibrary();
       renderFonts();
       checkFonts();
     } else {
