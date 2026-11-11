@@ -633,6 +633,23 @@ function manifestMissingFonts (layers = [], names = new Set()) {
   return names
 }
 
+// Fonts of the texts of a manifest: [{ name, inPhotoshop }], name the PostScript name, inPhotoshop false for the fonts the
+// Photoshop API does not have (manifestMissingFonts)
+function templateFontsOf (layers = []) {
+  const names = new Set()
+  const collect = list => (list || []).forEach(layer => {
+    (layer.text?.characterStyles || []).forEach(run => {
+      const name = (run.characterStyle || run).font?.postScriptName
+      if (name) names.add(name)
+    })
+    collect(layer.children || layer.layers)
+  })
+  collect(layers)
+  const missing = manifestMissingFonts(layers)
+  missing.forEach(name => names.add(name))
+  return [...names].map(name => ({ name, inPhotoshop: !missing.has(name) }))
+}
+
 // Font names compared without case, spaces, dashes and underscores (as the widget does)
 const fontKey = name => String(name || '').toLowerCase().replace(/[\s_-]/g, '')
 
@@ -1453,6 +1470,7 @@ const TASKS = {
       ...data,
       previewUrl: rendered?.url ?? null,
       previewError,
+      templateFonts: templateFontsOf((await manifest).layers),
       ...(rendered ? { missingFonts: rendered.missingFonts } : {}),
       ...(added.length ? { libraryFonts: added } : {})
     }
