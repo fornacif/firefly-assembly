@@ -484,8 +484,7 @@ function getStartViewHtml (scriptUrl) {
   .linked { margin-top: var(--spectrum-spacing-200); font-size: var(--spectrum-font-size-75); }
   /* Fonts added, under the preview: tags that can be removed next to the button */
   .field.fonts { margin-top: var(--spectrum-spacing-300); }
-  .field.ai-prompts { margin-top: var(--spectrum-spacing-200); }
-  .ai-prompts-list { display: flex; flex-wrap: wrap; column-gap: var(--spectrum-spacing-300); }
+  .ai-prompt { white-space: nowrap; }
   .fonts-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--spectrum-spacing-200); }
   #font-files { display: none; }
   /* Message under the fonts: a warning (missing fonts) has an icon, in the orange of Spectrum notices */
@@ -558,11 +557,6 @@ ${LAYERS_CSS}
     <div class="font-library" id="font-library" hidden></div>
   </div>
   <div id="fonts-help" class="fonts-help" role="status"></div>
-</div>
-<div class="field ai-prompts" id="ai-prompts-field" hidden>
-  <label>Images generated with Firefly, from prompts written by the assistant</label>
-  <div class="ai-prompts-list" id="ai-prompts"></div>
-  <div class="subtle">For each layer checked, its image slots show their prompts, which you can edit before generating.</div>
 </div>
 </div>
 <sp-help-text id="quota" variant="negative" icon hidden></sp-help-text>
@@ -655,11 +649,16 @@ ${LAYERS_SCRIPT}
   function allRead() { return templates.length > 0 && templates.every(function (t) { return t.status === 'ready'; }); }
   function checkedIds(t) { return Object.keys(t.checked || {}).filter(function (id) { return t.checked[id]; }).map(Number); }
 
-  // Option per smart object layer picked (by name: the layers of the same name are linked across templates): the assistant
-  // writes a Firefly prompt for each image of the layers checked
-  var aiPromptsField = document.getElementById('ai-prompts-field');
-  var aiPrompts = document.getElementById('ai-prompts');
+  // Option per smart object layer, in the last column of the list, enabled when the layer is picked (by name: the layers of the
+  // same name are linked across templates): the assistant writes a Firefly prompt for each image of the layers checked
   var aiChecked = {};
+  document.getElementById('layers').classList.add('with-ai');
+  function layerExtraCell(l, i) {
+    return l.type === 'smart_object_layer'
+      ? '<sp-checkbox size="s" class="ai-prompt" data-index="' + i + '" data-name="' + escapeHtml(l.name) + '" disabled'
+        + ' title="The assistant writes a prompt to generate the image of each variant with Firefly">Firefly prompts</sp-checkbox>'
+      : '<span></span>';
+  }
   function imageLayerNames() {
     var names = [];
     templates.forEach(function (t) {
@@ -671,17 +670,18 @@ ${LAYERS_SCRIPT}
   }
   function aiPromptLayers() { return imageLayerNames().filter(function (name) { return aiChecked[name]; }); }
   function renderAiPrompts() {
-    var names = imageLayerNames();
-    aiPromptsField.hidden = !names.length;
-    aiPrompts.innerHTML = names.map(function (name) {
-      return '<sp-checkbox data-name="' + escapeHtml(name) + '"' + (aiChecked[name] ? ' checked' : '') + '>' + escapeHtml(name) + '</sp-checkbox>';
-    }).join('');
-    reportSize();
+    Array.prototype.forEach.call(document.querySelectorAll('#layers .ai-prompt'), function (box) {
+      var picked = document.getElementById('layer-' + box.getAttribute('data-index')).checked;
+      box.disabled = !picked;
+      box.checked = picked && Boolean(aiChecked[box.getAttribute('data-name')]);
+    });
   }
-  aiPrompts.addEventListener('change', function (e) {
-    var box = e.target.closest('sp-checkbox');
-    if (box) aiChecked[box.getAttribute('data-name')] = box.checked;
-  });
+  document.getElementById('layers').addEventListener('change', function (e) {
+    var box = e.target.closest('.ai-prompt');
+    if (!box) return;
+    e.stopPropagation();
+    aiChecked[box.getAttribute('data-name')] = box.checked;
+  }, true);
 
   // Fonts added by the user ({ name, url }), given to the reading of the template and to the generation, and the fonts of the
   // template missing for the render (null until the template is read). fontsVersion counts the changes: an older reading is
@@ -2189,6 +2189,8 @@ const LAYERS_CSS = `
   /* Shared columns across rows (checkbox, number, name, type) so that types are aligned */
   #layers { display: grid; grid-template-columns: auto auto minmax(0, max-content) auto; }
   #layers .row { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; cursor: default; }
+  /* Start widget: a last column to have the assistant write Firefly prompts for a smart object layer */
+  #layers.with-ai { grid-template-columns: auto auto minmax(0, max-content) auto auto; }
   #layers .row.hover { background: var(--spectrum-gray-100); }
   .layer-name { font-weight: var(--spectrum-bold-font-weight); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .row sp-badge { justify-self: start; }
@@ -2313,6 +2315,7 @@ const LAYERS_SCRIPT = `
         + '<span class="num ' + (isText ? 'text' : 'image') + '">' + (numbers[i] || '') + '</span>'
         + '<span class="layer-name" title="' + escapeHtml(l.name) + '">' + escapeHtml(l.name) + '</span>'
         + '<sp-badge size="s" variant="' + (isText ? 'informative' : 'seafoam') + '">' + (isText ? 'Text' : 'Smart object') + '</sp-badge>'
+        + (typeof layerExtraCell === 'function' ? layerExtraCell(l, i) : '')
         + '</div>';
     }).join('');
     document.getElementById('list').style.display = 'block';
