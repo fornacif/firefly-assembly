@@ -2568,7 +2568,8 @@ function getTextsViewHtml (scriptUrl) {
   #sheet-file { display: none; }
   /* With images too: a second step, the grid of the images */
 ${STEPS_CSS}
-  .steps[hidden] { display: none; }
+  .steps[hidden], .steps li[hidden] { display: none; }
+  .steps.single { grid-template-columns: 1fr; }
 ${IMAGES_CSS}
 `, `
 <h2 class="heading" id="title">Texts per variant</h2>
@@ -3022,7 +3023,11 @@ ${IMAGES_SCRIPT}
     layers = args.layers || [];
     variants = args.variants || [];
     withImages = Boolean(args.images && args.images.layers && args.images.layers.length);
-    document.querySelector('.steps').hidden = !withImages;
+    // Without images, the step of the texts alone
+    var steps = document.querySelector('.steps');
+    steps.hidden = false;
+    steps.classList.toggle('single', !withImages);
+    steps.querySelector('li[data-for="2"]').hidden = !withImages;
     document.getElementById('title').textContent = args.title || (withImages ? 'Texts and images per variant' : 'Texts per variant');
     render();
     if (withImages) imagesPicker.init(args.images.variants && args.images.variants.length ? args.images
