@@ -744,6 +744,8 @@ ${LAYERS_SCRIPT}
   function useFontsFromRead(list) {
     (list || []).forEach(function (font) {
       neededFonts[fontKey(font.postScriptName)] = true;
+      // Added once: unchecked by the user, it is not added again
+      autoTried[font.postScriptName] = true;
       var known = library.filter(function (f) { return f.id === font.id; })[0];
       if (known) known.url = font.url;
       if (fonts.some(function (f) { return f.libraryId === font.id; })) return;
@@ -791,7 +793,11 @@ ${LAYERS_SCRIPT}
     var font = library.filter(function (f) { return f.id === id; })[0];
     if (!font) return;
     if (button.classList.contains('font-use')) {
-      if (inUse(font)) fonts = fonts.filter(function (f) { return f.libraryId !== font.id && f.url !== font.url; });
+      if (inUse(font)) {
+        fonts = fonts.filter(function (f) { return f.libraryId !== font.id && f.url !== font.url; });
+        // Unchecked by the user: not added again because the template misses it
+        [font.postScriptName, font.fullName].forEach(function (n) { if (n) autoTried[n] = true; });
+      }
       else useLibraryFont(font);
       renderLibrary();
       renderFonts();
@@ -864,7 +870,8 @@ ${LAYERS_SCRIPT}
         document.getElementById('stage').hidden = false;
       };
       t.readFonts = (fontUrls() || []).slice();
-      callTool('read-psd-template', { url: t.url, fonts: fontUrls(), batch: batch })
+      // Only the fonts checked: the server does not add those of the library that the template misses
+      callTool('read-psd-template', { url: t.url, fonts: fontUrls(), batch: batch, libraryFonts: false })
         .then(function (started) { return waitForTask(started.taskId); })
         .then(function (result) {
           if (version !== fontsVersion || read !== t.read) return;

@@ -1437,7 +1437,10 @@ const TASKS = {
     const manifest = getManifest(params, args.url)
     // The fonts of the library of the user that the template uses are given to its preview at once (not after a first
     // render without them)
-    const libraryFonts = manifest.then(m => libraryFontsFor(params, userId, m, args.fonts))
+    // Not when the user chose the fonts in the widget (libraryFonts false): a font unchecked is not given again
+    const libraryFonts = args.libraryFonts === false
+      ? Promise.resolve([])
+      : manifest.then(m => libraryFontsFor(params, userId, m, args.fonts))
       .catch(error => { console.warn(`Library fonts not read: ${error.message}`); return [] })
     const preview = libraryFonts
       .then(added => renderPreview(params, args.url, [...(args.fonts || []), ...added.map(font => font.url)]))
@@ -1871,13 +1874,15 @@ function registerTools (server, params) {
       inputSchema: {
         url: z.string().url().describe('HTTPS URL of the PSD file'),
         fonts: FONTS_INPUT.describe('URLs of the font files (OTF or TTF) added by the user'),
-        batch: z.string().max(64).optional().describe('Id of the templates imported together, which share the API calls of the report')
+        batch: z.string().max(64).optional().describe('Id of the templates imported together, which share the API calls of the report'),
+        libraryFonts: z.boolean().optional().describe('false: only the fonts given are used, without the fonts of the library of the ' +
+          'user that the template misses (the fonts chosen by the user in the widget)')
       },
       _meta: { ui: { visibility: ['app'] } }
     },
-    async ({ url, fonts, batch }) => {
+    async ({ url, fonts, batch, libraryFonts }) => {
       try {
-        return jsonResult({ taskId: await startTask(params, 'template', { url, fonts, ...(batch ? { batch } : {}) }), templateUrl: url })
+        return jsonResult({ taskId: await startTask(params, 'template', { url, fonts, ...(batch ? { batch } : {}), ...(libraryFonts === false ? { libraryFonts } : {}) }), templateUrl: url })
       } catch (error) {
         return errorResult(error)
       }
