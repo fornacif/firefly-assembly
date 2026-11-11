@@ -607,8 +607,7 @@ function getEditableLayers (layers = []) {
 }
 
 // Fonts added by the user (OTF or TTF files in storage), given to each render. A font of the template that the Photoshop API
-// does not have (Adobe Fonts included) and that is not given is replaced by a default font ('use_default', for the variants);
-// with the 'fail' strategy, the job fails instead, naming the fonts missing (to check the template).
+// does not have (Adobe Fonts included) and that is not given is replaced by a default font ('use_default').
 const FONTS_INPUT = z.array(z.string().url()).max(20).optional()
 function fontOptions (fonts, missingFontStrategy) {
   const options = {
@@ -618,35 +617,42 @@ function fontOptions (fonts, missingFontStrategy) {
   return Object.keys(options).length ? { fontOptions: options } : {}
 }
 
-// Fonts named by a job failed with the 'fail' strategy, null for another error
-function missingFontsOf (error) {
-  const names = /Missing fonts detected: (.*?)\. Strategy/.exec(error?.message || '')?.[1]
-  return names ? names.split(',').map(name => name.trim()).filter(Boolean) : null
-}
-
-// Flattened JPEG of a PSD, on which the layer picker of the views shows the editable layers, and the fonts of the template
-// that the render does not have: { url, missingFonts }. A text is only drawn again, with its font, when it is edited: the
-// texts are given their own content, with the 'fail' strategy (the manifest lists as missing the fonts that the render gets
-// from Adobe Fonts). When fonts are missing, the preview is rendered again with a default font in their place, as the variants.
-// PostScript names of the fonts of the texts of a manifest
-function manifestFonts (layers = [], names = new Set()) {
+// PostScript names of the fonts of the texts of a manifest that the Photoshop API does not have: text.missingFonts of each
+// text layer (the fonts of its runs said not available, when the field is not there)
+function manifestMissingFonts (layers = [], names = new Set()) {
   layers.forEach(layer => {
-    (layer.text?.characterStyles || []).forEach(run => {
-      const name = (run.characterStyle || run).font?.postScriptName
-      if (name) names.add(name)
-    })
-    manifestFonts(layer.children || layer.layers, names)
+    const text = layer.text
+    if (text) {
+      const missing = Array.isArray(text.missingFonts)
+        ? text.missingFonts
+        : (text.characterStyles || []).map(run => (run.characterStyle || run).font).filter(font => font?.isAvailable === false).map(font => font.postScriptName)
+      missing.filter(Boolean).forEach(name => names.add(name))
+    }
+    manifestMissingFonts(layer.children || layer.layers, names)
   })
   return names
 }
 
-// Fonts of the library of a user that the texts of a template use, not among the fonts given: [{ id, fileName, postScriptName,
-// url }] (URLs valid 24 hours)
+// Font names compared without case, spaces, dashes and underscores (as the widget does)
+const fontKey = name => String(name || '').toLowerCase().replace(/[\s_-]/g, '')
+
+// Names of a font file given by its URL ({ postScriptName, fullName, family }, {} when it cannot be read), kept an hour
+const fontNamesCache = createCache(100)
+function fontNamesOf (url) {
+  return fontNamesCache(storageKey(url), async () => {
+    const response = await fetchWithRetry(url)
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    return fontNames(Buffer.from(await response.arrayBuffer())) || {}
+  }).catch(error => { console.warn(`Font file not read: ${error.message}`); return {} })
+}
+
+// Fonts of the library of a user that the template misses, not among the fonts given: [{ id, fileName, postScriptName, url }]
+// (URLs valid 24 hours)
 async function libraryFontsFor (params, userId, manifest, given = []) {
-  const used = manifestFonts(manifest.layers)
+  const used = new Set([...manifestMissingFonts(manifest.layers)].map(fontKey))
   if (!used.size) return []
   const givenKeys = given.map(storageKey)
-  const fonts = (await listFonts(params, userId)).filter(font => used.has(font.postScriptName) &&
+  const fonts = (await listFonts(params, userId)).filter(font => [font.postScriptName, font.fullName].some(name => name && used.has(fontKey(name))) &&
     !givenKeys.some(key => key.endsWith('/' + font.path)))
   const files = await initFiles()
   return Promise.all(fonts.map(async font => ({
@@ -657,13 +663,19 @@ async function libraryFontsFor (params, userId, manifest, given = []) {
   })))
 }
 
-// Wait before a preview is rendered again when fonts given are said to be missing
-const FONT_RETRY_DELAY_MS = 3000
-
+// Flattened JPEG of a PSD, on which the layer picker of the views shows the editable layers, and the fonts of the template
+// that the render does not have: { url, missingFonts }. The fonts missing are those the manifest says the Photoshop API does
+// not have (text.missingFonts), less the fonts given (by the names read from their files). A text is only drawn again, with
+// its font, when it is edited: the texts are given their own content. The preview is rendered at once with the fonts given
+// (each change of the fonts gives a new render), a default font in place of the fonts still missing, as the variants.
 function renderPreview (params, url, fonts = []) {
   return previewCache([url, ...fonts].join('|'), async () => {
-    const texts = drawnLayers((await getManifest(params, url)).layers)
+    const manifest = await getManifest(params, url)
+    const texts = drawnLayers(manifest.layers)
       .filter(layer => layer.type === 'text_layer' && layer.text?.content != null)
+    const givenKeys = new Set((await Promise.all(fonts.map(fontNamesOf)))
+      .flatMap(names => [names.postScriptName, names.fullName]).filter(Boolean).map(fontKey))
+    const missingFonts = [...manifestMissingFonts(manifest.layers)].filter(name => !givenKeys.has(fontKey(name)))
     const render = async (strategy, layers) => {
       const { uploadUrl, readUrl } = await createStorageUrls('previews', 'preview.jpg')
       await runPhotoshopJob(params, '/create-composite', {
@@ -674,25 +686,7 @@ function renderPreview (params, url, fonts = []) {
       }, 'Template preview')
       return readUrl
     }
-    try {
-      return { url: await render('fail', texts), missingFonts: [] }
-    } catch (error) {
-      let missingFonts = missingFontsOf(error)
-      if (!missingFonts) throw error
-      // A font file just uploaded can be missed by the first job that reads it (the storage is served through a CDN): with
-      // fonts given, the render is tried once more before the fonts are said to be missing
-      if (fonts.length) {
-        await wait(FONT_RETRY_DELAY_MS)
-        try {
-          return { url: await render('fail', texts), missingFonts: [] }
-        } catch (again) {
-          missingFonts = missingFontsOf(again)
-          if (!missingFonts) throw again
-          console.warn(`Fonts still missing with the fonts given: ${missingFonts.join(', ')}`)
-        }
-      }
-      return { url: await render('use_default', texts), missingFonts }
-    }
+    return { url: await render('use_default', texts), missingFonts }
   })
 }
 
