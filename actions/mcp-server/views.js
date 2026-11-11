@@ -484,7 +484,7 @@ function getStartViewHtml (scriptUrl) {
   .linked { margin-top: var(--spectrum-spacing-200); font-size: var(--spectrum-font-size-75); }
   /* Fonts added, under the preview: tags that can be removed next to the button */
   .field.fonts { margin-top: var(--spectrum-spacing-300); }
-  .ai-prompt { white-space: nowrap; }
+  .ai-prompt { white-space: nowrap; line-height: 1.2; }
   .fonts-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--spectrum-spacing-200); }
   #font-files { display: none; }
   /* Message under the fonts: a warning (missing fonts) has an icon, in the orange of Spectrum notices */
@@ -656,7 +656,7 @@ ${LAYERS_SCRIPT}
   function layerExtraCell(l, i) {
     return l.type === 'smart_object_layer'
       ? '<sp-checkbox size="s" class="ai-prompt" data-index="' + i + '" data-name="' + escapeHtml(l.name) + '" disabled'
-        + ' title="The assistant writes a prompt to generate the image of each variant with Firefly">Generate Firefly prompt by variant</sp-checkbox>'
+        + ' title="The assistant writes a prompt to generate the image of each variant with Firefly">Generate Firefly prompt<br>by variant</sp-checkbox>'
       : '<span></span>';
   }
   function imageLayerNames() {
