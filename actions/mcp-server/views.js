@@ -940,6 +940,11 @@ ${LAYERS_SCRIPT}
     renderLibrary();
     if (added) return;
     var missing = missingFonts && missingFonts.length;
+    // The fonts of the templates are listed a line each, with their state: no summary next to the label
+    if (!fontsUploading && !templateFontsEl.hidden) {
+      setFontsHelp('', '', missing ? 'Add their .otf or .ttf files, otherwise Photoshop replaces them with a default font.' : '');
+      return;
+    }
     setFontsHelp(fontsUploading ? 'Uploading ' + fontsUploading + ' font file(s)...'
       : missing ? 'Missing: ' + missingFonts.join(', ')
       : missingFonts ? 'All template fonts available'
