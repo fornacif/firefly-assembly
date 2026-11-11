@@ -485,6 +485,7 @@ function getStartViewHtml (scriptUrl) {
   /* Fonts added, under the preview: tags that can be removed next to the button */
   .field.fonts { margin-top: var(--spectrum-spacing-300); }
   .field.ai-prompts { margin-top: var(--spectrum-spacing-200); }
+  .ai-prompts-list { display: flex; flex-wrap: wrap; column-gap: var(--spectrum-spacing-300); }
   .fonts-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--spectrum-spacing-200); }
   #font-files { display: none; }
   /* Message under the fonts: a warning (missing fonts) has an icon, in the orange of Spectrum notices */
@@ -559,9 +560,9 @@ ${LAYERS_CSS}
   <div id="fonts-help" class="fonts-help" role="status"></div>
 </div>
 <div class="field ai-prompts" id="ai-prompts-field" hidden>
-  <label>Images</label>
-  <sp-checkbox id="ai-prompts">Generate the images with Firefly, from prompts written by the assistant</sp-checkbox>
-  <div class="subtle">Each image slot then shows its prompt, which you can edit before generating.</div>
+  <label>Images generated with Firefly, from prompts written by the assistant</label>
+  <div class="ai-prompts-list" id="ai-prompts"></div>
+  <div class="subtle">For each layer checked, its image slots show their prompts, which you can edit before generating.</div>
 </div>
 </div>
 <sp-help-text id="quota" variant="negative" icon hidden></sp-help-text>
@@ -582,7 +583,7 @@ ${LAYERS_SCRIPT}
   function onLayersChange() {
     if (!switching) syncSelection();
     layerCount = templates.reduce(function (total, t) { return total + checkedIds(t).length; }, 0);
-    aiPromptsField.hidden = !imageLayersPicked();
+    renderAiPrompts();
     renderTabs();
     updateButton();
   }
@@ -654,14 +655,33 @@ ${LAYERS_SCRIPT}
   function allRead() { return templates.length > 0 && templates.every(function (t) { return t.status === 'ready'; }); }
   function checkedIds(t) { return Object.keys(t.checked || {}).filter(function (id) { return t.checked[id]; }).map(Number); }
 
-  // Option shown when smart object layers are picked: the assistant writes a Firefly prompt for each image
+  // Option per smart object layer picked (by name: the layers of the same name are linked across templates): the assistant
+  // writes a Firefly prompt for each image of the layers checked
   var aiPromptsField = document.getElementById('ai-prompts-field');
   var aiPrompts = document.getElementById('ai-prompts');
-  function imageLayersPicked() {
-    return templates.some(function (t) {
-      return t.data && (t.data.layers || []).some(function (l) { return l.type === 'smart_object_layer' && t.checked && t.checked[l.id]; });
+  var aiChecked = {};
+  function imageLayerNames() {
+    var names = [];
+    templates.forEach(function (t) {
+      if (t.data) (t.data.layers || []).forEach(function (l) {
+        if (l.type === 'smart_object_layer' && t.checked && t.checked[l.id] && names.indexOf(l.name) < 0) names.push(l.name);
+      });
     });
+    return names;
   }
+  function aiPromptLayers() { return imageLayerNames().filter(function (name) { return aiChecked[name]; }); }
+  function renderAiPrompts() {
+    var names = imageLayerNames();
+    aiPromptsField.hidden = !names.length;
+    aiPrompts.innerHTML = names.map(function (name) {
+      return '<sp-checkbox data-name="' + escapeHtml(name) + '"' + (aiChecked[name] ? ' checked' : '') + '>' + escapeHtml(name) + '</sp-checkbox>';
+    }).join('');
+    reportSize();
+  }
+  aiPrompts.addEventListener('change', function (e) {
+    var box = e.target.closest('sp-checkbox');
+    if (box) aiChecked[box.getAttribute('data-name')] = box.checked;
+  });
 
   // Fonts added by the user ({ name, url }), given to the reading of the template and to the generation, and the fonts of the
   // template missing for the render (null until the template is read). fontsVersion counts the changes: an older reading is
@@ -1314,11 +1334,14 @@ ${LAYERS_SCRIPT}
       + codes.map(function (code, i) { return names[i] + ' (' + code + ')'; }).join(', ') + '. Total: ' + n * codes.length
       + ' variants, each of the ' + n + ' variants in each language. ';
     var fontsText = fonts.length ? ' Fonts added by the user: pass fonts ' + JSON.stringify(fontUrls()) + ' to every create-variant call.' : '';
-    if (imageLayersPicked()) {
-      fontsText += aiPrompts.checked
-        ? ' Images: the user wants them generated with Firefly from prompts you write. In step 4 (the image grid), pass prompts: one per '
-          + 'variant and smart object layer, in English, written from the brief and the texts of the variant (what the image shows, '
-          + 'setting, mood, light, a composition suited to the frame and leaving room for the texts, no text or logo in the image).'
+    if (imageLayerNames().length) {
+      var promptLayers = aiPromptLayers();
+      fontsText += promptLayers.length
+        ? ' Images: the user wants the images of the smart object layers ' + promptLayers.map(function (n) { return '"' + n + '"'; }).join(', ')
+          + ' generated with Firefly from prompts you write. In step 4 (the image grid), pass prompts for these layers only: one per '
+          + 'variant and layer, in English, written from the brief and the texts of the variant (what the image shows, setting, mood, '
+          + 'light, a composition suited to the frame and leaving room for the texts, no text or logo in the image). No prompts for the '
+          + 'other layers (the user adds their images, or writes a prompt in a slot to generate one).'
         : ' Images: do not write prompts for Firefly (the user adds the images, or writes a prompt in a slot of the grid to generate one).';
     }
     var context, picked, title;
@@ -1700,6 +1723,13 @@ const IMAGES_SCRIPT = `
     updateStatus();
   }
 
+  // Slots waiting for their image to be generated from their prompt (written by the assistant or the user)
+  function pendingPrompts() {
+    return slots.map(function (s, i) { return s.status === 'prompt' && String(prompts[i] || '').trim() ? i : -1; })
+      .filter(function (i) { return i >= 0; });
+  }
+  function generateAll() { pendingPrompts().forEach(generateToSlot); }
+
   function updateStatus() {
     var done = slots.filter(function (s) { return s.status === 'done'; }).length;
     var busy = slots.some(function (s) { return BUSY_LABELS[s.status]; });
@@ -1988,7 +2018,11 @@ const IMAGES_SCRIPT = `
 
   // Zoom around the center of the current crop.
   grid.addEventListener('input', function (e) {
-    if (e.target.classList.contains('prompt')) { prompts[Number(e.target.getAttribute('data-index'))] = e.target.value; return; }
+    if (e.target.classList.contains('prompt')) {
+      prompts[Number(e.target.getAttribute('data-index'))] = e.target.value;
+      if (onChange) onChange(slots.filter(function (s) { return s.status === 'done'; }).length, slots.length);
+      return;
+    }
     if (e.target.type !== 'range') return;
     var index = Number(e.target.getAttribute('data-index'));
     var k = Number(e.target.getAttribute('data-frame'));
@@ -2051,7 +2085,8 @@ const IMAGES_SCRIPT = `
     });
   }
 
-  return { init: init, onChange: function (handler) { onChange = handler; }, result: result, data: data, count: function () { return variants.length; } };
+  return { init: init, onChange: function (handler) { onChange = handler; }, result: result, data: data, count: function () { return variants.length; },
+    pendingPrompts: function () { return pendingPrompts().length; }, generateAll: generateAll };
   })();
 `
 
@@ -2073,9 +2108,11 @@ ${UPLOAD_SCRIPT}
 ${AEM_SCRIPT}
 ${IMAGES_SCRIPT}
   var confirmBtn = document.getElementById('confirm');
+  // With slots waiting for their prompt to be generated, the button generates them all with Firefly
   imagesPicker.onChange(function (done, total) {
-    confirmBtn.disabled = done !== total || !total;
-    confirmBtn.textContent = 'Confirm images (' + done + '/' + total + ')';
+    var pending = imagesPicker.pendingPrompts();
+    confirmBtn.disabled = !pending && (done !== total || !total);
+    confirmBtn.textContent = pending ? 'Generate with Firefly (' + pending + ')' : 'Confirm images (' + done + '/' + total + ')';
   });
 
   onToolInput(function (args) {
@@ -2084,6 +2121,7 @@ ${IMAGES_SCRIPT}
   });
 
   confirmBtn.addEventListener('click', function () {
+    if (imagesPicker.pendingPrompts()) return imagesPicker.generateAll();
     confirmBtn.disabled = true;
     sendToModel('To generate the variants with these images, call create-variant with widgetRef "{{ref}}" (with the reference of the '
       + 'texts too, if they were confirmed apart, and languages for the languages of the start widget when there are no texts) instead of '
@@ -2917,8 +2955,9 @@ ${IMAGES_SCRIPT}
 
   function updateConfirm() {
     if (!withImages) { confirmBtn.disabled = !variants.length; return; }
-    confirmBtn.textContent = step === 1 ? 'Next' : 'Use these texts and images';
-    confirmBtn.disabled = !variants.length || (step === 2 && !imagesDone);
+    var pending = step === 2 && imagesPicker.pendingPrompts();
+    confirmBtn.textContent = step === 1 ? 'Next' : pending ? 'Generate with Firefly (' + pending + ')' : 'Use these texts and images';
+    confirmBtn.disabled = !variants.length || (step === 2 && !pending && !imagesDone);
     Array.prototype.forEach.call(document.querySelectorAll('.steps li'), function (li) {
       var n = Number(li.getAttribute('data-for'));
       li.classList.toggle('current', n === step);
@@ -2972,6 +3011,7 @@ ${IMAGES_SCRIPT}
 
   confirmBtn.addEventListener('click', function () {
     if (withImages && step === 1) return showStep(2);
+    if (withImages && imagesPicker.pendingPrompts()) return imagesPicker.generateAll();
     confirmBtn.disabled = true;
     confirmBtn.setAttribute('data-sending', '');
     updateConfirm();
