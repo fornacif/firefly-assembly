@@ -505,7 +505,6 @@ function getStartViewHtml (scriptUrl) {
     border-radius: 8px; max-height: 260px; overflow: auto; display: grid; gap: var(--spectrum-spacing-200); }
   .font-library[hidden] { display: none; }
   .font-family-name { margin-bottom: 4px; font-weight: var(--spectrum-bold-font-weight); }
-  .font-family-name .subtle { font-weight: normal; }
   .font-chips { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
   #font-files { display: none; }
   /* Message under the fonts: a warning (missing fonts) has an icon, in the orange of Spectrum notices */
@@ -774,7 +773,7 @@ ${LAYERS_SCRIPT}
     libraryEl.hidden = !libraryOpen || !items.length;
     libraryEl.innerHTML = families.map(function (family) {
       var list = byFamily[family];
-      return '<div class="font-family"><div class="font-family-name">' + escapeHtml(family) + ' <span class="subtle">' + list.length + '</span></div><div class="font-chips">'
+      return '<div class="font-family"><div class="font-family-name">' + escapeHtml(family) + '</div><div class="font-chips">'
         + list.map(function (item) {
           var font = item.font;
           var title = (font.postScriptName || font.fileName) + (font.fullName && font.fullName !== font.postScriptName ? ' (' + font.fullName + ')' : '')
