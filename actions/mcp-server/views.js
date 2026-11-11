@@ -2187,10 +2187,10 @@ const LAYERS_CSS = `
   }
   .row.head { border-top: none; background: var(--spectrum-background-layer-2-color); }
   /* Shared columns across rows (checkbox, number, name, type) so that types are aligned */
-  #layers { display: grid; grid-template-columns: auto auto minmax(0, max-content) auto; }
+  #layers { display: grid; grid-template-columns: auto auto minmax(0, 1fr); }
   #layers .row { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; cursor: default; }
   /* Start widget: a last column to have the assistant write Firefly prompts for a smart object layer */
-  #layers.with-ai { grid-template-columns: auto auto minmax(0, max-content) auto auto; }
+  #layers.with-ai { grid-template-columns: auto auto minmax(0, 1fr) auto; }
   #layers .row.hover { background: var(--spectrum-gray-100); }
   .layer-name { font-weight: var(--spectrum-bold-font-weight); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .row sp-badge { justify-self: start; }
@@ -2250,7 +2250,15 @@ const LAYERS_CSS = `
   .num.text { background: var(--spectrum-informative-background-color-default); }
   .num.image { background: var(--spectrum-seafoam-background-color-default); }
   .row .num { justify-self: center; }
-  .row .num:empty { visibility: hidden; }
+  /* Without a preview (no numbers), a dot of the color of the type */
+  .row .num:empty { min-width: 10px; width: 10px; height: 10px; padding: 0; }
+  /* Legend of the colors of the layer types, in the head of the list */
+  .row.head { justify-content: space-between; flex-wrap: wrap; }
+  .legend { display: flex; gap: var(--spectrum-spacing-200); font-size: var(--spectrum-font-size-75); color: var(--spectrum-neutral-subdued-content-color-default); }
+  .legend span { display: inline-flex; align-items: center; gap: var(--spectrum-spacing-75); }
+  .legend i { width: 10px; height: 10px; border-radius: 50%; }
+  .legend i.text { background: var(--spectrum-informative-background-color-default); }
+  .legend i.image { background: var(--spectrum-seafoam-background-color-default); }
 `
 
 const LAYERS_HTML = `<div class="picker">
@@ -2259,7 +2267,8 @@ const LAYERS_HTML = `<div class="picker">
     <div class="stage" id="stage"><img id="preview-img" alt="Template preview"><div id="zones"></div></div>
   </div>
   <div class="list" id="list">
-    <div class="row head"><sp-checkbox id="select-all">Select all</sp-checkbox></div>
+    <div class="row head"><sp-checkbox id="select-all">Select all</sp-checkbox>
+      <div class="legend" aria-hidden="true"><span><i class="text"></i>Text</span><span><i class="image"></i>Smart object</span></div></div>
     <div id="layers"></div>
   </div>
 </div>
@@ -2311,10 +2320,9 @@ const LAYERS_SCRIPT = `
     numbers = layers.map(function (l) { return hasPreview && l.area ? ++next : null; });
     listEl.innerHTML = layers.map(function (l, i) {
       var isText = l.type === 'text_layer';
-      return '<div class="row" data-index="' + i + '"><sp-checkbox id="layer-' + i + '" aria-label="' + escapeHtml(l.name) + '"></sp-checkbox>'
+      return '<div class="row" data-index="' + i + '"><sp-checkbox id="layer-' + i + '" aria-label="' + escapeHtml(l.name) + ', ' + (isText ? 'text' : 'smart object') + '"></sp-checkbox>'
         + '<span class="num ' + (isText ? 'text' : 'image') + '">' + (numbers[i] || '') + '</span>'
-        + '<span class="layer-name" title="' + escapeHtml(l.name) + '">' + escapeHtml(l.name) + '</span>'
-        + '<sp-badge size="s" variant="' + (isText ? 'informative' : 'seafoam') + '">' + (isText ? 'Text' : 'Smart object') + '</sp-badge>'
+        + '<span class="layer-name" title="' + escapeHtml(l.name) + ' (' + (isText ? 'text' : 'smart object') + ')">' + escapeHtml(l.name) + '</span>'
         + (typeof layerExtraCell === 'function' ? layerExtraCell(l, i) : '')
         + '</div>';
     }).join('');
