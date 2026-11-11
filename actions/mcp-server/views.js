@@ -491,9 +491,9 @@ function getStartViewHtml (scriptUrl) {
   /* Message under the fonts: a warning (missing fonts) has an icon, in the orange of Spectrum notices */
   .fonts-help { display: flex; align-items: flex-start; gap: var(--spectrum-spacing-75); margin-top: var(--spectrum-spacing-75);
     font-size: var(--spectrum-font-size-75); color: var(--spectrum-neutral-subdued-content-color-default); }
-  .fonts-help svg { flex: none; margin-top: 1px; }
+  .fonts-help sp-icon-alert { flex: none; margin-top: 1px; }
   .fonts-help.warning { color: var(--spectrum-orange-1000, #a54b00); }
-  .fonts-help.warning svg { color: var(--spectrum-notice-visual-color, #e68619); }
+  .fonts-help.warning sp-icon-alert { color: var(--spectrum-notice-visual-color, #e68619); }
   .fonts-help.negative { color: var(--spectrum-negative-content-color-default, #d31510); }
   /* Fonts added before (the library of the user): a chip each, to add it, with a button to remove it from the library */
   .font-library { display: flex; align-items: center; flex-wrap: wrap; gap: var(--spectrum-spacing-100); font-size: var(--spectrum-font-size-75); }
@@ -502,6 +502,7 @@ function getStartViewHtml (scriptUrl) {
   .font-chip button { font: inherit; color: var(--spectrum-neutral-content-color-default); background: transparent; border: none; cursor: pointer;
     padding: 3px 8px; }
   .font-chip button:hover { background: var(--spectrum-gray-200); }
+  .font-chip button, .template-remove, .library-remove { display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
   .font-chip.used { border-color: var(--spectrum-accent-background-color-default); background: var(--spectrum-accent-background-color-default); }
   .font-chip.used button { color: #ffffff; }
   .font-chip.used button:hover { background: rgba(0, 0, 0, 0.15); }
@@ -684,7 +685,7 @@ ${LAYERS_SCRIPT}
   var fontInput = document.getElementById('font-files');
 
   // Alert icon (a triangle with an exclamation mark), in the color of the message
-  var WARNING_ICON = '<svg viewBox="0 0 18 18" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8.56 1.29.2 16.26a.5.5 0 0 0 .44.74h16.72a.5.5 0 0 0 .44-.74L9.44 1.29a.5.5 0 0 0-.88 0ZM10 14.75a.25.25 0 0 1-.25.25h-1.5a.25.25 0 0 1-.25-.25v-1.5a.25.25 0 0 1 .25-.25h1.5a.25.25 0 0 1 .25.25Zm0-3a.25.25 0 0 1-.25.25h-1.5a.25.25 0 0 1-.25-.25v-6a.25.25 0 0 1 .25-.25h1.5a.25.25 0 0 1 .25.25Z"/></svg>';
+  var WARNING_ICON = '<sp-icon-alert size="s" aria-hidden="true"></sp-icon-alert>';
 
   // Message under the fonts: kind is 'warning' (with the icon), 'negative' (an error) or neutral
   function setFontsHelp(text, kind) {
@@ -728,8 +729,8 @@ ${LAYERS_SCRIPT}
       var title = (font.postScriptName || font.fileName) + (font.fullName && font.fullName !== font.postScriptName ? ' (' + font.fullName + ')' : '')
         + (item.needed ? ', needed by the template' : '');
       return '<span class="font-chip' + (item.used ? ' used' : '') + '"><button type="button" class="font-use" data-id="' + escapeHtml(font.id) + '" aria-pressed="' + item.used + '"'
-        + ' title="' + (item.used ? 'Used for the render, click to remove it: ' : 'Add ') + escapeHtml(title) + '">' + (item.used ? '✓ ' : '+ ') + escapeHtml(font.fileName) + '</button>'
-        + (font.local ? '' : '<button type="button" class="font-forget" data-id="' + escapeHtml(font.id) + '" aria-label="Remove ' + escapeHtml(font.fileName) + ' from your fonts" title="Remove from your fonts">&times;</button>')
+        + ' title="' + (item.used ? 'Used for the render, click to remove it: ' : 'Add ') + escapeHtml(title) + '">' + (item.used ? '<sp-icon-checkmark size="xs" aria-hidden="true"></sp-icon-checkmark>' : '<sp-icon-add size="xs" aria-hidden="true"></sp-icon-add>') + escapeHtml(font.fileName) + '</button>'
+        + (font.local ? '' : '<button type="button" class="font-forget" data-id="' + escapeHtml(font.id) + '" aria-label="Remove ' + escapeHtml(font.fileName) + ' from your fonts" title="Remove from your fonts"><sp-icon-close size="xs" aria-hidden="true"></sp-icon-close></button>')
         + '</span>';
     }).join('');
     reportSize();
@@ -1142,7 +1143,7 @@ ${LAYERS_SCRIPT}
       var state = t.status === 'error' ? t.error : t.status === 'ready' ? sizeOf(t) : STATE_LABELS[t.status] + '...';
       return '<div class="template-row"><span class="template-name" title="' + escapeHtml(t.name) + '">' + escapeHtml(t.name) + '</span>'
         + '<span class="template-state' + (t.status === 'error' ? ' negative' : '') + '">' + escapeHtml(state || '') + '</span>'
-        + '<button type="button" class="template-remove" data-index="' + i + '" aria-label="Remove ' + escapeHtml(t.name) + '" title="Remove">&times;</button>'
+        + '<button type="button" class="template-remove" data-index="' + i + '" aria-label="Remove ' + escapeHtml(t.name) + '" title="Remove"><sp-icon-close size="xs" aria-hidden="true"></sp-icon-close></button>'
         + (t.status === 'uploading' ? '<sp-progress-bar size="s" label="Uploading" progress="' + t.progress + '"></sp-progress-bar>'
           : t.status === 'importing' || t.status === 'reading' ? '<sp-progress-bar size="s" label="' + STATE_LABELS[t.status] + '" indeterminate></sp-progress-bar>' : '')
         + '</div>';
@@ -1519,6 +1520,7 @@ const IMAGES_CSS = `
     cursor: pointer;
   }
   .library-remove:hover { background: var(--spectrum-gray-200); }
+  .library-remove { display: inline-flex; align-items: center; justify-content: center; }
   .library-item img { width: 100%; height: 64px; object-fit: contain; border-radius: var(--spectrum-corner-radius-100); background: var(--spectrum-gray-200); }
   .library-item sp-progress-bar { width: 100%; }
   .grid.armed sp-dropzone { cursor: copy; }
@@ -1807,7 +1809,7 @@ const IMAGES_SCRIPT = `
             : item.status === 'importing' ? '<sp-progress-bar size="s" label="Importing" indeterminate></sp-progress-bar>'
               : '<span class="cell-error">' + escapeHtml(item.error) + '</span>')
         + '<span class="file-name">' + escapeHtml(item.name) + '</span>'
-        + '<button type="button" class="library-remove" aria-label="Remove ' + escapeHtml(item.name) + '" title="Remove">&times;</button></div>';
+        + '<button type="button" class="library-remove" aria-label="Remove ' + escapeHtml(item.name) + '" title="Remove"><sp-icon-close size="xs" aria-hidden="true"></sp-icon-close></button></div>';
     }).join('');
     grid.classList.toggle('armed', armed >= 0);
     libraryHint.textContent = armed >= 0
@@ -3354,8 +3356,7 @@ ${REPORT_SCRIPT}
   function textLayersOf(index) { return (variants[index] && textLayersByFile[variants[index].fileName]) || []; }
   var FORMAT_LABELS = { png: 'PNG', jpeg: 'JPEG', psd: 'PSD' };
   // Download icon (arrow into a tray), in the text color of the button
-  var DOWNLOAD_ICON = '<svg slot="icon" viewBox="0 0 18 18" width="16" height="16" aria-hidden="true">'
-    + '<path fill="currentColor" d="M9 1.5a.75.75 0 0 1 .75.75v7.94l2.47-2.47a.75.75 0 1 1 1.06 1.06l-3.75 3.75a.75.75 0 0 1-1.06 0L4.72 8.78a.75.75 0 0 1 1.06-1.06l2.47 2.47V2.25A.75.75 0 0 1 9 1.5ZM2.25 12a.75.75 0 0 1 .75.75v1.5c0 .41.34.75.75.75h10.5c.41 0 .75-.34.75-.75v-1.5a.75.75 0 0 1 1.5 0v1.5A2.25 2.25 0 0 1 14.25 16.5H3.75A2.25 2.25 0 0 1 1.5 14.25v-1.5a.75.75 0 0 1 .75-.75Z"/></svg>';
+  var DOWNLOAD_ICON = '<sp-icon-download slot="icon" aria-hidden="true"></sp-icon-download>';
 
   // Files of a variant, one per format (results of earlier versions have a single image)
   function filesOf(v) {
