@@ -486,18 +486,19 @@ function getStartViewHtml (scriptUrl) {
   .field.fonts { margin-top: var(--spectrum-spacing-300); }
   .row.ai-row { background: var(--spectrum-background-layer-2-color); padding-top: var(--spectrum-spacing-75); padding-bottom: var(--spectrum-spacing-75); }
   .row.ai-row[hidden] { display: none; }
-  .fonts-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--spectrum-spacing-200); }
+  .fonts-head { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: var(--spectrum-spacing-100) var(--spectrum-spacing-300); }
+  .fonts-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--spectrum-spacing-100); }
   #font-files { display: none; }
   /* Message under the fonts: a warning (missing fonts) has an icon, in the orange of Spectrum notices */
-  .fonts-help { display: flex; align-items: flex-start; gap: var(--spectrum-spacing-75); margin-top: var(--spectrum-spacing-75);
+  .fonts-help { display: flex; align-items: center; gap: var(--spectrum-spacing-75);
     font-size: var(--spectrum-font-size-75); color: var(--spectrum-neutral-subdued-content-color-default); }
-  .fonts-help sp-icon-alert { flex: none; margin-top: 1px; }
+  .fonts-help sp-icon-alert, .fonts-help sp-icon-checkmark-circle { flex: none; }
+  .fonts-help.positive sp-icon-checkmark-circle { color: var(--spectrum-positive-visual-color, #2d9d78); }
   .fonts-help.warning { color: var(--spectrum-orange-1000, #a54b00); }
   .fonts-help.warning sp-icon-alert { color: var(--spectrum-notice-visual-color, #e68619); }
   .fonts-help.negative { color: var(--spectrum-negative-content-color-default, #d31510); }
   /* Fonts added before (the library of the user): a chip each, to add it, with a button to remove it from the library */
   .font-library { display: flex; align-items: center; flex-wrap: wrap; gap: var(--spectrum-spacing-100); font-size: var(--spectrum-font-size-75); }
-  .font-library .library-label { color: var(--spectrum-neutral-subdued-content-color-default); margin-right: var(--spectrum-spacing-75); }
   .font-chip { display: inline-flex; align-items: center; border: 1px solid var(--spectrum-gray-400); border-radius: 14px; overflow: hidden; }
   .font-chip button { font: inherit; color: var(--spectrum-neutral-content-color-default); background: transparent; border: none; cursor: pointer;
     padding: 3px 8px; }
@@ -506,8 +507,9 @@ function getStartViewHtml (scriptUrl) {
   .font-chip.used { border-color: var(--spectrum-accent-background-color-default); background: var(--spectrum-accent-background-color-default); }
   .font-chip.used button { color: #ffffff; }
   .font-chip.used button:hover { background: rgba(0, 0, 0, 0.15); }
-  .font-chip.used .font-forget { border-left-color: rgba(255, 255, 255, 0.4); color: #ffffff; }
-  .font-chip .font-forget { padding: 3px 7px; border-left: 1px solid var(--spectrum-gray-300); color: var(--spectrum-neutral-subdued-content-color-default); }
+  .font-chip.used .font-forget { color: #ffffff; }
+  .font-chip .font-forget { padding: 3px 7px 3px 2px; color: var(--spectrum-neutral-subdued-content-color-default); opacity: 0; }
+  .font-chip:hover .font-forget, .font-chip .font-forget:focus-visible { opacity: 1; }
 ${STEPS_CSS}
 ${LAYERS_CSS}
 `, `
@@ -552,13 +554,12 @@ ${LAYERS_CSS}
   ${LAYERS_HTML}
   <div class="subtle linked" id="linked" hidden></div>
 <div class="field fonts">
-  <label>Fonts</label>
+  <div class="fonts-head"><label>Fonts</label><div id="fonts-help" class="fonts-help" role="status"></div></div>
   <div class="fonts-row">
-    <sp-button variant="secondary" treatment="outline" id="add-fonts">Add fonts</sp-button>
-    <input type="file" id="font-files" accept=".otf,.ttf,font/otf,font/ttf" multiple>
     <div class="font-library" id="font-library" hidden></div>
+    <sp-button size="s" variant="secondary" treatment="quiet" id="add-fonts"><sp-icon-add slot="icon" aria-hidden="true"></sp-icon-add>Add fonts</sp-button>
+    <input type="file" id="font-files" accept=".otf,.ttf,font/otf,font/ttf" multiple>
   </div>
-  <div id="fonts-help" class="fonts-help" role="status"></div>
 </div>
 </div>
 <sp-help-text id="quota" variant="negative" icon hidden></sp-help-text>
@@ -686,11 +687,14 @@ ${LAYERS_SCRIPT}
 
   // Alert icon (a triangle with an exclamation mark), in the color of the message
   var WARNING_ICON = '<sp-icon-alert size="s" aria-hidden="true"></sp-icon-alert>';
+  var OK_ICON = '<sp-icon-checkmark-circle size="s" aria-hidden="true"></sp-icon-checkmark-circle>';
 
   // Message under the fonts: kind is 'warning' (with the icon), 'negative' (an error) or neutral
-  function setFontsHelp(text, kind) {
+  // Short status next to the Fonts label (kind 'positive' or 'warning' with an icon, 'negative' an error), details in tip
+  function setFontsHelp(text, kind, tip) {
     fontsHelp.className = 'fonts-help' + (kind ? ' ' + kind : '');
-    fontsHelp.innerHTML = (kind === 'warning' ? WARNING_ICON : '') + '<span>' + escapeHtml(text) + '</span>';
+    fontsHelp.title = tip || '';
+    fontsHelp.innerHTML = (kind === 'warning' ? WARNING_ICON : kind === 'positive' ? OK_ICON : '') + '<span>' + escapeHtml(text) + '</span>';
     reportSize();
   }
 
@@ -724,7 +728,7 @@ ${LAYERS_SCRIPT}
     var items = library.concat(local).map(function (font, i) { return { font: font, used: font.local || inUse(font), needed: isNeeded(font), i: i }; });
     items.sort(function (a, b) { return (b.needed - a.needed) || (b.used - a.used) || (a.i - b.i); });
     libraryEl.hidden = !items.length;
-    libraryEl.innerHTML = '<span class="library-label">Your fonts (' + items.length + '):</span>' + items.map(function (item) {
+    libraryEl.innerHTML = items.map(function (item) {
       var font = item.font;
       var title = (font.postScriptName || font.fileName) + (font.fullName && font.fullName !== font.postScriptName ? ' (' + font.fullName + ')' : '')
         + (item.needed ? ', needed by the template' : '');
@@ -822,7 +826,7 @@ ${LAYERS_SCRIPT}
     });
     if (!added.length) return false;
     checkFonts();
-    setFontsHelp('Added from your fonts: ' + added.join(', ') + '. Rendering the preview again with them...');
+    setFontsHelp('Rendering the preview with your fonts...');
     return true;
   }
 
@@ -834,12 +838,12 @@ ${LAYERS_SCRIPT}
     if (added) return;
     var missing = missingFonts && missingFonts.length;
     setFontsHelp(fontsUploading ? 'Uploading ' + fontsUploading + ' font file(s)...'
-      : missing ? 'Fonts of the template not available: ' + missingFonts.join(', ') + '. Add their files, otherwise they are '
-        + 'replaced by a default font.'
-      : missingFonts ? 'All the fonts of the template are available'
-        + (autoAdded.length ? ' (' + autoAdded.join(', ') + ' added from your fonts)' : '') + '. The preview is rendered again when a font is added or removed.'
-      : 'Optional: the .otf or .ttf files of fonts of the template that Photoshop does not have. The preview is rendered again with them.',
-      missing && !fontsUploading ? 'warning' : '');
+      : missing ? 'Missing: ' + missingFonts.join(', ')
+      : missingFonts ? 'All template fonts available'
+      : 'Optional: .otf or .ttf files of fonts Photoshop does not have',
+      fontsUploading ? '' : missing ? 'warning' : missingFonts ? 'positive' : '',
+      missing ? 'Add their .otf or .ttf files, otherwise Photoshop replaces them with a default font. The preview is rendered again with them.'
+        : 'The preview is rendered again when a font is added or removed.');
   }
 
   // The fonts changed after the templates were read: each is rendered again with them, for its preview and the fonts missing
