@@ -656,7 +656,7 @@ ${LAYERS_SCRIPT}
   function layerExtraCell(l, i) {
     return l.type === 'smart_object_layer'
       ? '<sp-checkbox size="s" class="ai-prompt" data-index="' + i + '" data-name="' + escapeHtml(l.name) + '" disabled'
-        + ' title="The assistant writes a prompt to generate the image of each variant with Firefly">Firefly prompts</sp-checkbox>'
+        + ' title="The assistant writes a prompt to generate the image of each variant with Firefly">Generate Firefly prompt by variant</sp-checkbox>'
       : '<span></span>';
   }
   function imageLayerNames() {
