@@ -484,6 +484,7 @@ function getStartViewHtml (scriptUrl) {
   .linked { margin-top: var(--spectrum-spacing-200); font-size: var(--spectrum-font-size-75); }
   /* Fonts added, under the preview: tags that can be removed next to the button */
   .field.fonts { margin-top: var(--spectrum-spacing-300); }
+  .field.ai-prompts { margin-top: var(--spectrum-spacing-200); }
   .fonts-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--spectrum-spacing-200); }
   #font-files { display: none; }
   /* Message under the fonts: a warning (missing fonts) has an icon, in the orange of Spectrum notices */
@@ -557,6 +558,11 @@ ${LAYERS_CSS}
   </div>
   <div id="fonts-help" class="fonts-help" role="status"></div>
 </div>
+<div class="field ai-prompts" id="ai-prompts-field" hidden>
+  <label>Images</label>
+  <sp-checkbox id="ai-prompts">Generate the images with Firefly, from prompts written by the assistant</sp-checkbox>
+  <div class="subtle">Each image slot then shows its prompt, which you can edit before generating.</div>
+</div>
 </div>
 <sp-help-text id="quota" variant="negative" icon hidden></sp-help-text>
 <div class="actions">
@@ -576,6 +582,7 @@ ${LAYERS_SCRIPT}
   function onLayersChange() {
     if (!switching) syncSelection();
     layerCount = templates.reduce(function (total, t) { return total + checkedIds(t).length; }, 0);
+    aiPromptsField.hidden = !imageLayersPicked();
     renderTabs();
     updateButton();
   }
@@ -646,6 +653,15 @@ ${LAYERS_SCRIPT}
   function readyTemplates() { return templates.filter(function (t) { return t.status === 'ready'; }); }
   function allRead() { return templates.length > 0 && templates.every(function (t) { return t.status === 'ready'; }); }
   function checkedIds(t) { return Object.keys(t.checked || {}).filter(function (id) { return t.checked[id]; }).map(Number); }
+
+  // Option shown when smart object layers are picked: the assistant writes a Firefly prompt for each image
+  var aiPromptsField = document.getElementById('ai-prompts-field');
+  var aiPrompts = document.getElementById('ai-prompts');
+  function imageLayersPicked() {
+    return templates.some(function (t) {
+      return t.data && (t.data.layers || []).some(function (l) { return l.type === 'smart_object_layer' && t.checked && t.checked[l.id]; });
+    });
+  }
 
   // Fonts added by the user ({ name, url }), given to the reading of the template and to the generation, and the fonts of the
   // template missing for the render (null until the template is read). fontsVersion counts the changes: an older reading is
@@ -1298,6 +1314,13 @@ ${LAYERS_SCRIPT}
       + codes.map(function (code, i) { return names[i] + ' (' + code + ')'; }).join(', ') + '. Total: ' + n * codes.length
       + ' variants, each of the ' + n + ' variants in each language. ';
     var fontsText = fonts.length ? ' Fonts added by the user: pass fonts ' + JSON.stringify(fontUrls()) + ' to every create-variant call.' : '';
+    if (imageLayersPicked()) {
+      fontsText += aiPrompts.checked
+        ? ' Images: the user wants them generated with Firefly from prompts you write. In step 4 (the image grid), pass prompts: one per '
+          + 'variant and smart object layer, in English, written from the brief and the texts of the variant (what the image shows, '
+          + 'setting, mood, light, a composition suited to the frame and leaving room for the texts, no text or logo in the image).'
+        : ' Images: do not write prompts for Firefly (the user adds the images, or writes a prompt in a slot of the grid to generate one).';
+    }
     var context, picked, title;
     if (templates.length === 1) {
       var t = templates[0];
@@ -1620,7 +1643,6 @@ const IMAGES_SCRIPT = `
     } else if (slot.status === 'prompt') {
       html += '<textarea class="prompt" data-index="' + index + '" placeholder="Describe the image to generate">' + escapeHtml(prompts[index] || '') + '</textarea>'
         + '<div class="slot-buttons"><sp-button size="s" variant="accent" data-action="generate" data-index="' + index + '">Generate</sp-button>'
-        + '<sp-button size="s" variant="secondary" treatment="outline" data-action="suggest-prompt" data-index="' + index + '" title="Write a prompt from the texts of the variant">Write prompt</sp-button>'
         + '<sp-button size="s" variant="secondary" treatment="outline" data-action="cancel-prompt" data-index="' + index + '">Cancel</sp-button></div>';
     } else {
       html += '<div class="subtle slot-empty">Drop an image</div>'
@@ -1721,25 +1743,6 @@ const IMAGES_SCRIPT = `
         if (bar) bar.progress = slot.progress;
       });
     });
-  }
-
-  // Texts of the variants by row label of the grid, given by the texts view (none in the images view): { label: [text, ...] }
-  var textsOf = function () { return null; };
-
-  // Prompt written from the variant (its texts, or its label) and the layer (its name and the orientation of its frame)
-  function suggestPrompt(index) {
-    var label = variants[Math.floor(index / layers.length)];
-    var layer = layerOf(index);
-    var texts = (textsOf(label) || []).map(function (t) { return String(t || '').replace(/\\s+/g, ' ').trim(); }).filter(Boolean);
-    var about = texts.length ? texts.join('. ') : label;
-    if (about.length > 400) about = about.slice(0, 400).replace(/\\s+\\S*$/, '') + '...';
-    var name = String(layer.name || '').trim();
-    var generic = !name || /^(layer|calque|image|picture|photo|smart ?object|rectangle)[\\s_-]*\\d*$/i.test(name);
-    var ratio = layer.width && layer.height ? layer.width / layer.height : 1;
-    var orientation = ratio > 1.2 ? 'Wide landscape' : ratio < 0.83 ? 'Vertical portrait' : 'Square';
-    return 'Professional photo for an advertising visual about: ' + about + '. '
-      + (generic ? '' : 'Image for the "' + name + '" area. ')
-      + orientation + ' composition, one clear main subject, uncluttered background, natural light, high quality, no text, no logo.';
   }
 
   // Generates the image of a slot with Firefly from its prompt, at the ratio of its frame, then frames it like an upload
@@ -1943,10 +1946,6 @@ const IMAGES_SCRIPT = `
       if (field) field.focus();
     } else if (action === 'generate') {
       generateToSlot(index);
-    } else if (action === 'suggest-prompt') {
-      prompts[index] = suggestPrompt(index);
-      var prompt = grid.querySelector('.prompt[data-index="' + index + '"]');
-      if (prompt) { prompt.value = prompts[index]; prompt.focus(); }
     }
   });
   grid.addEventListener('sp-dropzone-should-accept', function (e) { e.detail.dataTransfer.dropEffect = 'copy'; });
@@ -2052,8 +2051,7 @@ const IMAGES_SCRIPT = `
     });
   }
 
-  return { init: init, onChange: function (handler) { onChange = handler; }, result: result, data: data, count: function () { return variants.length; },
-    texts: function (provider) { textsOf = provider; } };
+  return { init: init, onChange: function (handler) { onChange = handler; }, result: result, data: data, count: function () { return variants.length; } };
   })();
 `
 
@@ -2916,14 +2914,6 @@ ${IMAGES_SCRIPT}
   var step = 1;
   var imagesDone = false;
   imagesPicker.onChange(function (done, total) { imagesDone = done === total && total > 0; updateConfirm(); });
-  // The texts of a row of the grid, for its prompts: those of its variant in English if any, else of its first variant
-  imagesPicker.texts(function (label) {
-    var rows = currentTexts().filter(function (v) {
-      return v.label === label || String(v.label).replace(/[\\s_-]+\\(?[A-Z]{2}\\)?$/, '').trim() === label;
-    });
-    var row = rows.filter(function (v) { return /[\\s_-]\\(?EN\\)?$/i.test(v.label); })[0] || rows[0];
-    return row ? row.texts.map(function (t) { return t.text; }) : null;
-  });
 
   function updateConfirm() {
     if (!withImages) { confirmBtn.disabled = !variants.length; return; }
