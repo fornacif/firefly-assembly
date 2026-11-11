@@ -320,7 +320,7 @@ function recorded (call, promise) {
 
 // Calls a Firefly Services API; on 401 (token revoked or expired early), once again with a new token.
 async function callFirefly (params, label, url, options = {}, renewed = false) {
-  const headers = { ...(await fireflyHeaders(params)), ...(options.body ? { 'Content-Type': 'application/json' } : {}) }
+  const headers = { ...(await fireflyHeaders(params)), ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...options.headers }
   const response = await fetchWithRetry(url, { ...options, headers })
   if (response.status === 401 && !renewed) {
     cachedToken = null
@@ -1000,6 +1000,8 @@ function cropBounds (image, ratio, subject) {
 // detection does not finish by the deadline).
 // Firefly API (image generation): sizes it generates, width x height
 const FIREFLY_GENERATE_API = 'https://firefly-api.adobe.io/v3/images/generate-async'
+// Model of the images generated (x-model-version): Firefly Image 4 Ultra
+const FIREFLY_MODEL_VERSION = 'image4_ultra'
 const FIREFLY_SIZES = [[2048, 2048], [1024, 1024], [2304, 1792], [1152, 896], [1792, 2304], [896, 1152], [2688, 1536], [1344, 768],
   [2688, 1512], [1344, 756]]
 
@@ -1022,6 +1024,7 @@ async function generateImage (params, { prompt, width, height }, deadline) {
     call.request()
     const job = await callFirefly(params, 'Firefly API', FIREFLY_GENERATE_API, {
       method: 'POST',
+      headers: { 'x-model-version': FIREFLY_MODEL_VERSION },
       body: JSON.stringify({ prompt, numVariations: 1, size, contentClass: 'photo' })
     })
     if (!job.statusUrl) throw new Error(`Firefly API: no job in the answer (${JSON.stringify(job).slice(0, 200)})`)
