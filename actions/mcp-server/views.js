@@ -1727,9 +1727,12 @@ const IMAGES_SCRIPT = `
     updateStatus();
   }
 
-  // Slots waiting for their image to be generated from their prompt (written by the assistant or the user)
+  // Slots waiting for their image to be generated from their prompt (written by the assistant, maybe edited): with the prompt
+  // shown, or empty with a prompt from the assistant
   function pendingPrompts() {
-    return slots.map(function (s, i) { return s.status === 'prompt' && String(prompts[i] || '').trim() ? i : -1; })
+    return slots.map(function (s, i) {
+      return (s.status === 'prompt' || (s.status === 'empty' && prompted[i])) && String(prompts[i] || '').trim() ? i : -1;
+    })
       .filter(function (i) { return i >= 0; });
   }
   function generateAll() { pendingPrompts().forEach(generateToSlot); }
@@ -1912,10 +1915,9 @@ const IMAGES_SCRIPT = `
       var layerIndex = layers.findIndex(function (l) { return l.id === p.layerId; });
       var variantIndex = typeof p.variant === 'string' ? rowOf(p.variant) : p.variant;
       if (layerIndex < 0 || variantIndex < 0 || variantIndex >= variants.length) return;
-      // The slot shows its prompt, ready to generate (an image can still be dropped on it)
+      // The slot offers to generate its image (Generate with Firefly shows its prompt, to edit); an image can still be dropped on it
       prompts[variantIndex * layers.length + layerIndex] = p.prompt;
       prompted[variantIndex * layers.length + layerIndex] = true;
-      slots[variantIndex * layers.length + layerIndex] = { status: 'prompt' };
     });
     (args.images || []).forEach(function (image) {
       var layerIndex = layers.findIndex(function (l) { return l.id === image.layerId; });
