@@ -13,7 +13,7 @@ const BASE_STYLE = `
     font-family: var(--spectrum-sans-font-family-stack);
     font-size: var(--spectrum-font-size-100);
   }
-  /* Hide components until their definitions are loaded from the CDN */
+  /* Hide components until the bundle defines them (the view script waits for them too, see page()) */
   :not(:defined) { visibility: hidden; }
   .status { display: block; margin-top: var(--spectrum-spacing-200); }
   .heading {
@@ -28,12 +28,26 @@ const BASE_STYLE = `
   /* Spinner shown before the status while something loads */
   #status-loader { vertical-align: middle; margin-right: var(--spectrum-spacing-100); }
   #status-loader:not([hidden]) + .status { display: inline-block; vertical-align: middle; }
-  /* Text areas styled as Spectrum 2 text fields: a dark border on focus, the focus ring from the keyboard */
-  textarea:focus { outline: none; border-color: var(--spectrum-gray-800) !important; }
-  textarea:focus-visible, .library-remove:focus-visible {
+  /* Text areas styled as Spectrum 2 text fields (the views add only their sizes): a darker border on hover, a dark one on
+     focus, the focus ring from the keyboard */
+  textarea {
+    width: 100%;
+    padding: var(--spectrum-spacing-75) var(--spectrum-spacing-100);
+    font: inherit;
+    color: var(--spectrum-neutral-content-color-default);
+    background: var(--spectrum-gray-25);
+    border: var(--spectrum-border-width-200) solid var(--spectrum-gray-300);
+    border-radius: var(--spectrum-corner-radius-medium-default);
+  }
+  textarea:hover { border-color: var(--spectrum-gray-400); }
+  textarea:focus { outline: none; border-color: var(--spectrum-gray-800); }
+  /* Focus ring of the text areas and of the buttons made by hand */
+  textarea:focus-visible, .library-remove:focus-visible, .languages-button:focus-visible {
     outline: var(--spectrum-focus-indicator-thickness) solid var(--spectrum-focus-indicator-color);
     outline-offset: var(--spectrum-focus-indicator-gap);
   }
+  /* sp-dropzone gives its content a larger font and a 1.5 line height, which sp-button inherits and which pushes its label down */
+  sp-dropzone sp-button { font-size: var(--spectrum-font-size-100); line-height: var(--spectrum-line-height-100); }
 `
 
 // JSON-RPC bridge with the host: request(), notification(), onToolResult(), setStatus(), reportSize().
@@ -69,12 +83,12 @@ const BRIDGE_SCRIPT = `
   function onToolInput(handler) { _toolInputHandler = handler; }
   function onHostContextChanged(handler) { _hostContextHandler = handler; }
 
-  // Whether the host can show the view full screen (ui/request-display-mode)
   // Bottom inset of the host (safeAreaInsets), kept for the views shown full screen
   function applyInsets(context) {
     var bottom = context && context.safeAreaInsets && Number(context.safeAreaInsets.bottom);
     document.documentElement.style.setProperty('--host-bottom-inset', (bottom > 0 ? bottom : 0) + 'px');
   }
+  // Whether the host can show the view full screen (ui/request-display-mode)
   function canFullscreen() { return (hostContext.availableDisplayModes || []).indexOf('fullscreen') >= 0; }
 
   window.addEventListener('message', function (event) {
@@ -99,11 +113,7 @@ const BRIDGE_SCRIPT = `
       _toolInputHandler((msg.params && msg.params.arguments) || {});
     }
 
-    if (msg.method === 'ping') {
-      send({ jsonrpc: '2.0', id: msg.id, result: {} });
-    } else if (msg.method === 'ui/resource-teardown') {
-      send({ jsonrpc: '2.0', id: msg.id, result: {} });
-    }
+    if (msg.method === 'ping' || msg.method === 'ui/resource-teardown') send({ jsonrpc: '2.0', id: msg.id, result: {} });
   });
 
   // Follow the host's light/dark theme, falling back to the OS preference.
@@ -139,15 +149,27 @@ const BRIDGE_SCRIPT = `
     });
   }
 
+  // Tells the host the size of the view, once per frame and only when it changed
+  var _sizePending = false;
+  var _lastSize = '';
   function reportSize() {
+    if (_sizePending) return;
+    _sizePending = true;
     requestAnimationFrame(function () {
-      // Full screen, the host sets the size of the view: none is told (it would make the host resize it while it changes mode)
-      if (document.body.classList.contains('fullscreen')) return;
+      _sizePending = false;
+      // Full screen, the host sets the size of the view: none is told (it would make the host resize it while it changes mode),
+      // and the next one is told even if unchanged
+      if (document.body.classList.contains('fullscreen')) { _lastSize = ''; return; }
       var h = Math.ceil(document.documentElement.getBoundingClientRect().height);
       var w = Math.ceil(window.innerWidth);
+      if (w + 'x' + h === _lastSize) return;
+      _lastSize = w + 'x' + h;
       notification('ui/notifications/size-changed', { width: w, height: h });
     });
   }
+
+  // Text of an error, whatever was thrown or rejected
+  function errorText(error) { return (error && error.message) || String(error); }
 
   if (window.ResizeObserver) new ResizeObserver(reportSize).observe(document.body);
 
@@ -186,11 +208,10 @@ const BRIDGE_SCRIPT = `
     });
   }
 
-  // Sends the result of a view to Claude, then a user message so that it continues. The result is stored on the server
-  // under a short reference carried by the message (get-widget-result), because some models do not reliably see the
-  // model context the host is given with ui/update-model-context; it is still given there too.
-  // Sends a result to the model: kept by the server (with data, when given: the texts and images confirmed) under a short
-  // reference that ends the user message; {{ref}} in the context is replaced with it
+  // Sends the result of a view to Claude, then a user message so that it continues. The result (with data, when given: the
+  // texts and images confirmed) is kept by the server under a short reference that ends the user message (get-widget-result),
+  // because some models do not reliably see the model context given with ui/update-model-context (it is still given there);
+  // {{ref}} in the context is replaced with it
   function sendToModel(context, message, sentStatus, data) {
     return callTool('save-widget-result', data ? { text: context, data: data } : { text: context })
       .then(function (saved) { return saved.ref; })
@@ -330,8 +351,17 @@ ${body}
 <script>
 (function () {
 ${BRIDGE_SCRIPT}
+  // The bundle is a module, run after this script: the view script waits until the components of the page are defined (at
+  // most 3 s, so that the view still works without them), so that it can read and set their properties
+  var _tags = {};
+  Array.prototype.forEach.call(document.querySelectorAll(':not(:defined)'), function (el) { _tags[el.localName] = true; });
+  Promise.race([
+    Promise.all(Object.keys(_tags).map(function (tag) { return customElements.whenDefined(tag); })),
+    new Promise(function (resolve) { setTimeout(resolve, 3000); })
+  ]).then(function () {
 ${script}
-  initialize('${title}');
+    initialize('${title}');
+  });
 })();
 </script>
 </body>
@@ -408,7 +438,7 @@ ${UPLOAD_SCRIPT}
         return sendToModel(context, 'I uploaded ' + names + ', continue.');
       })
       .catch(function (error) {
-        setStatus((error && error.message) || String(error), true);
+        setStatus(errorText(error), true);
       });
   }
 
@@ -466,8 +496,6 @@ function getStartViewHtml (scriptUrl) {
   .message { flex: 1 1 220px; min-width: 0; text-align: left; }
   #message-heading { font-weight: var(--spectrum-bold-font-weight); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .browse { display: flex; flex-wrap: wrap; gap: var(--spectrum-spacing-200); }
-  /* sp-dropzone gives its content a larger font and a 1.5 line height, which sp-button inherits and which pushes its label down */
-  sp-dropzone sp-button { font-size: var(--spectrum-font-size-100); line-height: var(--spectrum-line-height-100); }
   #file { display: none; }
   sp-progress-bar { width: 100%; margin-top: var(--spectrum-spacing-200); }
   /* Templates imported (one per format): a row each, with its size, its state and a button to remove it */
@@ -482,10 +510,9 @@ function getStartViewHtml (scriptUrl) {
   /* One button per template in the layer step, with the number of layers picked in it, the one shown selected */
   .template-tabs { display: flex; flex-wrap: wrap; gap: var(--spectrum-spacing-100); margin-bottom: var(--spectrum-spacing-300); }
   .linked { margin-top: var(--spectrum-spacing-200); font-size: var(--spectrum-font-size-75); }
-  /* Fonts added, under the preview: tags that can be removed next to the button */
+  /* Fonts of the templates, with your fonts behind a button */
   .field.fonts { margin-top: var(--spectrum-spacing-300); }
   .row.ai-row { background: var(--spectrum-background-layer-2-color); padding-top: var(--spectrum-spacing-75); padding-bottom: var(--spectrum-spacing-75); }
-  .row.ai-row[hidden] { display: none; }
   .fonts-head { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: var(--spectrum-spacing-100) var(--spectrum-spacing-300); }
   .fonts-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--spectrum-spacing-100); }
   /* Fonts of the templates: a line each, with where the render gets it (Photoshop, your fonts) or that it is missing */
@@ -501,13 +528,12 @@ function getStartViewHtml (scriptUrl) {
   #toggle-library sp-icon-chevron-down { transition: transform 0.15s; }
   #toggle-library:not(.open) sp-icon-chevron-down { transform: rotate(-90deg); }
   /* The library of the user, behind Your fonts: grouped by family */
-  .font-library { margin-top: var(--spectrum-spacing-100); padding: var(--spectrum-spacing-100) var(--spectrum-spacing-200); border: 1px solid var(--spectrum-gray-300);
+  .font-library { margin-top: var(--spectrum-spacing-100); font-size: var(--spectrum-font-size-75); padding: var(--spectrum-spacing-100) var(--spectrum-spacing-200); border: 1px solid var(--spectrum-gray-300);
     border-radius: var(--spectrum-corner-radius-medium-default); max-height: 260px; overflow: auto; display: grid; gap: var(--spectrum-spacing-200); }
-  .font-library[hidden] { display: none; }
   .font-family-name { margin-bottom: 4px; font-weight: var(--spectrum-bold-font-weight); }
   .font-chips { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
   #font-files { display: none; }
-  /* Message under the fonts: a warning (missing fonts) has an icon, in the orange of Spectrum notices */
+  /* Status next to the Fonts label: a warning (missing fonts) has an icon, in the orange of Spectrum notices */
   .fonts-help { display: flex; align-items: center; gap: var(--spectrum-spacing-75);
     font-size: var(--spectrum-font-size-75); color: var(--spectrum-neutral-subdued-content-color-default); }
   .fonts-help sp-icon-alert, .fonts-help sp-icon-checkmark-circle { flex: none; }
@@ -516,7 +542,6 @@ function getStartViewHtml (scriptUrl) {
   .fonts-help.warning sp-icon-alert { color: var(--spectrum-notice-visual-color); }
   .fonts-help.negative { color: var(--spectrum-negative-content-color-default); }
   /* Fonts added before (the library of the user): a chip each, to add it, with a button to remove it from the library */
-  .font-library { font-size: var(--spectrum-font-size-75); }
   .font-chip { display: inline-flex; align-items: center; border: 1px solid var(--spectrum-gray-400); border-radius: 9999px; overflow: hidden; }
   .font-chip button { font: inherit; color: var(--spectrum-neutral-content-color-default); background: transparent; border: none; cursor: pointer;
     padding: 3px 8px; display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
@@ -657,12 +682,10 @@ ${LAYERS_SCRIPT}
   var languageList = document.getElementById('languages');
   var languageButton = document.getElementById('languages-button');
   var languageLabel = document.getElementById('languages-label');
-  // Codes of the languages chosen, in the order of LANGUAGE_NAMES
+  // Codes of the languages chosen, in the order they were checked (languages() gives them in the order of LANGUAGE_NAMES)
   var chosen = ['en'];
   var totalText = document.getElementById('total');
   var namingInput = document.getElementById('naming');
-  // Value of a Spectrum field, also before its component is loaded (the bundle is a module, loaded after this script runs)
-  function fieldValue(el) { return el.value != null ? String(el.value) : el.getAttribute('value') || ''; }
   var namingHelp = document.getElementById('naming-help');
   // Templates imported, one per format, in order: { name, url, status ('uploading', 'importing', 'reading', 'ready', 'error'),
   // progress, error, data (layers, document, preview), checked (ids of the layers picked), missingFonts, read (count of its
@@ -714,7 +737,6 @@ ${LAYERS_SCRIPT}
   var WARNING_ICON = '<sp-icon-alert size="s" aria-hidden="true"></sp-icon-alert>';
   var OK_ICON = '<sp-icon-checkmark-circle size="s" aria-hidden="true"></sp-icon-checkmark-circle>';
 
-  // Message under the fonts: kind is 'warning' (with the icon), 'negative' (an error) or neutral
   // Short status next to the Fonts label (kind 'positive' or 'warning' with an icon, 'negative' an error), details in tip
   function setFontsHelp(text, kind, tip) {
     fontsHelp.className = 'fonts-help' + (kind ? ' ' + kind : '');
@@ -739,7 +761,10 @@ ${LAYERS_SCRIPT}
   var autoTried = {};
   var autoAdded = [];
   var libraryEl = document.getElementById('font-library');
-  function inUse(font) { return fonts.some(function (f) { return f.libraryId === font.id || f.url === font.url; }); }
+  // Whether a font of the render is that font of the library, the library font of an id, and whether one is in the render
+  function sameFont(f, font) { return f.libraryId === font.id || f.url === font.url; }
+  function libraryById(id) { return library.filter(function (f) { return f.id === id; })[0]; }
+  function inUse(font) { return fonts.some(function (f) { return sameFont(f, font); }); }
   // Names of the fonts the templates need (missing without the fonts added), for the order of the fonts
   var neededFonts = {};
   function fontKey(name) { return String(name || '').toLowerCase().replace(/[\\s_-]/g, ''); }
@@ -760,7 +785,7 @@ ${LAYERS_SCRIPT}
     return dash > 0 ? base.slice(dash + 1) : fileBase(font.fileName);
   }
   function renderLibrary() {
-    var local = fonts.filter(function (f) { return !library.some(function (font) { return f.libraryId === font.id || f.url === font.url; }); })
+    var local = fonts.filter(function (f) { return !library.some(function (font) { return sameFont(f, font); }); })
       .map(function (f) { return { id: 'local:' + fonts.indexOf(f), fileName: f.name, url: f.url, local: true }; });
     var items = library.concat(local).map(function (font, i) { return { font: font, used: font.local || inUse(font), needed: isNeeded(font), i: i }; });
     items.sort(function (a, b) { return (b.needed - a.needed) || (b.used - a.used) || (a.i - b.i); });
@@ -847,7 +872,7 @@ ${LAYERS_SCRIPT}
       neededFonts[fontKey(font.postScriptName)] = true;
       // Added once: unchecked by the user, it is not added again
       autoTried[font.postScriptName] = true;
-      var known = library.filter(function (f) { return f.id === font.id; })[0];
+      var known = libraryById(font.id);
       if (known) known.url = font.url;
       if (fonts.some(function (f) { return f.libraryId === font.id; })) return;
       fonts.push({ name: font.fileName, url: font.url, libraryId: font.id });
@@ -862,8 +887,8 @@ ${LAYERS_SCRIPT}
   // another template): read again with it, once per font
   function rereadWithFontsUsed(t) {
     var missed = (t.missingFonts || []).filter(function (name) {
-      var font = library.filter(function (f) { return [f.postScriptName, f.fullName].some(function (n) { return n && fontKey(n) === fontKey(name); }); })[0];
-      var used = font && fonts.filter(function (f) { return f.libraryId === font.id || f.url === font.url; })[0];
+      var font = libraryFontFor(name);
+      var used = font && fonts.filter(function (f) { return sameFont(f, font); })[0];
       return used && (t.readFonts || []).indexOf(used.url) < 0 && !(t.rereadFor || {})[name];
     });
     if (!missed.length) return false;
@@ -891,11 +916,11 @@ ${LAYERS_SCRIPT}
       checkFonts();
       return;
     }
-    var font = library.filter(function (f) { return f.id === id; })[0];
+    var font = libraryById(id);
     if (!font) return;
     if (button.classList.contains('font-use')) {
       if (inUse(font)) {
-        fonts = fonts.filter(function (f) { return f.libraryId !== font.id && f.url !== font.url; });
+        fonts = fonts.filter(function (f) { return !sameFont(f, font); });
         // Unchecked by the user: not added again because the template misses it
         [font.postScriptName, font.fullName].forEach(function (n) { if (n) autoTried[n] = true; });
       }
@@ -907,7 +932,7 @@ ${LAYERS_SCRIPT}
       // Removed from the library and from the render at once
       var used = inUse(font);
       library = library.filter(function (f) { return f.id !== id; });
-      fonts = fonts.filter(function (f) { return f.libraryId !== font.id && f.url !== font.url; });
+      fonts = fonts.filter(function (f) { return !sameFont(f, font); });
       renderLibrary();
       if (used) { renderFonts(); checkFonts(); }
       callTool('remove-font', { id: id }).catch(function () {});
@@ -923,12 +948,11 @@ ${LAYERS_SCRIPT}
   // templates rendered again with them
   function addMissingFromLibrary() {
     if (!missingFonts || !missingFonts.length || fontsUploading) return false;
-    var key = fontKey;
     var added = [];
     missingFonts.forEach(function (name) {
       if (autoTried[name]) return;
       autoTried[name] = true;
-      var font = library.filter(function (f) { return [f.postScriptName, f.fullName].some(function (n) { return n && key(n) === key(name); }); })[0];
+      var font = libraryFontFor(name);
       if (font && !inUse(font)) { useLibraryFont(font); added.push(font.fileName); autoAdded.push(font.fileName); }
     });
     if (!added.length) return false;
@@ -993,7 +1017,7 @@ ${LAYERS_SCRIPT}
           if (version !== fontsVersion) return;
           t.missingFonts = t.missingFonts || [];
           shownAgain();
-          setFontsHelp('Preview not rendered again: ' + ((error && error.message) || String(error)), 'negative');
+          setFontsHelp('Preview not rendered again: ' + errorText(error), 'negative');
           reportSize();
         });
     });
@@ -1052,14 +1076,14 @@ ${LAYERS_SCRIPT}
   function fileNamePattern() {
     var now = new Date();
     var date = now.getFullYear() + '-' + ('0' + (now.getMonth() + 1)).slice(-2) + '-' + ('0' + now.getDate()).slice(-2);
-    var pattern = fieldValue(namingInput).trim().split('{date}').join(date);
+    var pattern = namingInput.value.trim().split('{date}').join(date);
     return templates.length > 1 ? pattern : pattern.split('{template}').join(templates.length ? templateNames()[0] : 'template');
   }
 
   // The model is valid when it names each variant apart: with {variant}, with {language} for several languages, and with
   // {template} for several templates
   function namingError() {
-    var value = fieldValue(namingInput);
+    var value = namingInput.value;
     if (value.indexOf('{variant}') < 0) return 'Add {variant}, so that each variant has its own file.';
     if (languages().length > 1 && value.indexOf('{language}') < 0) return 'Add {language}, so that each language has its own file.';
     if (templates.length > 1 && value.indexOf('{template}') < 0) return 'Add {template}, so that each format has its own file.';
@@ -1075,7 +1099,7 @@ ${LAYERS_SCRIPT}
   }
 
   function count() {
-    var n = Math.round(Number(fieldValue(countInput)));
+    var n = Math.round(Number(countInput.value));
     return n >= 1 && n <= ${MAX_VARIANTS_UI} ? n : null;
   }
 
@@ -1117,7 +1141,7 @@ ${LAYERS_SCRIPT}
     nextBtn.disabled = !templates.length || templates.some(function (t) { return t.status === 'uploading' || t.status === 'importing' || t.status === 'error'; })
       || !count() || !n || tooMany() || !!namingError() || fontsUploading > 0;
     continueBtn.disabled = nextBtn.disabled || !allRead() || !layerCount;
-    if (typeof updateSteps === 'function') updateSteps();
+    updateSteps();
     updateEstimate();
   }
 
@@ -1164,7 +1188,7 @@ ${LAYERS_SCRIPT}
   }
 
   onToolInput(function (args) {
-    if (args.variantCount) countInput.setAttribute('value', args.variantCount);
+    if (args.variantCount) countInput.value = args.variantCount;
     if (args.languages && args.languages.length) {
       chosen = args.languages.filter(function (code) { return LANGUAGE_NAMES[code]; });
       renderLanguages();
@@ -1192,7 +1216,7 @@ ${LAYERS_SCRIPT}
       .catch(function (error) {
         if (templates.indexOf(t) < 0) return;
         t.status = 'error';
-        t.error = (error && error.message) || String(error);
+        t.error = errorText(error);
         renderTemplates();
       });
   }
@@ -1233,7 +1257,7 @@ ${LAYERS_SCRIPT}
       .catch(function (error) {
         if (!isCurrent()) return;
         t.status = 'error';
-        t.error = (error && error.message) || String(error);
+        t.error = errorText(error);
         renderTemplates();
       });
   }
@@ -1316,7 +1340,7 @@ ${LAYERS_SCRIPT}
           addTemplate(asset['repo:name'], 'importing', function () { return importAemAsset(asset); });
         });
       })
-      .catch(function (error) { setStatus((error && error.message) || String(error), true); });
+      .catch(function (error) { setStatus(errorText(error), true); });
   });
   loadAemConfig().then(function (config) { aemBtn.hidden = !config; reportSize(); });
 
@@ -1456,16 +1480,16 @@ ${LAYERS_SCRIPT}
     var context, picked, title;
     if (templates.length === 1) {
       var t = templates[0];
-      var chosen = t.data.layers.filter(function (l) { return t.checked[l.id]; }).map(function (l) {
+      var pickedLayers = t.data.layers.filter(function (l) { return t.checked[l.id]; }).map(function (l) {
         var layer = {};
         Object.keys(l).forEach(function (key) { if (key !== 'area') layer[key] = l[key]; });
         return layer;
       });
       title = t.name;
-      picked = chosen.map(function (l) { return l.name; }).join(', ');
+      picked = pickedLayers.map(function (l) { return l.name; }).join(', ');
       context = intro + 'PSD template: ' + t.name + ', URL (valid 24 hours): ' + t.url + '. File names: pass fileNamePattern "' + fileNamePattern()
         + '" to every create-variant call. Layers selected by the user in the template (with their original texts and frames; '
-        + 'do not call get-psd-manifest): ' + JSON.stringify(chosen) + '. Next step: step 3 (texts) if text layers were '
+        + 'do not call get-psd-manifest): ' + JSON.stringify(pickedLayers) + '. Next step: step 3 (texts) if text layers were '
         + 'selected, otherwise step 4 (images).' + fontsText;
     } else {
       var tNames = templateNames();
@@ -1518,7 +1542,7 @@ ${LAYERS_SCRIPT}
         backBtn.disabled = false;
         updateButton();
         updateSteps();
-        setStatus((error && error.message) || String(error), true);
+        setStatus(errorText(error), true);
       });
   });
 `)
@@ -1551,10 +1575,7 @@ const IMAGES_CSS = `
   .slot-label { width: 100%; font-weight: var(--spectrum-bold-font-weight); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .slot-empty { margin: auto 0; }
   /* Prompt of an image generated by Firefly, in its slot */
-  .prompt { width: 100%; min-height: 64px; font: inherit; font-size: var(--spectrum-font-size-75); padding: var(--spectrum-spacing-75) var(--spectrum-spacing-100);
-    color: var(--spectrum-neutral-content-color-default); background: var(--spectrum-gray-25); border: var(--spectrum-border-width-200) solid var(--spectrum-gray-300);
-    border-radius: var(--spectrum-corner-radius-medium-default); resize: vertical; field-sizing: content; max-height: 220px; line-height: 1.4; }
-  .prompt:hover { border-color: var(--spectrum-gray-400); }
+  .prompt { min-height: 64px; max-height: 220px; font-size: var(--spectrum-font-size-75); line-height: 1.4; resize: vertical; field-sizing: content; }
   .slot-buttons { display: flex; flex-wrap: wrap; gap: var(--spectrum-spacing-100); justify-content: center; }
   sp-dropzone {
     display: flex;
@@ -1592,8 +1613,7 @@ const IMAGES_CSS = `
   .zoom input { flex: 1; min-width: 0; accent-color: var(--spectrum-accent-background-color-default); }
   .file-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   sp-dropzone sp-progress-bar { width: 100%; }
-  /* sp-dropzone gives its content a larger font and a 1.5 line height, which sp-button inherits and which pushes its label down */
-  sp-dropzone sp-button { font-size: var(--spectrum-font-size-75); line-height: var(--spectrum-line-height-100); }
+  sp-dropzone sp-button { font-size: var(--spectrum-font-size-75); }
   .cell-error { color: var(--spectrum-negative-content-color-default); font-size: var(--spectrum-font-size-75); }
   #file { display: none; }
   .library { margin-bottom: var(--spectrum-spacing-300); }
@@ -1621,6 +1641,9 @@ const IMAGES_CSS = `
   .library-item.busy { cursor: default; }
   .library-item .file-name { display: block; width: 100%; }
   .library-remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     position: absolute;
     top: 4px;
     right: 4px;
@@ -1637,7 +1660,6 @@ const IMAGES_CSS = `
     cursor: pointer;
   }
   .library-remove:hover { background: var(--spectrum-gray-200); }
-  .library-remove { display: inline-flex; align-items: center; justify-content: center; }
   .library-item img { width: 100%; height: 64px; object-fit: contain; border-radius: var(--spectrum-corner-radius-100); background: var(--spectrum-gray-200); }
   .library-item sp-progress-bar { width: 100%; }
   .grid.armed sp-dropzone { cursor: copy; }
@@ -1884,7 +1906,7 @@ const IMAGES_SCRIPT = `
       })
       .catch(function (error) {
         if (slots[index] !== slot) return;
-        slots[index] = { status: 'empty', error: (error && error.message) || String(error) };
+        slots[index] = { status: 'empty', error: errorText(error) };
         render();
       });
   }
@@ -1941,7 +1963,7 @@ const IMAGES_SCRIPT = `
     library.push(item);
     transfer(item)
       .then(function (stored) { item.status = 'done'; item.url = stored.url; })
-      .catch(function (error) { item.status = 'error'; item.error = (error && error.message) || String(error); })
+      .catch(function (error) { item.status = 'error'; item.error = errorText(error); })
       .then(renderLibrary);
   }
 
@@ -1967,7 +1989,7 @@ const IMAGES_SCRIPT = `
         });
         renderLibrary();
       })
-      .catch(function (error) { setStatus((error && error.message) || String(error), true); });
+      .catch(function (error) { setStatus(errorText(error), true); });
   }
 
   // The first file goes to the target slot, the others fill the next empty slots in order.
@@ -2220,7 +2242,6 @@ function getVariantImagesViewHtml (scriptUrl) {
   return page(scriptUrl, 'Variant Images', `
 ${IMAGES_CSS}
 ${STEPS_CSS}
-  .steps.single { grid-template-columns: 1fr; }
 `, `
 <h2 class="heading" id="title">Drop one image per variant</h2>
 <ol class="steps single" aria-label="Step"><li data-for="4" class="current"><span class="step-kicker">Step 4</span><span class="step-title">Images</span></li></ol>
@@ -2255,7 +2276,7 @@ ${IMAGES_SCRIPT}
       'I added and framed the images for the ' + imagesPicker.count() + ' variant(s), continue.', 'Images sent.', { images: imagesPicker.data() })
       .catch(function (error) {
         confirmBtn.disabled = false;
-        setStatus((error && error.message) || String(error), true);
+        setStatus(errorText(error), true);
       });
   });
 `)
@@ -2267,6 +2288,7 @@ const STEPS_CSS = `
   /* Two steps, as segments of a progress bar: the bar of the current and done steps in the accent color, with the number and
      the name of each step below it */
   .steps { display: grid; grid-template-columns: 1fr 1fr; gap: var(--spectrum-spacing-200); margin: var(--spectrum-spacing-300) 0 var(--spectrum-spacing-400); padding: 0; list-style: none; }
+  .steps.single { grid-template-columns: 1fr; }
   .steps li { display: flex; flex-direction: column; gap: 2px; padding-top: var(--spectrum-spacing-100); border-top: 4px solid var(--spectrum-gray-200); border-radius: 2px 2px 0 0; transition: border-color 0.15s; }
   .step-kicker { font-size: var(--spectrum-font-size-50, 11px); font-weight: var(--spectrum-bold-font-weight); letter-spacing: 0.04em; text-transform: uppercase; color: var(--spectrum-neutral-subdued-content-color-default); }
   .step-title { color: var(--spectrum-neutral-subdued-content-color-default); }
@@ -2274,7 +2296,6 @@ const STEPS_CSS = `
   .steps li.current .step-kicker { color: var(--spectrum-accent-content-color-default); }
   .steps li.current .step-title { color: var(--spectrum-neutral-content-color-default); font-weight: var(--spectrum-bold-font-weight); }
   .steps li.done .step-kicker::after { content: ' \\2713'; }
-  [data-step][hidden] { display: none; }
   /* A step that can be gone to (the done one, or the next one once the current one is complete), on hover like the current one */
   .steps li.reachable { cursor: pointer; }
   .steps li.reachable:hover { border-top-color: var(--spectrum-accent-background-color-hover, var(--spectrum-accent-background-color-default)); }
@@ -2327,7 +2348,6 @@ const LAYERS_CSS = `
     border-radius: var(--spectrum-corner-radius-100);
     background: var(--spectrum-gray-100);
   }
-  .preview-loader[hidden], .stage[hidden] { display: none; }
   /* Zones are outlined only, so that what they cover stays visible */
   .zone {
     position: absolute;
@@ -2554,7 +2574,7 @@ const LAYERS_SCRIPT = `
       })
       .catch(function (error) {
         if (!current()) return;
-        var reason = (error && error.message) || String(error);
+        var reason = errorText(error);
         hidePreviewLoader();
         setStatus(layers.length ? layers.length + ' editable layer(s). Preview not available: ' + reason : reason, !layers.length);
       });
@@ -2627,7 +2647,7 @@ ${LAYERS_SCRIPT}
     sendToModel(context, message, 'Selection sent.')
       .catch(function (error) {
         confirmBtn.disabled = false;
-        setStatus((error && error.message) || String(error), true);
+        setStatus(errorText(error), true);
       });
   });
 `)
@@ -2655,24 +2675,18 @@ function getTextsViewHtml (scriptUrl) {
   .texts tr:first-child td:last-child { border-top-right-radius: var(--spectrum-corner-radius-200); }
   .texts tr:last-child td:first-child { border-bottom-left-radius: var(--spectrum-corner-radius-200); }
   .texts tr:last-child td:last-child { border-bottom-right-radius: var(--spectrum-corner-radius-200); }
-  /* Editable texts: a light filled box, outlined on hover and in the accent color on focus, growing with its text */
+  /* Editable texts: a light filled box without a border until hovered or focused, growing with its text */
   .text-input {
     display: block;
-    width: 100%;
     min-height: 32px;
     field-sizing: content;
-    padding: var(--spectrum-spacing-75) var(--spectrum-spacing-100);
-    font: inherit;
     line-height: 1.4;
-    color: var(--spectrum-neutral-content-color-default);
     background: var(--spectrum-gray-100);
-    border: var(--spectrum-border-width-200) solid transparent;
-    border-radius: var(--spectrum-corner-radius-medium-default);
+    border-color: transparent;
     resize: none;
     overflow: hidden;
     cursor: text;
   }
-  .text-input:hover { border-color: var(--spectrum-gray-400); }
   .text-input:focus { background: var(--spectrum-gray-25); }
   /* Original text of a layer under its name */
   .original { font-weight: normal; color: var(--spectrum-neutral-subdued-content-color-default); white-space: pre-line; }
@@ -2681,8 +2695,6 @@ function getTextsViewHtml (scriptUrl) {
   #sheet-file { display: none; }
   /* With images too: a second step, the grid of the images */
 ${STEPS_CSS}
-  .steps[hidden], .steps li[hidden] { display: none; }
-  .steps.single { grid-template-columns: 1fr; }
 ${IMAGES_CSS}
 `, `
 <h2 class="heading" id="title">Texts per variant</h2>
@@ -3050,7 +3062,7 @@ ${IMAGES_SCRIPT}
     if (!file) return;
     readWorkbook(file)
       .then(function (rows) { sheetStatus(file.name + ': ' + importRows(rows)); })
-      .catch(function (error) { sheetStatus((error && error.message) || String(error), true); });
+      .catch(function (error) { sheetStatus(errorText(error), true); });
   });
 
   // Cells copied from a spreadsheet (tab-separated) and pasted in a text fill the table from this text, to the right and down
@@ -3078,7 +3090,7 @@ ${IMAGES_SCRIPT}
     sheetStatus('Preparing the file...');
     uploadOne(new File([workbook(rows)], 'texts.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), function () {})
       .then(function (file) { sheetStatus(''); return request('ui/open-link', { url: file.url }); })
-      .catch(function (error) { sheetStatus((error && error.message) || String(error), true); });
+      .catch(function (error) { sheetStatus(errorText(error), true); });
   });
 
   // With smart object layers too (args.images), the images are chosen in a second step, then sent with the texts
@@ -3169,7 +3181,7 @@ ${IMAGES_SCRIPT}
       .catch(function (error) {
         confirmBtn.removeAttribute('data-sending');
         updateConfirm();
-        setStatus((error && error.message) || String(error), true);
+        setStatus(errorText(error), true);
       });
   });
 `)
@@ -3182,7 +3194,6 @@ const REPORT_CSS = `
     margin-top: var(--spectrum-spacing-400); padding: var(--spectrum-spacing-300);
     background: var(--spectrum-background-layer-2-color); border: 1px solid var(--spectrum-gray-200); border-radius: var(--spectrum-corner-radius-500);
   }
-  .report[hidden] { display: none; }
   .report-title { font-weight: var(--spectrum-bold-font-weight); }
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: var(--spectrum-spacing-200); }
   .tile { display: flex; flex-direction: column; gap: 2px; padding: var(--spectrum-spacing-200); background: var(--spectrum-background-base-color); border-radius: var(--spectrum-corner-radius-200); }
@@ -3347,19 +3358,7 @@ function getVariantViewHtml (scriptUrl) {
     background: var(--spectrum-gray-100);
   }
   /* Changes of each variant, in free text, pre-filled with the proposed fixes of its texts */
-  .change-request {
-    width: 100%;
-    min-height: 48px;
-    padding: var(--spectrum-spacing-75) var(--spectrum-spacing-100);
-    font: inherit;
-    font-size: var(--spectrum-font-size-75);
-    color: var(--spectrum-neutral-content-color-default);
-    background: var(--spectrum-gray-25);
-    border: var(--spectrum-border-width-200) solid var(--spectrum-gray-300);
-    border-radius: var(--spectrum-corner-radius-medium-default);
-    resize: vertical;
-  }
-  .change-request:hover { border-color: var(--spectrum-gray-400); }
+  .change-request { min-height: 48px; font-size: var(--spectrum-font-size-75); resize: vertical; }
   .downloads { display: flex; flex-wrap: wrap; gap: var(--spectrum-spacing-100); }
   .card-error { color: var(--spectrum-negative-content-color-default); font-size: var(--spectrum-font-size-75); word-break: break-word; }
   /* Texts being checked: a small spinner and a subdued label */
@@ -3386,7 +3385,6 @@ function getVariantViewHtml (scriptUrl) {
   .preview-name { flex: 1; min-width: 0; font-weight: var(--spectrum-bold-font-weight); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .preview .visual img { max-height: 640px; cursor: zoom-out; }
 ${STEPS_CSS}
-  .steps.single { grid-template-columns: 1fr; }
   /* Texts of the variant on its enlarged visual, to click to write a change for them */
   .edit-zone { position: absolute; box-sizing: border-box; border: 1px dashed transparent; border-radius: 2px; cursor: text; }
   .edit-zone:hover { border-color: var(--spectrum-accent-background-color-default); background: color-mix(in srgb, var(--spectrum-accent-background-color-default) 8%, transparent); }
@@ -3618,7 +3616,7 @@ ${REPORT_SCRIPT}
         render();
         return request('ui/open-link', { url: zip.url });
       })
-      .catch(function (error) { setStatus((error && error.message) || String(error), true); })
+      .catch(function (error) { setStatus(errorText(error), true); })
       .then(function () { zipping = false; updateFixActions(); });
   }
 
@@ -3651,7 +3649,7 @@ ${REPORT_SCRIPT}
     updateFixActions();
     sendToModel(context, 'Please apply my changes to ' + changes.length + ' variant(s).', 'Changes sent.')
       .then(function () { toChange.forEach(function (v) { requests[v.fileName] = ''; }); render(); })
-      .catch(function (error) { setStatus((error && error.message) || String(error), true); })
+      .catch(function (error) { setStatus(errorText(error), true); })
       .then(function () { busy = false; updateFixActions(); });
   }
 
@@ -3995,7 +3993,7 @@ ${REPORT_SCRIPT}
       .catch(function (error) {
         generating = false;
         // Variants not rendered are marked as failed, the others are kept
-        variants = variants.map(function (v) { return v.pending ? { fileName: v.fileName, error: (error && error.message) || String(error) } : v; });
+        variants = variants.map(function (v) { return v.pending ? { fileName: v.fileName, error: errorText(error) } : v; });
         render();
       });
   });
