@@ -436,11 +436,22 @@ function getStartViewHtml (scriptUrl) {
   .field > sp-field-label { padding-block: 0; }
   #count { width: 120px; }
   #naming { width: 360px; max-width: 100%; }
-  /* The picker of the languages, in place, then the languages chosen as tags that can be removed, wrapping next to it */
-  .languages { display: flex; align-items: flex-start; gap: var(--spectrum-spacing-200); }
-  .languages sp-picker { flex: 0 0 200px; width: 200px; }
-  /* Each tag has a margin on all sides: taken back, so that the first row is aligned with the picker */
-  .languages sp-tags { flex: 1; min-width: 0; margin: calc(-1 * var(--spectrum-spacing-75)); }
+  /* Languages: a field like a Spectrum 2 picker, naming the languages chosen, that opens a list with a checkbox each */
+  .languages-button {
+    display: flex; align-items: center; justify-content: space-between; gap: var(--spectrum-spacing-100);
+    width: 240px; max-width: 100%; height: var(--spectrum-component-height-100);
+    padding: 0 var(--spectrum-spacing-200) 0 var(--spectrum-spacing-300);
+    font: inherit; color: var(--spectrum-neutral-content-color-default); text-align: left;
+    background: var(--spectrum-gray-100); border: none; border-radius: var(--spectrum-corner-radius-medium-default); cursor: pointer;
+  }
+  .languages-button:hover { background: var(--spectrum-gray-200); }
+  .languages-button:focus-visible { outline: var(--spectrum-focus-indicator-thickness) solid var(--spectrum-focus-indicator-color); outline-offset: var(--spectrum-focus-indicator-gap); }
+  .languages-button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .languages-button sp-icon-chevron-down { flex: none; }
+  #languages-popover { width: 240px; max-width: calc(100vw - 32px); }
+  .languages-list { display: flex; flex-direction: column; padding: var(--spectrum-spacing-75); max-height: 300px; overflow: auto; }
+  .languages-list sp-checkbox { margin: 0; padding: 0 var(--spectrum-spacing-200); border-radius: var(--spectrum-corner-radius-medium-default); }
+  .languages-list sp-checkbox:hover { background: var(--spectrum-gray-100); }
   /* Compact drop zone: one row with the message on the left and the buttons on the right, wrapping when narrow */
   sp-dropzone {
     display: flex;
@@ -533,10 +544,12 @@ ${LAYERS_CSS}
 </div>
 <div class="field">
   <sp-field-label size="m">Languages</sp-field-label>
-  <div class="languages">
-    <sp-picker id="add-language" label="Add a language"></sp-picker>
-    <sp-tags id="languages"></sp-tags>
-  </div>
+  <overlay-trigger triggered-by="click" placement="bottom-start" offset="4">
+    <button type="button" slot="trigger" class="languages-button" id="languages-button" aria-haspopup="listbox"><span id="languages-label"></span><sp-icon-chevron-down size="s" aria-hidden="true"></sp-icon-chevron-down></button>
+    <sp-popover slot="click-content" id="languages-popover">
+      <div class="languages-list" id="languages" role="group" aria-label="Languages"></div>
+    </sp-popover>
+  </overlay-trigger>
   <sp-help-text id="total"></sp-help-text>
 </div>
 <div class="field">
@@ -641,8 +654,9 @@ ${LAYERS_SCRIPT}
     if (li && (e.key === 'Enter' || e.key === ' ') && reachable(Number(li.getAttribute('data-for')))) { e.preventDefault(); showStep(Number(li.getAttribute('data-for'))); }
   });
   var aemBtn = document.getElementById('aem');
-  var languageTags = document.getElementById('languages');
-  var languagePicker = document.getElementById('add-language');
+  var languageList = document.getElementById('languages');
+  var languageButton = document.getElementById('languages-button');
+  var languageLabel = document.getElementById('languages-label');
   // Codes of the languages chosen, in the order of LANGUAGE_NAMES
   var chosen = ['en'];
   var totalText = document.getElementById('total');
@@ -1069,17 +1083,20 @@ ${LAYERS_SCRIPT}
     return Object.keys(LANGUAGE_NAMES).filter(function (code) { return chosen.indexOf(code) >= 0; });
   }
 
-  // The tags of the languages chosen, and the other languages in the picker
+  // The field names the languages chosen (their count beyond two); the list has a checkbox per language
   function renderLanguages() {
-    languageTags.innerHTML = languages().map(function (code) {
-      return '<sp-tag deletable data-code="' + code + '">' + escapeHtml(LANGUAGE_NAMES[code]) + '</sp-tag>';
+    languageList.innerHTML = Object.keys(LANGUAGE_NAMES).map(function (code) {
+      return '<sp-checkbox size="l" data-code="' + code + '"' + (chosen.indexOf(code) >= 0 ? ' checked' : '') + '>' + escapeHtml(LANGUAGE_NAMES[code]) + '</sp-checkbox>';
     }).join('');
-    languagePicker.innerHTML = Object.keys(LANGUAGE_NAMES).filter(function (code) { return chosen.indexOf(code) < 0; }).map(function (code) {
-      return '<sp-menu-item value="' + code + '">' + escapeHtml(LANGUAGE_NAMES[code]) + '</sp-menu-item>';
-    }).join('');
-    languagePicker.disabled = chosen.length === Object.keys(LANGUAGE_NAMES).length;
-    updateButton();
+    updateLanguages();
     reportSize();
+  }
+  // Only the label and the total change while the list is open, so that the checkbox keeps the focus
+  function updateLanguages() {
+    var names = languages().map(function (code) { return LANGUAGE_NAMES[code]; });
+    languageLabel.textContent = !names.length ? 'Choose languages' : names.length <= 2 ? names.join(', ') : names.length + ' languages selected';
+    languageButton.title = names.join(', ');
+    updateButton();
   }
 
   // Each variant is created in each language: the total is at most ${MAX_VARIANTS_UI}, and each is rendered in each template
@@ -1399,17 +1416,12 @@ ${LAYERS_SCRIPT}
   countInput.addEventListener('input', updateButton);
   countInput.addEventListener('change', updateButton);
   namingInput.addEventListener('input', updateButton);
-  languagePicker.addEventListener('change', function () {
-    var code = languagePicker.value;
-    if (code && chosen.indexOf(code) < 0) chosen.push(code);
-    // The picker offers to add another one
-    languagePicker.value = '';
-    renderLanguages();
-  });
-  languageTags.addEventListener('delete', function (e) {
+  languageList.addEventListener('change', function (e) {
     var code = e.target.getAttribute('data-code');
+    if (!code) return;
     chosen = chosen.filter(function (c) { return c !== code; });
-    renderLanguages();
+    if (e.target.checked) chosen.push(code);
+    updateLanguages();
   });
   renderLanguages();
   document.getElementById('browse').addEventListener('click', function () { input.value = ''; input.click(); });
