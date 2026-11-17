@@ -1,4 +1,4 @@
-// Spectrum 2 web components used by the MCP App views, bundled by ui/build.js into web-src/spectrum.<hash>.js
+// Spectrum 2 web components (Spectrum Web Components 1.x, spectrum-two theme) used by the MCP App views, bundled by ui/build.js into web-src/spectrum.<hash>.js
 import '@spectrum-web-components/theme/sp-theme.js'
 import '@spectrum-web-components/theme/spectrum-two/theme-light.js'
 import '@spectrum-web-components/theme/spectrum-two/theme-dark.js'
@@ -24,3 +24,7 @@ import '@spectrum-web-components/icons-workflow/icons/sp-icon-checkmark.js'
 import '@spectrum-web-components/icons-workflow/icons/sp-icon-add.js'
 import '@spectrum-web-components/icons-workflow/icons/sp-icon-checkmark-circle.js'
 import '@spectrum-web-components/icons-workflow/icons/sp-icon-chevron-down.js'
+import '@spectrum-web-components/field-label/sp-field-label.js'
+import '@spectrum-web-components/number-field/sp-number-field.js'
+import '@spectrum-web-components/textfield/sp-textfield.js'
+import '@spectrum-web-components/action-button/sp-action-button.js'

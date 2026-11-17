@@ -28,6 +28,12 @@ const BASE_STYLE = `
   /* Spinner shown before the status while something loads */
   #status-loader { vertical-align: middle; margin-right: var(--spectrum-spacing-100); }
   #status-loader:not([hidden]) + .status { display: inline-block; vertical-align: middle; }
+  /* Text areas styled as Spectrum 2 text fields: a dark border on focus, the focus ring from the keyboard */
+  textarea:focus { outline: none; border-color: var(--spectrum-gray-800) !important; }
+  textarea:focus-visible, .library-remove:focus-visible {
+    outline: var(--spectrum-focus-indicator-thickness) solid var(--spectrum-focus-indicator-color);
+    outline-offset: var(--spectrum-focus-indicator-gap);
+  }
 `
 
 // JSON-RPC bridge with the host: request(), notification(), onToolResult(), setStatus(), reportSize().
@@ -427,18 +433,9 @@ const QUOTA_SCRIPT = `
 function getStartViewHtml (scriptUrl) {
   return page(scriptUrl, 'Create Variants', `
   .field { display: flex; flex-direction: column; gap: var(--spectrum-spacing-75); margin-bottom: var(--spectrum-spacing-300); }
-  .field label { font-size: var(--spectrum-font-size-75); color: var(--spectrum-neutral-subdued-content-color-default); }
-  .field input {
-    width: 120px;
-    font: inherit;
-    padding: var(--spectrum-spacing-100) var(--spectrum-spacing-200);
-    color: var(--spectrum-neutral-content-color-default);
-    background: var(--spectrum-background-layer-2-color);
-    border: 2px solid var(--spectrum-gray-300);
-    border-radius: var(--spectrum-corner-radius-100);
-  }
-  .field input:focus { outline: none; border-color: var(--spectrum-gray-800); }
-  .field input.wide { width: 360px; max-width: 100%; }
+  .field > sp-field-label { padding-block: 0; }
+  #count { width: 120px; }
+  #naming { width: 360px; max-width: 100%; }
   /* The picker of the languages, in place, then the languages chosen as tags that can be removed, wrapping next to it */
   .languages { display: flex; align-items: flex-start; gap: var(--spectrum-spacing-200); }
   .languages sp-picker { flex: 0 0 200px; width: 200px; }
@@ -471,16 +468,8 @@ function getStartViewHtml (scriptUrl) {
   .template-row .template-state { font-size: var(--spectrum-font-size-75); color: var(--spectrum-neutral-subdued-content-color-default); white-space: nowrap; }
   .template-row .template-state.negative { color: var(--spectrum-negative-content-color-default); white-space: normal; }
   .template-row sp-progress-bar { grid-column: 1 / -1; margin-top: 0; }
-  .template-remove { width: 24px; height: 24px; padding: 0; font: inherit; font-size: 15px; line-height: 22px; color: var(--spectrum-neutral-content-color-default);
-    background: transparent; border: 1px solid var(--spectrum-gray-400); border-radius: 50%; cursor: pointer; }
-  .template-remove:hover { background: var(--spectrum-gray-200); }
-  /* One tab per template in the layer step, with the number of layers picked in it */
+  /* One button per template in the layer step, with the number of layers picked in it, the one shown selected */
   .template-tabs { display: flex; flex-wrap: wrap; gap: var(--spectrum-spacing-100); margin-bottom: var(--spectrum-spacing-300); }
-  .template-tab { font: inherit; font-size: var(--spectrum-font-size-75); padding: var(--spectrum-spacing-75) var(--spectrum-spacing-200);
-    color: var(--spectrum-neutral-content-color-default); background: transparent; border: 2px solid var(--spectrum-gray-300);
-    border-radius: 16px; cursor: pointer; }
-  .template-tab:hover { border-color: var(--spectrum-gray-500); }
-  .template-tab.active { border-color: var(--spectrum-accent-background-color-default); color: var(--spectrum-accent-content-color-default); font-weight: var(--spectrum-bold-font-weight); }
   .linked { margin-top: var(--spectrum-spacing-200); font-size: var(--spectrum-font-size-75); }
   /* Fonts added, under the preview: tags that can be removed next to the button */
   .field.fonts { margin-top: var(--spectrum-spacing-300); }
@@ -493,16 +482,16 @@ function getStartViewHtml (scriptUrl) {
   .template-fonts li { display: flex; align-items: center; gap: var(--spectrum-spacing-100); min-width: 0; }
   .template-fonts .font-name { font-weight: var(--spectrum-bold-font-weight); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .template-fonts .font-source { color: var(--spectrum-neutral-subdued-content-color-default); white-space: nowrap; }
-  .template-fonts sp-icon-checkmark-circle { flex: none; color: var(--spectrum-positive-visual-color, #2d9d78); }
-  .template-fonts sp-icon-alert { flex: none; color: var(--spectrum-notice-visual-color, #e68619); }
+  .template-fonts sp-icon-checkmark-circle { flex: none; color: var(--spectrum-positive-visual-color); }
+  .template-fonts sp-icon-alert { flex: none; color: var(--spectrum-notice-visual-color); }
   .template-fonts .font-pending { flex: none; width: 18px; text-align: center; color: var(--spectrum-neutral-subdued-content-color-default); }
-  .template-fonts li.missing .font-source { color: var(--spectrum-orange-1000, #a54b00); }
+  .template-fonts li.missing .font-source { color: var(--spectrum-orange-1000); }
   .font-action { font: inherit; padding: 0 6px; border: none; background: transparent; color: var(--spectrum-accent-content-color-default); cursor: pointer; text-decoration: underline; }
   #toggle-library sp-icon-chevron-down { transition: transform 0.15s; }
   #toggle-library:not(.open) sp-icon-chevron-down { transform: rotate(-90deg); }
   /* The library of the user, behind Your fonts: grouped by family */
   .font-library { margin-top: var(--spectrum-spacing-100); padding: var(--spectrum-spacing-100) var(--spectrum-spacing-200); border: 1px solid var(--spectrum-gray-300);
-    border-radius: 8px; max-height: 260px; overflow: auto; display: grid; gap: var(--spectrum-spacing-200); }
+    border-radius: var(--spectrum-corner-radius-medium-default); max-height: 260px; overflow: auto; display: grid; gap: var(--spectrum-spacing-200); }
   .font-library[hidden] { display: none; }
   .font-family-name { margin-bottom: 4px; font-weight: var(--spectrum-bold-font-weight); }
   .font-chips { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
@@ -511,21 +500,21 @@ function getStartViewHtml (scriptUrl) {
   .fonts-help { display: flex; align-items: center; gap: var(--spectrum-spacing-75);
     font-size: var(--spectrum-font-size-75); color: var(--spectrum-neutral-subdued-content-color-default); }
   .fonts-help sp-icon-alert, .fonts-help sp-icon-checkmark-circle { flex: none; }
-  .fonts-help.positive sp-icon-checkmark-circle { color: var(--spectrum-positive-visual-color, #2d9d78); }
-  .fonts-help.warning { color: var(--spectrum-orange-1000, #a54b00); }
-  .fonts-help.warning sp-icon-alert { color: var(--spectrum-notice-visual-color, #e68619); }
-  .fonts-help.negative { color: var(--spectrum-negative-content-color-default, #d31510); }
+  .fonts-help.positive sp-icon-checkmark-circle { color: var(--spectrum-positive-visual-color); }
+  .fonts-help.warning { color: var(--spectrum-orange-1000); }
+  .fonts-help.warning sp-icon-alert { color: var(--spectrum-notice-visual-color); }
+  .fonts-help.negative { color: var(--spectrum-negative-content-color-default); }
   /* Fonts added before (the library of the user): a chip each, to add it, with a button to remove it from the library */
   .font-library { font-size: var(--spectrum-font-size-75); }
-  .font-chip { display: inline-flex; align-items: center; border: 1px solid var(--spectrum-gray-400); border-radius: 14px; overflow: hidden; }
+  .font-chip { display: inline-flex; align-items: center; border: 1px solid var(--spectrum-gray-400); border-radius: 9999px; overflow: hidden; }
   .font-chip button { font: inherit; color: var(--spectrum-neutral-content-color-default); background: transparent; border: none; cursor: pointer;
-    padding: 3px 8px; }
+    padding: 3px 8px; display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
   .font-chip button:hover { background: var(--spectrum-gray-200); }
-  .font-chip button, .template-remove, .library-remove { display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
+  .font-chip button:focus-visible { outline: 2px solid var(--spectrum-focus-indicator-color); outline-offset: -2px; }
   .font-chip.used { border-color: var(--spectrum-accent-background-color-default); background: var(--spectrum-accent-background-color-default); }
-  .font-chip.used button { color: #ffffff; }
-  .font-chip.used button:hover { background: rgba(0, 0, 0, 0.15); }
-  .font-chip.used .font-forget { color: #ffffff; }
+  .font-chip.used button { color: var(--spectrum-white); }
+  .font-chip.used button:hover { background: var(--spectrum-accent-background-color-hover); }
+  .font-chip.used .font-forget { color: var(--spectrum-white); }
   .font-chip .font-forget { padding: 3px 7px 3px 2px; color: var(--spectrum-neutral-subdued-content-color-default); opacity: 0; }
   .font-chip:hover .font-forget, .font-chip .font-forget:focus-visible { opacity: 1; }
 ${STEPS_CSS}
@@ -539,11 +528,11 @@ ${LAYERS_CSS}
 <div data-step="1">
 <div class="subtle intro">Set the number of variants and their languages, and drop the layered PSD template, or one template per format.</div>
 <div class="field">
-  <label for="count">Number of variants per language</label>
-  <input type="number" id="count" min="1" max="${MAX_VARIANTS_UI}" value="2">
+  <sp-field-label for="count" size="m">Number of variants per language</sp-field-label>
+  <sp-number-field id="count" min="1" max="${MAX_VARIANTS_UI}" step="1" value="2" format-options='{"maximumFractionDigits":0}'></sp-number-field>
 </div>
 <div class="field">
-  <label>Languages</label>
+  <sp-field-label size="m">Languages</sp-field-label>
   <div class="languages">
     <sp-picker id="add-language" label="Add a language"></sp-picker>
     <sp-tags id="languages"></sp-tags>
@@ -551,8 +540,8 @@ ${LAYERS_CSS}
   <sp-help-text id="total"></sp-help-text>
 </div>
 <div class="field">
-  <label for="naming">File names</label>
-  <input type="text" id="naming" class="wide" value="{template}_{variant}_{language}" spellcheck="false">
+  <sp-field-label for="naming" size="m">File names</sp-field-label>
+  <sp-textfield id="naming" value="{template}_{variant}_{language}" spellcheck="false"></sp-textfield>
   <sp-help-text id="naming-help"></sp-help-text>
 </div>
 <sp-dropzone id="drop">
@@ -568,11 +557,11 @@ ${LAYERS_CSS}
 </div>
 <div data-step="2" hidden>
   <div class="subtle intro" id="layers-intro">Click the numbered zones of the template, or the list, to pick the layers to change in the variants.</div>
-  <div class="template-tabs" id="template-tabs" role="tablist" hidden></div>
+  <div class="template-tabs" id="template-tabs" role="group" aria-label="Templates" hidden></div>
   ${LAYERS_HTML}
   <div class="subtle linked" id="linked" hidden></div>
 <div class="field fonts">
-  <div class="fonts-head"><label>Fonts</label><div id="fonts-help" class="fonts-help" role="status"></div></div>
+  <div class="fonts-head"><sp-field-label size="m">Fonts</sp-field-label><div id="fonts-help" class="fonts-help" role="status"></div></div>
   <ul class="template-fonts" id="template-fonts" hidden></ul>
   <div class="fonts-row">
     <sp-button size="s" variant="secondary" treatment="quiet" id="toggle-library" hidden aria-expanded="false" aria-controls="font-library"><sp-icon-chevron-down slot="icon" aria-hidden="true"></sp-icon-chevron-down><span id="library-label">Your fonts</span></sp-button>
@@ -658,6 +647,8 @@ ${LAYERS_SCRIPT}
   var chosen = ['en'];
   var totalText = document.getElementById('total');
   var namingInput = document.getElementById('naming');
+  // Value of a Spectrum field, also before its component is loaded (the bundle is a module, loaded after this script runs)
+  function fieldValue(el) { return el.value != null ? String(el.value) : el.getAttribute('value') || ''; }
   var namingHelp = document.getElementById('naming-help');
   // Templates imported, one per format, in order: { name, url, status ('uploading', 'importing', 'reading', 'ready', 'error'),
   // progress, error, data (layers, document, preview), checked (ids of the layers picked), missingFonts, read (count of its
@@ -1047,14 +1038,14 @@ ${LAYERS_SCRIPT}
   function fileNamePattern() {
     var now = new Date();
     var date = now.getFullYear() + '-' + ('0' + (now.getMonth() + 1)).slice(-2) + '-' + ('0' + now.getDate()).slice(-2);
-    var pattern = namingInput.value.trim().split('{date}').join(date);
+    var pattern = fieldValue(namingInput).trim().split('{date}').join(date);
     return templates.length > 1 ? pattern : pattern.split('{template}').join(templates.length ? templateNames()[0] : 'template');
   }
 
   // The model is valid when it names each variant apart: with {variant}, with {language} for several languages, and with
   // {template} for several templates
   function namingError() {
-    var value = namingInput.value;
+    var value = fieldValue(namingInput);
     if (value.indexOf('{variant}') < 0) return 'Add {variant}, so that each variant has its own file.';
     if (languages().length > 1 && value.indexOf('{language}') < 0) return 'Add {language}, so that each language has its own file.';
     if (templates.length > 1 && value.indexOf('{template}') < 0) return 'Add {template}, so that each format has its own file.';
@@ -1070,7 +1061,7 @@ ${LAYERS_SCRIPT}
   }
 
   function count() {
-    var n = Math.round(Number(countInput.value));
+    var n = Math.round(Number(fieldValue(countInput)));
     return n >= 1 && n <= ${MAX_VARIANTS_UI} ? n : null;
   }
 
@@ -1156,7 +1147,7 @@ ${LAYERS_SCRIPT}
   }
 
   onToolInput(function (args) {
-    if (args.variantCount) countInput.value = args.variantCount;
+    if (args.variantCount) countInput.setAttribute('value', args.variantCount);
     if (args.languages && args.languages.length) {
       chosen = args.languages.filter(function (code) { return LANGUAGE_NAMES[code]; });
       renderLanguages();
@@ -1257,7 +1248,7 @@ ${LAYERS_SCRIPT}
       var state = t.status === 'error' ? t.error : t.status === 'ready' ? sizeOf(t) : STATE_LABELS[t.status] + '...';
       return '<div class="template-row"><span class="template-name" title="' + escapeHtml(t.name) + '">' + escapeHtml(t.name) + '</span>'
         + '<span class="template-state' + (t.status === 'error' ? ' negative' : '') + '">' + escapeHtml(state || '') + '</span>'
-        + '<button type="button" class="template-remove" data-index="' + i + '" aria-label="Remove ' + escapeHtml(t.name) + '" title="Remove"><sp-icon-close size="xs" aria-hidden="true"></sp-icon-close></button>'
+        + '<sp-action-button quiet size="s" class="template-remove" data-index="' + i + '" label="Remove ' + escapeHtml(t.name) + '" title="Remove"><sp-icon-close slot="icon"></sp-icon-close></sp-action-button>'
         + (t.status === 'uploading' ? '<sp-progress-bar size="s" label="Uploading" progress="' + t.progress + '"></sp-progress-bar>'
           : t.status === 'importing' || t.status === 'reading' ? '<sp-progress-bar size="s" label="' + STATE_LABELS[t.status] + '" indeterminate></sp-progress-bar>' : '')
         + '</div>';
@@ -1317,8 +1308,8 @@ ${LAYERS_SCRIPT}
     templateTabs.hidden = templates.length < 2;
     templateTabs.innerHTML = templates.length < 2 ? '' : templates.map(function (t, i) {
       var picked = checkedIds(t).length;
-      return '<button type="button" role="tab" class="template-tab' + (i === active ? ' active' : '') + '" data-index="' + i + '" aria-selected="' + (i === active) + '">'
-        + escapeHtml(t.name.replace(/\\.psd$/i, '')) + (sizeOf(t) ? ' · ' + sizeOf(t) : '') + (picked ? ' (' + picked + ')' : '') + '</button>';
+      return '<sp-action-button size="s" class="template-tab" data-index="' + i + '"' + (i === active ? ' selected' : '') + '>'
+        + escapeHtml(t.name.replace(/\\.psd$/i, '')) + (sizeOf(t) ? ' · ' + sizeOf(t) : '') + (picked ? ' (' + picked + ')' : '') + '</sp-action-button>';
     }).join('');
     renderLinked();
   }
@@ -1406,6 +1397,7 @@ ${LAYERS_SCRIPT}
   showQuota(document.getElementById('quota'));
 
   countInput.addEventListener('input', updateButton);
+  countInput.addEventListener('change', updateButton);
   namingInput.addEventListener('input', updateButton);
   languagePicker.addEventListener('change', function () {
     var code = languagePicker.value;
@@ -1548,10 +1540,9 @@ const IMAGES_CSS = `
   .slot-empty { margin: auto 0; }
   /* Prompt of an image generated by Firefly, in its slot */
   .prompt { width: 100%; min-height: 64px; font: inherit; font-size: var(--spectrum-font-size-75); padding: var(--spectrum-spacing-75) var(--spectrum-spacing-100);
-    color: var(--spectrum-neutral-content-color-default); background: var(--spectrum-gray-50); border: 1px solid var(--spectrum-gray-400);
-    border-radius: var(--spectrum-corner-radius-100); resize: vertical; field-sizing: content; max-height: 220px; line-height: 1.4; }
-  .prompt:hover { border-color: var(--spectrum-gray-500); }
-  .prompt:focus { outline: none; border-color: var(--spectrum-accent-background-color-default); }
+    color: var(--spectrum-neutral-content-color-default); background: var(--spectrum-gray-25); border: var(--spectrum-border-width-200) solid var(--spectrum-gray-300);
+    border-radius: var(--spectrum-corner-radius-medium-default); resize: vertical; field-sizing: content; max-height: 220px; line-height: 1.4; }
+  .prompt:hover { border-color: var(--spectrum-gray-400); }
   .slot-buttons { display: flex; flex-wrap: wrap; gap: var(--spectrum-spacing-100); justify-content: center; }
   sp-dropzone {
     display: flex;
@@ -1583,10 +1574,10 @@ const IMAGES_CSS = `
   .crop.dragging { cursor: grabbing; }
   .crop img { display: block; width: 100%; height: 100%; pointer-events: none; }
   /* Crop frame over the whole image, the parts left out by the crop are dimmed by four shades around it */
-  .crop .frame { position: absolute; outline: 2px solid #ffffff; outline-offset: -1px; pointer-events: none; }
-  .crop .shade { position: absolute; background: rgba(0, 0, 0, 0.6); pointer-events: none; }
+  .crop .frame { position: absolute; outline: 2px solid var(--spectrum-white); outline-offset: -1px; pointer-events: none; }
+  .crop .shade { position: absolute; background: var(--spectrum-transparent-black-600); pointer-events: none; }
   .zoom { display: flex; align-items: center; gap: var(--spectrum-spacing-100); width: 100%; font-size: var(--spectrum-font-size-75); }
-  .zoom input { flex: 1; min-width: 0; accent-color: var(--spectrum-gray-800); }
+  .zoom input { flex: 1; min-width: 0; accent-color: var(--spectrum-accent-background-color-default); }
   .file-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   sp-dropzone sp-progress-bar { width: 100%; }
   /* sp-dropzone gives its content a larger font and a 1.5 line height, which sp-button inherits and which pushes its label down */
@@ -1625,12 +1616,12 @@ const IMAGES_CSS = `
     height: 20px;
     padding: 0;
     font: inherit;
-    font-size: 13px;
+    font-size: var(--spectrum-font-size-50);
     line-height: 18px;
     color: var(--spectrum-neutral-content-color-default);
     background: var(--spectrum-background-layer-2-color);
     border: 1px solid var(--spectrum-gray-400);
-    border-radius: 50%;
+    border-radius: 9999px;
     cursor: pointer;
   }
   .library-remove:hover { background: var(--spectrum-gray-200); }
@@ -2330,14 +2321,14 @@ const LAYERS_CSS = `
     position: absolute;
     padding: 0;
     background: transparent;
-    border: 2px dashed rgba(255, 255, 255, 0.95);
-    outline: 1px solid rgba(0, 0, 0, 0.5);
+    border: 2px dashed var(--spectrum-transparent-white-900);
+    outline: 1px solid var(--spectrum-transparent-black-500);
     border-radius: 2px;
     cursor: pointer;
   }
-  .zone:hover, .zone.hover, .zone:focus-visible { border-style: solid; background: rgba(255, 255, 255, 0.12); outline-color: rgba(0, 0, 0, 0.7); }
+  .zone:hover, .zone.hover, .zone:focus-visible { border-style: solid; background: var(--spectrum-transparent-white-100); outline-color: var(--spectrum-transparent-black-700); }
   /* Numbers and selected zones take the color of the layer type, as its badge in the list (Text, Smart object) */
-  .zone.selected { border-style: solid; outline: 1px solid #ffffff; }
+  .zone.selected { border-style: solid; outline: 1px solid var(--spectrum-white); }
   .zone.text.selected { border-color: var(--spectrum-informative-background-color-default); }
   .zone.image.selected { border-color: var(--spectrum-seafoam-background-color-default); }
   .num {
@@ -2345,15 +2336,15 @@ const LAYERS_CSS = `
     min-width: 20px;
     height: 20px;
     padding: 0 5px;
-    border-radius: 10px;
+    border-radius: 9999px;
     font-size: 12px;
     font-weight: var(--spectrum-bold-font-weight);
     line-height: 20px;
     text-align: center;
-    color: #ffffff;
-    background: rgba(0, 0, 0, 0.75);
+    color: var(--spectrum-white);
+    background: var(--spectrum-transparent-black-700);
   }
-  .zone .num { position: absolute; top: -1px; left: -1px; transform: translate(-50%, -50%); box-shadow: 0 0 0 1.5px #ffffff; pointer-events: none; }
+  .zone .num { position: absolute; top: -1px; left: -1px; transform: translate(-50%, -50%); box-shadow: 0 0 0 1.5px var(--spectrum-white); pointer-events: none; }
   .num.text { background: var(--spectrum-informative-background-color-default); }
   .num.image { background: var(--spectrum-seafoam-background-color-default); }
   .row .num { justify-self: center; }
@@ -2663,14 +2654,14 @@ function getTextsViewHtml (scriptUrl) {
     line-height: 1.4;
     color: var(--spectrum-neutral-content-color-default);
     background: var(--spectrum-gray-100);
-    border: 1px solid transparent;
-    border-radius: var(--spectrum-corner-radius-100);
+    border: var(--spectrum-border-width-200) solid transparent;
+    border-radius: var(--spectrum-corner-radius-medium-default);
     resize: none;
     overflow: hidden;
     cursor: text;
   }
   .text-input:hover { border-color: var(--spectrum-gray-400); }
-  .text-input:focus { outline: none; border-color: var(--spectrum-accent-background-color-default); background: var(--spectrum-background-base-color); }
+  .text-input:focus { background: var(--spectrum-gray-25); }
   /* Original text of a layer under its name */
   .original { font-weight: normal; color: var(--spectrum-neutral-subdued-content-color-default); white-space: pre-line; }
   /* Import and export of the table as an Excel file, above it */
@@ -3194,9 +3185,9 @@ const REPORT_CSS = `
   .op-label { display: flex; align-items: center; gap: var(--spectrum-spacing-100); min-width: 0; }
   .op-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* Number of calls, as a pill next to the name */
-  .op-count { flex: none; padding: 1px 8px; border-radius: 999px; background: var(--spectrum-gray-200); color: var(--spectrum-neutral-content-color-default); font-weight: var(--spectrum-bold-font-weight); font-variant-numeric: tabular-nums; }
+  .op-count { flex: none; padding: 1px 8px; border-radius: 9999px; background: var(--spectrum-gray-200); color: var(--spectrum-neutral-content-color-default); font-weight: var(--spectrum-bold-font-weight); font-variant-numeric: tabular-nums; }
   /* 429 answers of a kind of call, in the orange of Spectrum notices */
-  .op-count.op-429 { background: var(--spectrum-notice-background-color-default, #e68619); color: #ffffff; }
+  .op-count.op-429 { background: var(--spectrum-notice-background-color-default); color: var(--spectrum-white); }
   .op-value { color: var(--spectrum-neutral-subdued-content-color-default); font-variant-numeric: tabular-nums; text-align: right; }
   .op-track { grid-column: 1 / -1; position: relative; height: 10px; }
   .op-range { position: absolute; top: 4px; height: 2px; background: var(--spectrum-gray-400); border-radius: 1px; }
@@ -3299,17 +3290,17 @@ function getVariantViewHtml (scriptUrl) {
   }
   .card .visual img { max-height: 320px; cursor: zoom-in; }
   .mark { position: absolute; box-sizing: border-box; pointer-events: none; }
-  .mark-text { border: 2px dashed var(--spectrum-notice-visual-color, #e68619); }
-  .mark-overlap { background: rgba(227, 72, 80, 0.35); border: 1px solid rgb(227, 72, 80); }
+  .mark-text { border: 2px dashed var(--spectrum-notice-visual-color); }
+  .mark-overlap { background: color-mix(in srgb, var(--spectrum-negative-visual-color) 35%, transparent); border: 1px solid var(--spectrum-negative-visual-color); }
   .mark-number, .issue-number {
     display: inline-block;
     min-width: 18px;
     height: 18px;
     padding: 0 4px;
     box-sizing: border-box;
-    border-radius: 9px;
-    background: var(--spectrum-notice-visual-color, #e68619);
-    color: #fff;
+    border-radius: 9999px;
+    background: var(--spectrum-notice-visual-color);
+    color: var(--spectrum-white);
     font-size: 11px;
     font-weight: bold;
     line-height: 18px;
@@ -3329,7 +3320,7 @@ function getVariantViewHtml (scriptUrl) {
   .language.format { flex: 0 1 auto; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; }
   /* A variant of the earlier generation, not generated again */
   /* State of a variant after changes were sent: generated again (Changed) or kept from the earlier generation (Unchanged) */
-  .state { flex: none; padding: 0 8px; border-radius: 9px; font-size: 11px; font-weight: bold; line-height: 18px; color: #ffffff; }
+  .state { flex: none; padding: 0 8px; border-radius: 9999px; font-size: 11px; font-weight: bold; line-height: 18px; color: var(--spectrum-white); }
   .state.unchanged { background: var(--spectrum-gray-600); }
   .state.changed { background: var(--spectrum-accent-background-color-default); }
   /* In place of the visual of a variant being rendered */
@@ -3351,12 +3342,12 @@ function getVariantViewHtml (scriptUrl) {
     font: inherit;
     font-size: var(--spectrum-font-size-75);
     color: var(--spectrum-neutral-content-color-default);
-    background: var(--spectrum-gray-100);
-    border: 1px solid transparent;
-    border-radius: var(--spectrum-corner-radius-100);
+    background: var(--spectrum-gray-25);
+    border: var(--spectrum-border-width-200) solid var(--spectrum-gray-300);
+    border-radius: var(--spectrum-corner-radius-medium-default);
     resize: vertical;
   }
-  .change-request:focus { outline: none; border-color: var(--spectrum-accent-background-color-default); }
+  .change-request:hover { border-color: var(--spectrum-gray-400); }
   .downloads { display: flex; flex-wrap: wrap; gap: var(--spectrum-spacing-100); }
   .card-error { color: var(--spectrum-negative-content-color-default); font-size: var(--spectrum-font-size-75); word-break: break-word; }
   /* Texts being checked: a small spinner and a subdued label */
@@ -3386,7 +3377,7 @@ ${STEPS_CSS}
   .steps.single { grid-template-columns: 1fr; }
   /* Texts of the variant on its enlarged visual, to click to write a change for them */
   .edit-zone { position: absolute; box-sizing: border-box; border: 1px dashed transparent; border-radius: 2px; cursor: text; }
-  .edit-zone:hover { border-color: var(--spectrum-accent-background-color-default); background: rgba(20, 115, 230, 0.08); }
+  .edit-zone:hover { border-color: var(--spectrum-accent-background-color-default); background: color-mix(in srgb, var(--spectrum-accent-background-color-default) 8%, transparent); }
   .card-warning[data-layer] { cursor: pointer; }
   .card-warning[data-layer]:hover { text-decoration: underline; }
 ${REPORT_CSS}`, `
