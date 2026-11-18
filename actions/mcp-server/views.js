@@ -48,11 +48,12 @@ const BASE_STYLE = `
   }
   /* sp-dropzone gives its content a larger font and a 1.5 line height, which sp-button inherits and which pushes its label down */
   sp-dropzone sp-button { font-size: var(--spectrum-font-size-100); line-height: var(--spectrum-line-height-100); }
-  /* Name of a variant (steps 3, 4 and 5): a pill in the accent color */
+  /* Name of a variant (steps 3, 4 and 5): a pill in the accent color, its text light in the dark theme (contrast with the blue background) */
   .variant-pill { display: inline-block; vertical-align: middle; max-width: 100%; padding: 2px var(--spectrum-spacing-200); overflow: hidden;
     font-size: var(--spectrum-font-size-75); font-weight: var(--spectrum-bold-font-weight); line-height: 1.4; white-space: nowrap; text-overflow: ellipsis;
-    color: var(--spectrum-accent-content-color-default); background: var(--spectrum-accent-subtle-background-color-default);
+    color: var(--spectrum-accent-color-1200); background: var(--spectrum-accent-subtle-background-color-default);
     border: 1px solid var(--spectrum-accent-visual-color); border-radius: 9999px; }
+  sp-theme[color="dark"] .variant-pill { background: var(--spectrum-gray-25); }
   /* Language of a variant next to its name, a gray pill of the same size */
   .language-pill { display: inline-block; vertical-align: middle; margin-left: var(--spectrum-spacing-75); padding: 2px var(--spectrum-spacing-200);
     font-size: var(--spectrum-font-size-75); font-weight: var(--spectrum-bold-font-weight); line-height: 1.4; white-space: nowrap;
