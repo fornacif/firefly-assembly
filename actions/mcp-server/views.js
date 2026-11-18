@@ -2285,10 +2285,11 @@ const STEPS_CSS = `
   .steps li.current .step-kicker { color: var(--spectrum-accent-content-color-default); }
   .steps li.current .step-title { color: var(--spectrum-neutral-content-color-default); font-weight: var(--spectrum-bold-font-weight); }
   .steps li.done .step-kicker::after { content: ' \\2713'; }
-  /* A step that can be gone to (the done one, or the next one once the current one is complete), on hover like the current one */
+  /* A step that can be gone to (the done one, or the next one once the current one is complete): its bar on hover, a focus ring
+     from the keyboard */
   .steps li.reachable { cursor: pointer; }
   .steps li.reachable:hover { border-top-color: var(--spectrum-accent-background-color-hover, var(--spectrum-accent-background-color-default)); }
-  .steps li.reachable:hover .step-title { color: var(--spectrum-neutral-content-color-default); }
+  .steps li.reachable:focus-visible { outline: var(--spectrum-focus-indicator-thickness) solid var(--spectrum-focus-indicator-color); outline-offset: 2px; }
 `
 
 // Picker of the layers of a template (preview with numbered zones, and list), shared by the start and layers views:
