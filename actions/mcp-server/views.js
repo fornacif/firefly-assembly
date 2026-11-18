@@ -56,11 +56,6 @@ const BRIDGE_SCRIPT = `
   var _pending = {};
   var _toolResultHandler = null;
   var _toolInputHandler = null;
-  var _hostContextHandler = null;
-  // Context given by the host (theme, display mode and the modes it offers), updated as it changes; the display modes of the
-  // view, told to the host (a view shown full screen at times adds 'fullscreen')
-  var hostContext = {};
-  var appDisplayModes = ['inline'];
   // Resolved once the handshake with the host is done: host methods must not be called before
   var _readyResolve;
   var ready = new Promise(function (resolve) { _readyResolve = resolve; });
@@ -81,7 +76,6 @@ const BRIDGE_SCRIPT = `
 
   function onToolResult(handler) { _toolResultHandler = handler; }
   function onToolInput(handler) { _toolInputHandler = handler; }
-  function onHostContextChanged(handler) { _hostContextHandler = handler; }
   // The tool input and result received before the view script set its handlers, given to them once it has run (see page())
   var _early = {};
   function _deliverEarly() {
@@ -90,13 +84,6 @@ const BRIDGE_SCRIPT = `
     _early = null;
   }
 
-  // Bottom inset of the host (safeAreaInsets), kept for the views shown full screen
-  function applyInsets(context) {
-    var bottom = context && context.safeAreaInsets && Number(context.safeAreaInsets.bottom);
-    document.documentElement.style.setProperty('--host-bottom-inset', (bottom > 0 ? bottom : 0) + 'px');
-  }
-  // Whether the host can show the view full screen (ui/request-display-mode)
-  function canFullscreen() { return (hostContext.availableDisplayModes || []).indexOf('fullscreen') >= 0; }
 
   window.addEventListener('message', function (event) {
     var msg = event.data;
@@ -110,10 +97,7 @@ const BRIDGE_SCRIPT = `
     }
 
     if (msg.method === 'ui/notifications/host-context-changed') {
-      hostContext = Object.assign({}, hostContext, msg.params);
       applyTheme(msg.params);
-      applyInsets(hostContext);
-      if (_hostContextHandler) _hostContextHandler(msg.params || {});
     } else if (msg.method === 'ui/notifications/tool-result') {
       if (_early) _early.result = msg.params;
       else if (_toolResultHandler) _toolResultHandler(msg.params);
@@ -167,9 +151,6 @@ const BRIDGE_SCRIPT = `
     _sizePending = true;
     requestAnimationFrame(function () {
       _sizePending = false;
-      // Full screen, the host sets the size of the view: none is told (it would make the host resize it while it changes mode),
-      // and the next one is told even if unchanged
-      if (document.body.classList.contains('fullscreen')) { _lastSize = ''; return; }
       var h = Math.ceil(document.documentElement.getBoundingClientRect().height);
       var w = Math.ceil(window.innerWidth);
       if (w + 'x' + h === _lastSize) return;
@@ -241,11 +222,9 @@ const BRIDGE_SCRIPT = `
     request('ui/initialize', {
       protocolVersion: '2026-01-26',
       appInfo: { name: appName, version: '1.0.0' },
-      appCapabilities: { availableDisplayModes: appDisplayModes }
+      appCapabilities: { availableDisplayModes: ['inline'] }
     }).then(function (result) {
-      hostContext = result.hostContext || {};
       applyTheme(result.hostContext);
-      applyInsets(hostContext);
       notification('ui/notifications/initialized');
       reportSize();
     }).catch(function () {}).then(_readyResolve);
@@ -347,8 +326,8 @@ const AEM_SCRIPT = `
 // Page of a view. The handshake with the host starts at once, so that its theme is set before the components are drawn (drawn
 // in one theme then switched to the other, some keep colors of the first), and the bundle of the components is loaded then
 // (at most 1.5 s later); the view script runs once they are defined (at most 3 s later), and gets the tool input and result
-// received meanwhile. options.fullscreen: the view can be shown full screen.
-function page (scriptUrl, title, style, body, script, options = {}) {
+// received meanwhile.
+function page (scriptUrl, title, style, body, script) {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -365,7 +344,6 @@ ${body}
 (function () {
 ${BRIDGE_SCRIPT}
   function _within(ms, promise) { return Promise.race([promise, new Promise(function (resolve) { setTimeout(resolve, ms); })]); }
-${options.fullscreen ? "  appDisplayModes = ['inline', 'fullscreen'];" : ''}
   initialize('${title}');
   var _tags = {};
   Array.prototype.forEach.call(document.querySelectorAll(':not(:defined)'), function (el) { _tags[el.localName] = true; });
@@ -3358,19 +3336,13 @@ function getVariantViewHtml (scriptUrl) {
   /* The enlarged view is drawn over the grid, at the height of the card clicked (the widget is as high as its content, the page
      of the host scrolls): it opens where the user looks, and the card is there again when it closes */
   .stage { position: relative; }
-  /* The grid keeps its place under the enlarged view (opacity: the Spectrum buttons do not follow visibility) */
-  .stage.enlarged .grid, .stage.enlarged .groups { opacity: 0; pointer-events: none; }
-  /* With a host that shows the view full screen, the enlarged view is a modal over the whole screen */
-  /* Full screen, the view stops above the message field of the host: the visual is fitted so that the bar, the visual and
-     the hint under it fit in its height without scrolling (plus the bottom safe area inset of the host, if any) */
-  body.fullscreen .preview.open { position: fixed; inset: 0; top: 0 !important; overflow: auto; padding: var(--spectrum-spacing-400);
-    padding-bottom: calc(var(--spectrum-spacing-400) + var(--host-bottom-inset, 0px)); }
-  body.fullscreen .preview .visual img { max-height: calc(100vh - 120px - var(--host-bottom-inset, 0px)); }
-  body.fullscreen .preview .visual { max-width: calc((100vh - 120px - var(--host-bottom-inset, 0px)) * var(--ratio, 1)) !important; }
-  body.fullscreen #edit-hint { text-align: center; }
-  body.fullscreen.settling .preview.open { opacity: 0; }
+  /* The grid keeps its place under the enlarged view, dimmed; a click on it closes the view */
+  .stage.enlarged .grid, .stage.enlarged .groups { opacity: 0.25; pointer-events: none; }
+  .stage.enlarged { cursor: zoom-out; }
   .preview { display: none; }
-  .preview.open { display: block; position: absolute; left: 0; right: 0; z-index: 1; background: var(--spectrum-background-base-color); }
+  .preview.open { display: block; position: absolute; left: var(--spectrum-spacing-200); right: var(--spectrum-spacing-200); z-index: 1; cursor: auto;
+    padding: var(--spectrum-spacing-300); background: var(--spectrum-background-layer-2-color); border: 1px solid var(--spectrum-gray-300);
+    border-radius: var(--spectrum-corner-radius-700); box-shadow: 0 8px 32px var(--spectrum-transparent-black-500); }
   .preview-bar { display: flex; align-items: center; gap: var(--spectrum-spacing-200); margin-bottom: var(--spectrum-spacing-200); }
   .preview-name { flex: 1; min-width: 0; font-weight: var(--spectrum-bold-font-weight); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .preview .visual img { max-height: 640px; cursor: zoom-out; }
@@ -3400,7 +3372,6 @@ ${REPORT_CSS}`, `
 <div class="actions" id="fix-actions" hidden>
   <sp-button variant="accent" id="send-changes" disabled>Send changes</sp-button>
   <sp-button variant="secondary" treatment="outline" id="download-all" hidden disabled>Download all</sp-button>
-  <sp-button variant="secondary" treatment="outline" id="fullscreen" hidden>Full screen</sp-button>
 </div>
 <sp-help-text class="status" id="status"></sp-help-text>
 <section class="report" id="report" hidden aria-label="Generation report"></section>
@@ -3411,40 +3382,6 @@ ${REPORT_SCRIPT}
   var preview = document.getElementById('preview');
   var previewVisual = document.getElementById('preview-visual');
   var stage = document.getElementById('stage');
-  // Full screen, when the host can show the view so (ui/request-display-mode): the whole widget with the Full screen button, or
-  // the enlarged view alone (back inline when it closes, unless the widget was already full screen). Leaving full screen from
-  // the host closes the enlarged view (the view tells the host it can be shown full screen: page() with fullscreen).
-  var fullscreenBtn = document.getElementById('fullscreen');
-  var previewFullscreen = false;
-  function isFullscreen() { return document.body.classList.contains('fullscreen'); }
-  function setFullscreen(mode) {
-    document.body.classList.toggle('fullscreen', mode === 'fullscreen');
-    fullscreenBtn.textContent = mode === 'fullscreen' ? 'Exit full screen' : 'Full screen';
-    if (mode !== 'fullscreen') { previewFullscreen = false; reportSize(); }
-  }
-  // While the host changes the size of the view (its animation to full screen), the enlarged view is hidden, shown again (without
-  // fading in) as soon as the size no longer changes: the visual, fitted to the height of the view, would be redrawn at each step
-  var settleTimer = null;
-  function settle() {
-    document.body.classList.add('settling');
-    clearTimeout(settleTimer);
-    settleTimer = setTimeout(function () { document.body.classList.remove('settling'); }, 60);
-  }
-  window.addEventListener('resize', function () { if (isFullscreen()) settle(); });
-  // Full screen is set at once (not inline first, then full screen when the host answers), back as before if the host refuses
-  function requestDisplayMode(mode) {
-    var before = isFullscreen() ? 'fullscreen' : 'inline';
-    if (mode === 'fullscreen') { setFullscreen('fullscreen'); settle(); fitStage(); }
-    return request('ui/request-display-mode', { mode: mode })
-      .then(function (result) { setFullscreen((result && result.mode) || mode); fitStage(); },
-        function () { setFullscreen(before); fitStage(); });
-  }
-  onHostContextChanged(function (context) {
-    if (!context.displayMode) return;
-    setFullscreen(context.displayMode);
-    if (context.displayMode !== 'fullscreen' && current >= 0) showPreview(-1);
-  });
-  fullscreenBtn.addEventListener('click', function () { requestDisplayMode(isFullscreen() ? 'inline' : 'fullscreen'); });
   var variants = [];
   var current = -1;
   // Changes of each variant, by file name: pre-filled with the proposed fixes, edited by the user
@@ -3592,7 +3529,6 @@ ${REPORT_SCRIPT}
     var files = generated().reduce(function (total, i) { return total + filesOf(variants[i]).length; }, 0);
     downloadAllBtn.hidden = !generationTaskId || files < 2;
     downloadAllBtn.disabled = generating || zipping;
-    fullscreenBtn.hidden = !canFullscreen();
   }
 
   function downloadAll() {
@@ -3614,11 +3550,6 @@ ${REPORT_SCRIPT}
   // Sends the changes of the variants to the model, which generates them again with create-variant. With the problems found
   // in each text (layer id and name), so that it finds the layers named in the changes.
   function sendChanges() {
-    // Claude answers in the conversation, with a new widget: shown once out of full screen
-    if (isFullscreen()) {
-      if (current >= 0) showPreview(-1);
-      if (isFullscreen()) { setFullscreen('inline'); request('ui/request-display-mode', { mode: 'inline' }).catch(function () {}); }
-    }
     var toChange = variants.filter(function (v) { return !v.error && requestOf(v); });
     var changes = toChange.map(function (v) {
       return {
@@ -3654,7 +3585,7 @@ ${REPORT_SCRIPT}
     return variants.map(function (v, i) { return i; }).filter(function (i) { return !variants[i].error && !variants[i].pending; });
   }
 
-  // Enlarged view of one variant inside the widget, over the grid at the height of its card (kept while going to the previous
+  // Enlarged view of one variant, a modal over the dimmed grid: inline at the height of its card, full screen over the whole view (kept while going to the previous
   // or next one); index -1 goes back to the grid.
   function showPreview(index) {
     var wasOpen = current >= 0;
@@ -3664,14 +3595,6 @@ ${REPORT_SCRIPT}
       var image = grid.querySelector('img[data-index="' + index + '"]');
       var card = image && image.closest('.card');
       preview.style.top = Math.max(0, card ? card.getBoundingClientRect().top - stage.getBoundingClientRect().top : 0) + 'px';
-      if (canFullscreen() && !isFullscreen()) {
-        previewFullscreen = true;
-        requestDisplayMode('fullscreen');
-      }
-    }
-    if (!open && wasOpen && previewFullscreen && isFullscreen()) {
-      setFullscreen('inline');
-      request('ui/request-display-mode', { mode: 'inline' }).catch(function () {});
     }
     preview.classList.toggle('open', open);
     stage.classList.toggle('enlarged', open);
@@ -3689,7 +3612,7 @@ ${REPORT_SCRIPT}
 
   // The widget as high as the enlarged view, when it goes past the grid
   function fitStage() {
-    if (current < 0 || document.body.classList.contains('fullscreen')) { stage.style.minHeight = ''; return; }
+    if (current < 0) { stage.style.minHeight = ''; return; }
     stage.style.minHeight = (parseFloat(preview.style.top) + preview.offsetHeight) + 'px';
     reportSize();
   }
@@ -3816,12 +3739,11 @@ ${REPORT_SCRIPT}
 
   // load does not bubble: listened to in the capture phase
   preview.addEventListener('load', fitStage, true);
-  // Escape closes the enlarged view, or else leaves full screen
+  // A click beside the enlarged view (on the dimmed grid, which lets clicks through to the stage) closes it
+  stage.addEventListener('click', function (e) { if (current >= 0 && !preview.contains(e.target) && !grid.contains(e.target)) showPreview(-1); });
+  // Escape closes the enlarged view, the arrows go to the previous and next variants
   document.addEventListener('keydown', function (e) {
-    if (current < 0) {
-      if (e.key === 'Escape' && isFullscreen()) requestDisplayMode('inline');
-      return;
-    }
+    if (current < 0) return;
     if (e.key === 'Escape') showPreview(-1);
     else if (e.key === 'ArrowLeft') step(-1);
     else if (e.key === 'ArrowRight') step(1);
@@ -3986,7 +3908,7 @@ ${REPORT_SCRIPT}
         render();
       });
   });
-`, { fullscreen: true })
+`)
 }
 
 // Dashboard of the usage of the service (get-usage-history for the user, get-usage-report for all the users): totals, the
