@@ -48,6 +48,15 @@ const BASE_STYLE = `
   }
   /* sp-dropzone gives its content a larger font and a 1.5 line height, which sp-button inherits and which pushes its label down */
   sp-dropzone sp-button { font-size: var(--spectrum-font-size-100); line-height: var(--spectrum-line-height-100); }
+  /* Name of a variant (steps 3, 4 and 5): a pill in the accent color */
+  .variant-pill { display: inline-block; vertical-align: middle; max-width: 100%; padding: 2px var(--spectrum-spacing-200); overflow: hidden;
+    font-size: var(--spectrum-font-size-75); font-weight: var(--spectrum-bold-font-weight); line-height: 1.4; white-space: nowrap; text-overflow: ellipsis;
+    color: var(--spectrum-accent-content-color-default); background: var(--spectrum-accent-subtle-background-color-default);
+    border: 1px solid var(--spectrum-accent-visual-color); border-radius: 9999px; }
+  /* Language of a variant next to its name, a gray pill of the same size */
+  .language-pill { display: inline-block; vertical-align: middle; margin-left: var(--spectrum-spacing-75); padding: 2px var(--spectrum-spacing-200);
+    font-size: var(--spectrum-font-size-75); font-weight: var(--spectrum-bold-font-weight); line-height: 1.4; white-space: nowrap;
+    color: var(--spectrum-neutral-content-color-default); background: var(--spectrum-gray-100); border: 1px solid var(--spectrum-gray-400); border-radius: 9999px; }
 `
 
 // JSON-RPC bridge with the host: request(), notification(), onToolResult(), setStatus(), reportSize().
@@ -1733,7 +1742,8 @@ const IMAGES_SCRIPT = `
     var html = '<sp-dropzone class="drop-zone" data-index="' + index + '"><div class="drop-thumb">'
       + (slot.status === 'done' ? '<img src="' + escapeHtml(slot.url) + '" alt="">'
         : busy ? '<sp-progress-circle size="s" indeterminate label="' + busy + '"></sp-progress-circle>' : '')
-      + '</div><div class="drop-body"><span class="drop-layer" title="' + escapeHtml(title) + '">' + escapeHtml(title) + '</span>';
+      + '</div><div class="drop-body">' + (layers.length > 1 ? '<span class="drop-layer" title="' + escapeHtml(title) + '">' + escapeHtml(title) + '</span>'
+        : '<span><span class="variant-pill" title="' + escapeHtml(title) + '">' + escapeHtml(title) + '</span></span>');
     if (slot.status === 'prompt') {
       html += '<textarea class="prompt" data-index="' + index + '" placeholder="Describe the image to generate">' + escapeHtml(prompts[index] || '') + '</textarea>'
         + '<div class="slot-buttons"><sp-button size="s" variant="accent" data-action="generate" data-index="' + index + '">Generate</sp-button>'
@@ -1773,7 +1783,8 @@ const IMAGES_SCRIPT = `
   function framingHtml(slot, index) {
     var layer = layerOf(index);
     var title = layers.length > 1 ? layer.name : variants[Math.floor(index / layers.length)];
-    var html = '<div class="framing-card"><div class="framing-head"><span class="framing-title" title="' + escapeHtml(title) + '">' + escapeHtml(title) + '</span>'
+    var html = '<div class="framing-card"><div class="framing-head">' + (layers.length > 1 ? '<span class="framing-title" title="' + escapeHtml(title) + '">' + escapeHtml(title) + '</span>'
+      : '<span><span class="variant-pill" title="' + escapeHtml(title) + '">' + escapeHtml(title) + '</span></span>')
       + '<span class="subtle file-name" title="' + escapeHtml(slot.name) + '">' + escapeHtml(slot.name) + '</span></div>';
     var frames = framesOf(index);
     if (!frames.length || !slot.image || !slot.crops || slot.crops.length !== frames.length) {
@@ -1798,10 +1809,10 @@ const IMAGES_SCRIPT = `
       ? { index: document.activeElement.getAttribute('data-index'), start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd }
       : null;
     var groups = layers.length > 1 ? variants.map(function (variant, v) {
-      return { name: variant, number: v + 1, indexes: layers.map(function (l, k) { return v * layers.length + k; }) };
+      return { name: variant, indexes: layers.map(function (l, k) { return v * layers.length + k; }) };
     }) : [{ indexes: slots.map(function (s, i) { return i; }) }];
     var heading = function (group) {
-      return group.name ? '<h3 class="group-name"><sp-badge size="s" variant="neutral">' + group.number + '</sp-badge>' + escapeHtml(group.name) + '</h3>' : '';
+      return group.name ? '<h3 class="group-name"><span class="variant-pill">' + escapeHtml(group.name) + '</span></h3>' : '';
     };
     var framing = groups.map(function (group) {
       var filled = group.indexes.filter(function (i) { return slots[i].status === 'done'; });
@@ -2634,9 +2645,10 @@ function getTextsViewHtml (scriptUrl) {
     text-align: left;
     min-width: 180px;
   }
-  .texts th:first-child { width: 130px; min-width: 130px; }
+  /* The column of the variants as wide as their name and language pills, on one line */
+  .texts th:first-child { width: 1%; min-width: 130px; }
   .texts td { padding: var(--spectrum-spacing-100) var(--spectrum-spacing-200); vertical-align: top; border-top: 1px solid var(--spectrum-gray-300); }
-  .texts td:first-child { font-weight: var(--spectrum-bold-font-weight); border-left: 1px solid var(--spectrum-gray-300); }
+  .texts td:first-child { font-weight: var(--spectrum-bold-font-weight); white-space: nowrap; border-left: 1px solid var(--spectrum-gray-300); }
   .texts td:last-child { border-right: 1px solid var(--spectrum-gray-300); }
   .texts tr:last-child td { border-bottom: 1px solid var(--spectrum-gray-300); }
   .texts tr:first-child td:first-child { border-top-left-radius: var(--spectrum-corner-radius-200); }
@@ -2754,6 +2766,13 @@ ${IMAGES_SCRIPT}
   }
 
   // One column per text layer, one row per variant with an editable text per layer (in this order in the DOM).
+  // Name of a variant label and its language code at the end (e.g. "Winter sale FR"), as pills of the same size
+  function labelPills(label) {
+    var match = String(label).match(/^(.*?)[\\s_-]+\\(?([A-Z]{2})\\)?$/);
+    return match && match[1].trim() ? '<span class="variant-pill">' + escapeHtml(match[1].trim()) + '</span><span class="language-pill">' + match[2] + '</span>'
+      : '<span class="variant-pill">' + escapeHtml(label) + '</span>';
+  }
+
   function render() {
     table.innerHTML = '<thead><tr><th>Variant</th>'
       + layers.map(function (l) {
@@ -2761,7 +2780,7 @@ ${IMAGES_SCRIPT}
       }).join('')
       + '</tr></thead><tbody>'
       + variants.map(function (v) {
-        return '<tr><td>' + escapeHtml(v.label) + '</td>'
+        return '<tr><td>' + labelPills(v.label) + '</td>'
           + layers.map(function (l, c) {
             return '<td><textarea class="text-input" rows="1" data-layer="' + c + '" aria-label="' + escapeHtml(v.label + ', ' + l.name) + '">'
               + escapeHtml(textOf(v, l)) + '</textarea></td>';
@@ -3496,7 +3515,7 @@ ${REPORT_SCRIPT}
     grid.className = sideBySide ? 'groups' : 'grid';
     grid.innerHTML = sideBySide
       ? groups.map(function (g) {
-        return '<div><div class="group-name">' + escapeHtml(g.name) + '</div><div class="group-row">'
+        return '<div><div class="group-name"><span class="variant-pill">' + escapeHtml(g.name) + '</span></div><div class="group-row">'
           + g.indexes.map(function (i) { return cardHtml(variants[i], i); }).join('') + '</div></div>';
       }).join('')
       : variants.map(cardHtml).join('');
