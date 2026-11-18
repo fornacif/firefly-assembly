@@ -82,6 +82,13 @@ const BRIDGE_SCRIPT = `
   function onToolResult(handler) { _toolResultHandler = handler; }
   function onToolInput(handler) { _toolInputHandler = handler; }
   function onHostContextChanged(handler) { _hostContextHandler = handler; }
+  // The tool input and result received before the view script set its handlers, given to them once it has run (see page())
+  var _early = {};
+  function _deliverEarly() {
+    if (_early.input && _toolInputHandler) _toolInputHandler(_early.input);
+    if (_early.result && _toolResultHandler) _toolResultHandler(_early.result);
+    _early = null;
+  }
 
   // Bottom inset of the host (safeAreaInsets), kept for the views shown full screen
   function applyInsets(context) {
@@ -107,10 +114,13 @@ const BRIDGE_SCRIPT = `
       applyTheme(msg.params);
       applyInsets(hostContext);
       if (_hostContextHandler) _hostContextHandler(msg.params || {});
-    } else if (msg.method === 'ui/notifications/tool-result' && _toolResultHandler) {
-      _toolResultHandler(msg.params);
-    } else if (msg.method === 'ui/notifications/tool-input' && _toolInputHandler) {
-      _toolInputHandler((msg.params && msg.params.arguments) || {});
+    } else if (msg.method === 'ui/notifications/tool-result') {
+      if (_early) _early.result = msg.params;
+      else if (_toolResultHandler) _toolResultHandler(msg.params);
+    } else if (msg.method === 'ui/notifications/tool-input') {
+      var args = (msg.params && msg.params.arguments) || {};
+      if (_early) _early.input = args;
+      else if (_toolInputHandler) _toolInputHandler(args);
     }
 
     if (msg.method === 'ping' || msg.method === 'ui/resource-teardown') send({ jsonrpc: '2.0', id: msg.id, result: {} });
@@ -334,14 +344,17 @@ const AEM_SCRIPT = `
   }
 `
 
-function page (scriptUrl, title, style, body, script) {
+// Page of a view. The handshake with the host starts at once, so that its theme is set before the components are drawn (drawn
+// in one theme then switched to the other, some keep colors of the first), and the bundle of the components is loaded then
+// (at most 1.5 s later); the view script runs once they are defined (at most 3 s later), and gets the tool input and result
+// received meanwhile. options.fullscreen: the view can be shown full screen.
+function page (scriptUrl, title, style, body, script, options = {}) {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${title}</title>
-<script type="module" src="${scriptUrl}"></script>
 <style>${BASE_STYLE}${style}</style>
 </head>
 <body>
@@ -351,16 +364,20 @@ ${body}
 <script>
 (function () {
 ${BRIDGE_SCRIPT}
-  // The bundle is a module, run after this script: the view script waits until the components of the page are defined (at
-  // most 3 s, so that the view still works without them), so that it can read and set their properties
+  function _within(ms, promise) { return Promise.race([promise, new Promise(function (resolve) { setTimeout(resolve, ms); })]); }
+${options.fullscreen ? "  appDisplayModes = ['inline', 'fullscreen'];" : ''}
+  initialize('${title}');
   var _tags = {};
   Array.prototype.forEach.call(document.querySelectorAll(':not(:defined)'), function (el) { _tags[el.localName] = true; });
-  Promise.race([
-    Promise.all(Object.keys(_tags).map(function (tag) { return customElements.whenDefined(tag); })),
-    new Promise(function (resolve) { setTimeout(resolve, 3000); })
-  ]).then(function () {
+  _within(1500, ready).then(function () {
+    var bundle = document.createElement('script');
+    bundle.type = 'module';
+    bundle.src = '${scriptUrl}';
+    document.head.appendChild(bundle);
+    return _within(3000, Promise.all(Object.keys(_tags).map(function (tag) { return customElements.whenDefined(tag); })));
+  }).then(function () {
 ${script}
-    initialize('${title}');
+    _deliverEarly();
   });
 })();
 </script>
@@ -1521,68 +1538,57 @@ ${LAYERS_SCRIPT}
 // its frame), shared by the images and texts views, in its own scope: imagesPicker.init(args), imagesPicker.result() (the
 // context for the model) and imagesPicker.onChange(handler(done, total)).
 const IMAGES_CSS = `
-  /* With several layers, one group per variant; one card per slot (variant and smart object layer), as many per row as fit */
-  .grid { display: flex; flex-direction: column; gap: var(--spectrum-spacing-300); }
-  /* Group of a variant: a panel headed by its number and name, above the cards of its layers */
-  .variant-group {
-    padding: var(--spectrum-spacing-200) var(--spectrum-spacing-300) var(--spectrum-spacing-300);
-    background: var(--spectrum-background-layer-2-color);
-    border: 1px solid var(--spectrum-gray-200);
-    border-radius: var(--spectrum-corner-radius-500);
+  /* Two columns: the drop zones on the left (a compact row per variant and smart object layer), the framing of the images
+     assigned on the right; one column when narrow */
+  .images-layout { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); gap: var(--spectrum-spacing-400); align-items: start; }
+  @media (max-width: 560px) { .images-layout { grid-template-columns: minmax(0, 1fr); } }
+  .drop-panel, .framing-panel { display: flex; flex-direction: column; gap: var(--spectrum-spacing-300); min-width: 0; }
+  .drop-group, .framing-group { display: flex; flex-direction: column; gap: var(--spectrum-spacing-100); min-width: 0; }
+  .group-name { display: flex; align-items: center; gap: var(--spectrum-spacing-100); margin: 0; font-size: var(--spectrum-font-size-100);
+    font-weight: var(--spectrum-bold-font-weight); }
+  /* Drop zone of a slot: its image (thumbnail), the layer (or the variant) and the state, the actions on the right */
+  sp-dropzone.drop-zone {
+    display: flex; flex-direction: row; align-items: center; gap: var(--spectrum-spacing-200);
+    width: 100%; min-width: 0; min-inline-size: 0; min-height: 56px; text-align: left;
+    padding: var(--spectrum-spacing-75) var(--spectrum-spacing-100); --mod-drop-zone-padding: var(--spectrum-spacing-75) var(--spectrum-spacing-100);
+    border-radius: var(--spectrum-corner-radius-medium-default);
+    font-size: var(--spectrum-font-size-75); line-height: var(--spectrum-line-height-100);
   }
-  .variant-name {
-    display: flex;
-    align-items: center;
-    gap: var(--spectrum-spacing-100);
-    margin: 0 0 var(--spectrum-spacing-200);
-    font-size: var(--spectrum-font-size-300);
-    font-weight: var(--spectrum-bold-font-weight);
-  }
-  .variant-group .slot-label { font-weight: normal; color: var(--spectrum-neutral-subdued-content-color-default); font-size: var(--spectrum-font-size-75); }
-  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: var(--spectrum-spacing-200); align-items: stretch; }
-  .cards > * { min-width: 0; }
-  .slot-label { width: 100%; font-weight: var(--spectrum-bold-font-weight); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .slot-empty { margin: auto 0; }
+  .drop-thumb { flex: none; display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; overflow: hidden;
+    border-radius: var(--spectrum-corner-radius-100); background: var(--spectrum-gray-100); }
+  .drop-thumb img { width: 100%; height: 100%; object-fit: cover; }
+  .drop-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .drop-layer { font-weight: var(--spectrum-bold-font-weight); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .drop-actions { flex: none; display: flex; align-items: center; }
+  /* sp-dropzone styles the action buttons of its content as large white labels (for its own replace button): back to standard */
+  .drop-actions sp-action-button { --mod-actionbutton-label-color: var(--spectrum-neutral-content-color-default); --mod-actionbutton-font-size: var(--spectrum-font-size-75);
+    --mod-actionbutton-edge-to-text: var(--spectrum-component-edge-to-text-75); }
+  .drop-body sp-progress-bar { width: 100%; }
+  /* The hint of an empty slot: drop an image, or click it with an image of the library picked */
+  .hint-armed, .grid.armed .hint-idle { display: none; }
+  .grid.armed .hint-armed { display: inline; }
+  .grid.armed sp-dropzone { cursor: copy; }
   /* Prompt of an image generated by Firefly, in its slot */
   .prompt { min-height: 64px; max-height: 220px; font-size: var(--spectrum-font-size-75); line-height: 1.4; resize: vertical; field-sizing: content; }
-  .slot-buttons { display: flex; flex-wrap: wrap; gap: var(--spectrum-spacing-100); justify-content: center; }
-  sp-dropzone {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: flex-start;
-    gap: var(--spectrum-spacing-100);
-    width: 100%;
-    min-width: 0;
-    min-inline-size: 0;
-    min-height: 110px;
-    padding: var(--spectrum-spacing-200);
-    --mod-drop-zone-padding: var(--spectrum-spacing-200);
-    border-radius: var(--spectrum-corner-radius-200);
-    text-align: center;
-  }
-  sp-dropzone img.thumb { max-width: 100%; max-height: 90px; object-fit: contain; border-radius: var(--spectrum-corner-radius-100); }
-  .frame-label { width: 100%; font-size: var(--spectrum-font-size-75); text-align: left; }
-  .crop {
-    position: relative;
-    overflow: hidden;
-    max-width: 100%;
-    border-radius: var(--spectrum-corner-radius-100);
-    background: var(--spectrum-gray-200);
-    cursor: grab;
-    touch-action: none;
-    user-select: none;
-  }
-  .crop.dragging { cursor: grabbing; }
+  .slot-buttons { display: flex; flex-wrap: wrap; gap: var(--spectrum-spacing-100); }
+  /* Framing of the images assigned: a card each, the whole image with the crop frame over it (what the banner shows), the rest
+     dimmed; dragged to move the crop, zoomed with the slider */
+  .framing-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: var(--spectrum-spacing-200); }
+  .framing-card { display: flex; flex-direction: column; gap: var(--spectrum-spacing-100); min-width: 0; padding: var(--spectrum-spacing-200);
+    border: 1px solid var(--spectrum-gray-200); border-radius: var(--spectrum-corner-radius-medium-default); }
+  .framing-head { display: flex; flex-direction: column; min-width: 0; }
+  .framing-title { font-weight: var(--spectrum-bold-font-weight); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .framing-empty { padding: var(--spectrum-spacing-500) var(--spectrum-spacing-300); text-align: center; font-size: var(--spectrum-font-size-75);
+    color: var(--spectrum-neutral-subdued-content-color-default); border: 1px dashed var(--spectrum-gray-300); border-radius: var(--spectrum-corner-radius-medium-default); }
+  .frame-label { font-size: var(--spectrum-font-size-75); }
+  .crop { position: relative; overflow: hidden; max-width: 100%; margin: 0 auto; border-radius: var(--spectrum-corner-radius-100);
+    background: var(--spectrum-gray-200); cursor: move; touch-action: none; user-select: none; }
   .crop img { display: block; width: 100%; height: 100%; pointer-events: none; }
-  /* Crop frame over the whole image, the parts left out by the crop are dimmed by four shades around it */
-  .crop .frame { position: absolute; outline: 2px solid var(--spectrum-white); outline-offset: -1px; pointer-events: none; }
-  .crop .shade { position: absolute; background: var(--spectrum-transparent-black-600); pointer-events: none; }
+  .crop .frame { position: absolute; box-sizing: border-box; border: 2px solid var(--spectrum-white); outline: 1px solid var(--spectrum-transparent-black-600);
+    box-shadow: 0 0 0 9999px var(--spectrum-transparent-black-500); pointer-events: none; }
   .zoom { display: flex; align-items: center; gap: var(--spectrum-spacing-100); width: 100%; font-size: var(--spectrum-font-size-75); }
   .zoom input { flex: 1; min-width: 0; accent-color: var(--spectrum-accent-background-color-default); }
   .file-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  sp-dropzone sp-progress-bar { width: 100%; }
-  sp-dropzone sp-button { font-size: var(--spectrum-font-size-75); }
   .cell-error { color: var(--spectrum-negative-content-color-default); font-size: var(--spectrum-font-size-75); }
   #file { display: none; }
   .library { margin-bottom: var(--spectrum-spacing-300); }
@@ -1631,7 +1637,6 @@ const IMAGES_CSS = `
   .library-remove:hover { background: var(--spectrum-gray-200); }
   .library-item img { width: 100%; height: 64px; object-fit: contain; border-radius: var(--spectrum-corner-radius-100); background: var(--spectrum-gray-200); }
   .library-item sp-progress-bar { width: 100%; }
-  .grid.armed sp-dropzone { cursor: copy; }
 `
 
 const IMAGES_HTML = `<div class="library">
@@ -1650,8 +1655,8 @@ const IMAGES_SCRIPT = `
   var imagesPicker = (function () {
   // onChange(done, total) is called when the images of the slots change
   var onChange = null;
-  var CROP_MAX_HEIGHT = 160;
-  var CROP_MULTI_HEIGHT = 110;
+  var CROP_MAX_HEIGHT = 180;
+  var CROP_MULTI_HEIGHT = 120;
   var MAX_ZOOM = 4;
   var grid = document.getElementById('grid');
   var input = document.getElementById('file');
@@ -1737,88 +1742,97 @@ const IMAGES_SCRIPT = `
       .then(function (list) { return { image: list[0].image, crops: list.map(function (x) { return x.crop; }) }; });
   }
 
-  function cellHtml(slot, index) {
-    var ratio = ratioOf(index);
+  // Drop zone of a slot, a compact row: its image, the layer (the variant with one layer) and its state, and its actions
+  // (generate with Firefly when empty, remove when filled)
+  function zoneHtml(slot, index) {
     var layer = layerOf(index);
-    // Grouped by variant with several layers, so the card only names the layer
-    var label = layers.length > 1 ? layer.name : variants[Math.floor(index / layers.length)];
-    var html = '<sp-dropzone data-index="' + index + '">'
-      + '<div class="slot-label">' + escapeHtml(label) + '</div>';
-    if (slot.status === 'done') {
-      var frames = framesOf(index);
-      if (ratio && slot.crops && slot.crops.length === frames.length) {
-        // The whole image is shown, with the crop frame on top: once per frame ratio (several templates), smaller
-        var imageRatio = slot.image.width / slot.image.height;
-        var height = frames.length > 1 ? CROP_MULTI_HEIGHT : CROP_MAX_HEIGHT;
-        frames.forEach(function (f, k) {
-          var zoom = maxCropSize(slot, f.width / f.height).width / (slot.crops[k].right - slot.crops[k].left);
-          html += (frames.length > 1 ? '<div class="subtle frame-label">Frame ' + f.width + ' x ' + f.height + '</div>' : '')
-            + '<div class="crop" data-index="' + index + '" data-frame="' + k + '" style="width:' + Math.round(height * imageRatio) + 'px;aspect-ratio:' + imageRatio + '">'
-            + '<img src="' + escapeHtml(slot.url) + '" alt="' + escapeHtml(slot.name) + '"><div class="shade"></div><div class="shade"></div><div class="shade"></div><div class="shade"></div><div class="frame"></div></div>'
-            + '<label class="zoom">Zoom <input type="range" data-index="' + index + '" data-frame="' + k + '" min="1" max="' + MAX_ZOOM + '" step="0.01" value="' + zoom + '"></label>';
-        });
-      } else {
-        html += '<img class="thumb" src="' + escapeHtml(slot.url) + '" alt="' + escapeHtml(slot.name) + '">';
-      }
-      html += '<div class="subtle file-name">' + escapeHtml(slot.name) + '</div>'
-        + '<sp-button size="s" variant="secondary" treatment="outline" data-action="remove" data-index="' + index + '">Remove</sp-button>';
-    } else if (BUSY_LABELS[slot.status]) {
-      html += '<div class="subtle file-name">' + escapeHtml(slot.name) + '</div>'
-        + '<sp-progress-bar size="s" label="' + BUSY_LABELS[slot.status] + '"'
-        + (slot.status === 'uploading' ? ' progress="' + slot.progress + '"' : ' indeterminate') + '></sp-progress-bar>';
-    } else if (slot.status === 'prompt') {
+    var title = layers.length > 1 ? layer.name : variants[Math.floor(index / layers.length)];
+    var busy = BUSY_LABELS[slot.status];
+    var html = '<sp-dropzone class="drop-zone" data-index="' + index + '"><div class="drop-thumb">'
+      + (slot.status === 'done' ? '<img src="' + escapeHtml(slot.url) + '" alt="">'
+        : busy ? '<sp-progress-circle size="s" indeterminate label="' + busy + '"></sp-progress-circle>' : '')
+      + '</div><div class="drop-body"><span class="drop-layer" title="' + escapeHtml(title) + '">' + escapeHtml(title) + '</span>';
+    if (slot.status === 'prompt') {
       html += '<textarea class="prompt" data-index="' + index + '" placeholder="Describe the image to generate">' + escapeHtml(prompts[index] || '') + '</textarea>'
         + '<div class="slot-buttons"><sp-button size="s" variant="accent" data-action="generate" data-index="' + index + '">Generate</sp-button>'
         + '<sp-button size="s" variant="secondary" treatment="outline" data-action="cancel-prompt" data-index="' + index + '">Cancel</sp-button></div>';
+    } else if (busy) {
+      html += '<span class="subtle file-name">' + busy + '...</span>'
+        + (slot.status === 'uploading' ? '<sp-progress-bar size="s" label="Uploading" progress="' + slot.progress + '"></sp-progress-bar>' : '');
+    } else if (slot.status === 'done') {
+      html += '<span class="subtle file-name" title="' + escapeHtml(slot.name) + '">' + escapeHtml(slot.name) + '</span>';
     } else {
-      html += '<div class="subtle slot-empty">Drop an image</div>'
-        + '<sp-button size="s" variant="secondary" treatment="quiet" data-action="prompt" data-index="' + index + '">Generate with Firefly</sp-button>'
-        + (slot.error ? '<div class="cell-error">' + escapeHtml(slot.error) + '</div>' : '');
+      html += '<span class="subtle"><span class="hint-idle">Drop an image</span><span class="hint-armed">Click to use the image</span></span>'
+        + (slot.error ? '<span class="cell-error">' + escapeHtml(slot.error) + '</span>' : '');
+    }
+    html += '</div>';
+    if (slot.status === 'empty') {
+      html += '<div class="drop-actions"><sp-action-button quiet size="s" data-action="prompt" data-index="' + index + '" title="Generate the image with Firefly">'
+        + '<sp-icon-magic-wand slot="icon"></sp-icon-magic-wand>Generate</sp-action-button></div>';
+    } else if (slot.status === 'done') {
+      html += '<div class="drop-actions"><sp-action-button quiet size="s" data-action="remove" data-index="' + index + '" label="Remove the image" title="Remove">'
+        + '<sp-icon-delete slot="icon"></sp-icon-delete></sp-action-button></div>';
     }
     return html + '</sp-dropzone>';
   }
 
-  // Positions the crop frame over the image. Percentages of the image keep it independent of when the layout is computed.
-  function positionFrame(index) {
-    (slots[index].crops || []).forEach(function (crop, k) { positionCrop(index, k); });
+  // Position of the crop frame over the image, in % of the image (independent of when the layout is computed)
+  function frameStyle(slot, k) {
+    var c = slot.crops[k];
+    return 'left:' + c.left / slot.image.width * 100 + '%;top:' + c.top / slot.image.height * 100 + '%;width:'
+      + (c.right - c.left) / slot.image.width * 100 + '%;height:' + (c.bottom - c.top) / slot.image.height * 100 + '%';
   }
   function positionCrop(index, k) {
-    var slot = slots[index];
-    var box = grid.querySelector('.crop[data-index="' + index + '"][data-frame="' + k + '"]');
-    var crop = slot.crops && slot.crops[k];
-    if (!box || !crop) return;
-    var l = crop.left / slot.image.width * 100;
-    var t = crop.top / slot.image.height * 100;
-    var r = crop.right / slot.image.width * 100;
-    var b = crop.bottom / slot.image.height * 100;
-    // [left, top, width, height] in % of the image: frame, then the shades above, below, left and right of it
-    var rects = [[0, 0, 100, t], [0, b, 100, 100 - b], [0, t, l, b - t], [r, t, 100 - r, b - t], [l, t, r - l, b - t]];
-    box.querySelectorAll('.shade, .frame').forEach(function (el, i) {
-      el.style.left = rects[i][0] + '%';
-      el.style.top = rects[i][1] + '%';
-      el.style.width = rects[i][2] + '%';
-      el.style.height = rects[i][3] + '%';
-    });
+    var frame = grid.querySelector('.crop[data-index="' + index + '"][data-frame="' + k + '"] .frame');
+    if (frame) frame.style.cssText = frameStyle(slots[index], k);
   }
 
-  // One card per slot, in the order of the variants. With several layers, the cards of a variant are grouped under its name.
+  // Framing card of a filled slot: the whole image with the crop frame over it, once per frame ratio (several templates)
+  function framingHtml(slot, index) {
+    var layer = layerOf(index);
+    var title = layers.length > 1 ? layer.name : variants[Math.floor(index / layers.length)];
+    var html = '<div class="framing-card"><div class="framing-head"><span class="framing-title" title="' + escapeHtml(title) + '">' + escapeHtml(title) + '</span>'
+      + '<span class="subtle file-name" title="' + escapeHtml(slot.name) + '">' + escapeHtml(slot.name) + '</span></div>';
+    var frames = framesOf(index);
+    if (!frames.length || !slot.image || !slot.crops || slot.crops.length !== frames.length) {
+      return html + '<div class="crop"><img src="' + escapeHtml(slot.url) + '" alt="' + escapeHtml(slot.name) + '"></div></div>';
+    }
+    var imageRatio = slot.image.width / slot.image.height;
+    var height = frames.length > 1 ? CROP_MULTI_HEIGHT : CROP_MAX_HEIGHT;
+    frames.forEach(function (f, k) {
+      var zoom = maxCropSize(slot, f.width / f.height).width / (slot.crops[k].right - slot.crops[k].left);
+      html += (frames.length > 1 ? '<div class="subtle frame-label">Frame ' + f.width + ' x ' + f.height + '</div>' : '')
+        + '<div class="crop" data-index="' + index + '" data-frame="' + k + '" style="width:' + Math.round(height * imageRatio) + 'px;aspect-ratio:' + imageRatio + '">'
+        + '<img src="' + escapeHtml(slot.url) + '" alt="' + escapeHtml(slot.name) + '"><div class="frame" style="' + frameStyle(slot, k) + '"></div></div>'
+        + '<label class="zoom">Zoom <input type="range" data-index="' + index + '" data-frame="' + k + '" min="1" max="' + MAX_ZOOM + '" step="0.01" value="' + zoom + '"></label>';
+    });
+    return html + '</div>';
+  }
+
+  // The drop zones on the left and the framing of the filled slots on the right; with several layers, grouped by variant
   function render() {
     // The prompt being typed keeps its focus and caret when the grid is drawn again (other slots change meanwhile)
     var active = document.activeElement && document.activeElement.classList.contains('prompt')
       ? { index: document.activeElement.getAttribute('data-index'), start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd }
       : null;
-    if (layers.length > 1) {
-      grid.innerHTML = variants.map(function (variant, v) {
-        var start = v * layers.length;
-        return '<section class="variant-group"><h3 class="variant-name"><sp-badge size="s" variant="neutral">' + (v + 1) + '</sp-badge>'
-          + escapeHtml(variant) + '</h3><div class="cards">'
-          + slots.slice(start, start + layers.length).map(function (slot, l) { return cellHtml(slot, start + l); }).join('')
-          + '</div></section>';
-      }).join('');
-    } else {
-      grid.innerHTML = '<div class="cards">' + slots.map(cellHtml).join('') + '</div>';
-    }
-    slots.forEach(function (slot, i) { positionFrame(i); });
+    var groups = layers.length > 1 ? variants.map(function (variant, v) {
+      return { name: variant, number: v + 1, indexes: layers.map(function (l, k) { return v * layers.length + k; }) };
+    }) : [{ indexes: slots.map(function (s, i) { return i; }) }];
+    var heading = function (group) {
+      return group.name ? '<h3 class="group-name"><sp-badge size="s" variant="neutral">' + group.number + '</sp-badge>' + escapeHtml(group.name) + '</h3>' : '';
+    };
+    var framing = groups.map(function (group) {
+      var filled = group.indexes.filter(function (i) { return slots[i].status === 'done'; });
+      return filled.length ? '<section class="framing-group">' + heading(group) + '<div class="framing-cards">'
+        + filled.map(function (i) { return framingHtml(slots[i], i); }).join('') + '</div></section>' : '';
+    }).join('');
+    grid.innerHTML = '<div class="images-layout"><div class="drop-panel">'
+      + groups.map(function (group) {
+        return '<section class="drop-group">' + heading(group) + group.indexes.map(function (i) { return zoneHtml(slots[i], i); }).join('') + '</section>';
+      }).join('')
+      + '</div><div class="framing-panel">'
+      + (framing || '<div class="framing-empty">The framing of each image appears here once it is in a slot: drag the frame to move it, zoom to frame closer.</div>')
+      + '</div></div>';
     if (active) {
       var field = grid.querySelector('.prompt[data-index="' + active.index + '"]');
       if (field) { field.focus(); field.setSelectionRange(active.start, active.end); }
@@ -2072,13 +2086,13 @@ const IMAGES_SCRIPT = `
   });
   // With an armed library image, a click on a slot (outside its buttons and crop) assigns the image to it.
   grid.addEventListener('click', function (e) {
-    if (armed < 0 || e.target.closest('sp-button, .crop, .zoom, .prompt')) return;
+    if (armed < 0 || e.target.closest('sp-button, sp-action-button, .crop, .zoom, .prompt')) return;
     var zone = e.target.closest('sp-dropzone');
     if (zone) useLibraryImage(Number(zone.getAttribute('data-index')), library[armed]);
   });
 
   grid.addEventListener('click', function (e) {
-    var button = e.target.closest('sp-button');
+    var button = e.target.closest('sp-button, sp-action-button');
     if (!button) return;
     var index = Number(button.getAttribute('data-index'));
     var action = button.getAttribute('data-action');
@@ -3394,8 +3408,7 @@ ${REPORT_SCRIPT}
   var stage = document.getElementById('stage');
   // Full screen, when the host can show the view so (ui/request-display-mode): the whole widget with the Full screen button, or
   // the enlarged view alone (back inline when it closes, unless the widget was already full screen). Leaving full screen from
-  // the host closes the enlarged view.
-  appDisplayModes = ['inline', 'fullscreen'];
+  // the host closes the enlarged view (the view tells the host it can be shown full screen: page() with fullscreen).
   var fullscreenBtn = document.getElementById('fullscreen');
   var previewFullscreen = false;
   function isFullscreen() { return document.body.classList.contains('fullscreen'); }
@@ -3968,7 +3981,7 @@ ${REPORT_SCRIPT}
         render();
       });
   });
-`)
+`, { fullscreen: true })
 }
 
 // Dashboard of the usage of the service (get-usage-history for the user, get-usage-report for all the users): totals, the
