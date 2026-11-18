@@ -380,7 +380,7 @@ function getUploadViewHtml (scriptUrl) {
 <sp-dropzone id="drop">
   <sp-illustrated-message id="message" heading="Drop a file here" description="PSD, images and other files"></sp-illustrated-message>
   <div class="browse">
-    <sp-button variant="accent" treatment="outline" id="browse">Browse</sp-button>
+    <sp-button variant="secondary" id="browse">Browse</sp-button>
     <input type="file" id="file">
   </div>
 </sp-dropzone>
@@ -574,8 +574,8 @@ ${LAYERS_CSS}
 <sp-dropzone id="drop">
   <div class="message"><div id="message-heading">Drop your PSD templates</div><div class="subtle" id="message-description">Layered .psd files, one per format</div></div>
   <div class="browse">
-    <sp-button variant="accent" treatment="outline" id="browse">Browse</sp-button>
-    <sp-button variant="accent" treatment="outline" id="aem" hidden>${ADOBE_ICON}Choose from AEM</sp-button>
+    <sp-button variant="secondary" id="browse">Browse</sp-button>
+    <sp-button variant="secondary" id="aem" hidden>${ADOBE_ICON}Choose from AEM</sp-button>
     <input type="file" id="file" accept=".psd,image/vnd.adobe.photoshop" multiple>
   </div>
 </sp-dropzone>
