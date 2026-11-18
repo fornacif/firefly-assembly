@@ -2313,7 +2313,8 @@ const LAYERS_CSS = `
   .preview { flex: 0 1 auto; max-width: 50%; padding: 10px; line-height: 0; }
   @media (max-width: 420px) { .preview { max-width: 100%; } }
   .stage { position: relative; display: inline-block; max-width: 100%; }
-  .stage img { display: block; max-width: 100%; max-height: 460px; border-radius: var(--spectrum-corner-radius-100); }
+  /* A very thin border around the preview (a shadow, so that the zones over it keep their place) */
+  .stage img { display: block; max-width: 100%; max-height: 460px; border-radius: var(--spectrum-corner-radius-100); box-shadow: 0 0 0 1px var(--spectrum-gray-300); }
   /* In place of the preview while it renders */
   .preview-loader {
     display: flex;
@@ -3191,7 +3192,7 @@ const REPORT_CSS = `
   .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: var(--spectrum-spacing-300); }
   .chart { display: flex; flex-direction: column; gap: var(--spectrum-spacing-200); min-width: 0; }
   .chart-note { font-size: var(--spectrum-font-size-75); color: var(--spectrum-neutral-subdued-content-color-default); }
-  /* Execution time by kind of call: the bar is the average, the thin line the range from the fastest to the slowest */
+  /* Execution time by kind of call: the bar is the average (the longest average the whole width); the range is in the tooltip */
   .op { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px var(--spectrum-spacing-200); font-size: var(--spectrum-font-size-75); }
   .op-label { display: flex; align-items: center; gap: var(--spectrum-spacing-100); min-width: 0; }
   .op-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -3201,7 +3202,6 @@ const REPORT_CSS = `
   .op-count.op-429 { background: var(--spectrum-notice-background-color-default); color: var(--spectrum-white); }
   .op-value { color: var(--spectrum-neutral-subdued-content-color-default); font-variant-numeric: tabular-nums; text-align: right; }
   .op-track { grid-column: 1 / -1; position: relative; height: 10px; }
-  .op-range { position: absolute; top: 4px; height: 2px; background: var(--spectrum-gray-400); border-radius: 1px; }
   .op-bar { position: absolute; top: 0; left: 0; height: 10px; min-width: 2px; background: var(--spectrum-accent-background-color-default); border-radius: 0 4px 4px 0; }
   .op:hover .op-bar { background: var(--spectrum-accent-background-color-hover, var(--spectrum-accent-background-color-default)); }
   .day-bars { position: relative; display: flex; align-items: flex-end; gap: 2px; height: 120px; border-bottom: 1px solid var(--spectrum-gray-300); }
@@ -3298,6 +3298,8 @@ function getVariantViewHtml (scriptUrl) {
     object-fit: contain;
     border-radius: var(--spectrum-corner-radius-200);
     background: var(--spectrum-gray-100);
+    /* A very thin border around the visual (a shadow, so that the marks over it keep their place) */
+    box-shadow: 0 0 0 1px var(--spectrum-gray-300);
   }
   .card .visual img { max-height: 320px; cursor: zoom-in; }
   .mark { position: absolute; box-sizing: border-box; pointer-events: none; }
@@ -3794,7 +3796,7 @@ ${REPORT_SCRIPT}
       kind.rateLimited += c.rateLimited || 0;
       kind.waitMs += c.waitMs || 0;
     });
-    var longest = Math.max.apply(null, [1].concat(calls.map(function (c) { return c.ms || 0; })));
+    var longest = Math.max.apply(null, [1].concat(kinds.map(function (k) { return k.times.length ? average(k.times) : 0; })));
     var opsHtml = kinds.map(function (k) {
       var count = k.times.length + k.failed;
       var min = k.times.length ? Math.min.apply(null, k.times) : 0, max = k.times.length ? Math.max.apply(null, k.times) : 0;
@@ -3802,8 +3804,7 @@ ${REPORT_SCRIPT}
         + (k.failed ? ', ' + k.failed + ' failed' : '') + rateLimitTip(k.rateLimited, k.waitMs);
       return '<div class="op" title="' + escapeHtml(tip) + '">' + opLabel(k.name, count, k.rateLimited)
         + '<span class="op-value">' + (k.times.length ? 'avg ' + seconds(average(k.times)) : 'failed') + '</span>'
-        + '<div class="op-track"><span class="op-range" style="left:' + (min / longest * 100) + '%;width:' + ((max - min) / longest * 100) + '%"></span>'
-        + '<span class="op-bar" style="width:' + (average(k.times) / longest * 100) + '%"></span></div></div>';
+        + '<div class="op-track"><span class="op-bar" style="width:' + (average(k.times) / longest * 100) + '%"></span></div></div>';
     }).join('');
 
     reportEl.innerHTML = '<div class="report-title">Report of the last generation</div><div class="tiles">'
@@ -3812,8 +3813,7 @@ ${REPORT_SCRIPT}
       + (ownRenders.length ? tileHtml('Average render', seconds(average(ownRenders)), seconds(average(allRenders)) + ' ' + since) : '')
       + rateLimitTile(rateLimited, waitMs, calls.some(function (c) { return c.waits; }) ? rateLimitDelay(calls) : null)
       + '</div>'
-      + (calls.length ? '<div class="charts"><div class="chart"><span class="chart-title">Execution time by call</span>' + opsHtml
-        + '<span class="chart-note">Bar: average time; line: from the fastest to the slowest call</span></div></div>' : '');
+      + (calls.length ? '<div class="charts"><div class="chart"><span class="chart-title">Execution time by call</span>' + opsHtml + '</div></div>' : '');
     reportEl.hidden = false;
   }
 
