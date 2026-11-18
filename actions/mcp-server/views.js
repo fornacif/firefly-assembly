@@ -463,6 +463,10 @@ const QUOTA_SCRIPT = `
 function getStartViewHtml (scriptUrl) {
   return page(scriptUrl, 'Create Variants', `
   .field { display: flex; flex-direction: column; gap: var(--spectrum-spacing-75); margin-bottom: var(--spectrum-spacing-300); }
+  /* Fields side by side, wrapping when narrow; the help text under the row */
+  .field-row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0 var(--spectrum-spacing-400); }
+  .field-row .field { margin-bottom: 0; }
+  .field-total { display: block; margin: var(--spectrum-spacing-75) 0 var(--spectrum-spacing-300); }
   .field > sp-field-label { padding-block: 0; }
   #count { width: 120px; }
   #naming { width: 360px; max-width: 100%; }
@@ -500,6 +504,8 @@ function getStartViewHtml (scriptUrl) {
   sp-progress-bar { width: 100%; margin-top: var(--spectrum-spacing-200); }
   /* Templates imported (one per format): a row each, with its size, its state and a button to remove it */
   .template-list { display: flex; flex-direction: column; gap: var(--spectrum-spacing-100); margin-top: var(--spectrum-spacing-200); }
+  /* The templates at the top of step 1, before the fields */
+  .templates-first { margin-bottom: var(--spectrum-spacing-400); }
   .template-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: var(--spectrum-spacing-200);
     padding: var(--spectrum-spacing-100) var(--spectrum-spacing-200); background: var(--spectrum-background-layer-2-color);
     border: 1px solid var(--spectrum-gray-200); border-radius: var(--spectrum-corner-radius-200); }
@@ -562,7 +568,21 @@ ${LAYERS_CSS}
   <li data-for="2" role="button" tabindex="-1"><span class="step-kicker">Step 2</span><span class="step-title">Layers to vary</span></li>
 </ol>
 <div data-step="1">
-<div class="subtle intro">Set the number of variants and their languages, and drop the layered PSD template, or one template per format.</div>
+<div class="subtle intro">Drop the layered PSD template, or one template per format, then set the number of variants and their languages.</div>
+<!-- The templates first: their import and reading are seen at once -->
+<div class="templates-first">
+<sp-dropzone id="drop">
+  <div class="message"><div id="message-heading">Drop your PSD templates</div><div class="subtle" id="message-description">Layered .psd files, one per format</div></div>
+  <div class="browse">
+    <sp-button variant="accent" treatment="outline" id="browse">Browse</sp-button>
+    <sp-button variant="accent" treatment="outline" id="aem" hidden>${ADOBE_ICON}Choose from AEM</sp-button>
+    <input type="file" id="file" accept=".psd,image/vnd.adobe.photoshop" multiple>
+  </div>
+</sp-dropzone>
+<div class="template-list" id="template-list" hidden></div>
+</div>
+<!-- The number of variants and the languages side by side, the total under them -->
+<div class="field-row">
 <div class="field">
   <sp-field-label for="count" size="m">Number of variants per language</sp-field-label>
   <sp-number-field id="count" min="1" max="${MAX_VARIANTS_UI}" step="1" value="2" format-options='{"maximumFractionDigits":0}'></sp-number-field>
@@ -575,23 +595,14 @@ ${LAYERS_CSS}
       <div class="languages-list" id="languages" role="group" aria-label="Languages"></div>
     </sp-popover>
   </overlay-trigger>
-  <sp-help-text id="total"></sp-help-text>
 </div>
+</div>
+<sp-help-text id="total" class="field-total"></sp-help-text>
 <div class="field">
   <sp-field-label for="naming" size="m">File names</sp-field-label>
   <sp-textfield id="naming" value="{template}_{variant}_{language}" spellcheck="false"></sp-textfield>
   <sp-help-text id="naming-help"></sp-help-text>
 </div>
-<sp-dropzone id="drop">
-  <div class="message"><div id="message-heading">Drop your PSD templates</div><div class="subtle" id="message-description">Layered .psd files, one per format</div></div>
-  <div class="browse">
-    <sp-button variant="accent" treatment="outline" id="browse">Browse</sp-button>
-    <sp-button variant="accent" treatment="outline" id="aem" hidden>${ADOBE_ICON}Choose from AEM</sp-button>
-    <input type="file" id="file" accept=".psd,image/vnd.adobe.photoshop" multiple>
-  </div>
-</sp-dropzone>
-<div class="template-list" id="template-list" hidden></div>
-<sp-help-text id="estimate" hidden></sp-help-text>
 </div>
 <div data-step="2" hidden>
   <div class="subtle intro" id="layers-intro">Click the numbered zones of the template, or the list, to pick the layers to change in the variants.</div>
@@ -1142,48 +1153,6 @@ ${LAYERS_SCRIPT}
       || !count() || !n || tooMany() || !!namingError() || fontsUploading > 0;
     continueBtn.disabled = nextBtn.disabled || !allRead() || !layerCount;
     updateSteps();
-    updateEstimate();
-  }
-
-  // Estimate of the generation, shown with the number of variants: one render per variant, and when the template has image
-  // layers, for each image if they vary (the languages of a variant share its images) a crop suggestion in the grid and a crop.
-  // Its time is that of the jobs run at once by the generation, from the average times of the calls (get-generation-estimate).
-  var estimate = null;
-  callTool('get-generation-estimate').then(function (result) { estimate = result; updateEstimate(); }, function () {});
-  function duration(ms) {
-    var s = Math.max(1, Math.round(ms / 1000));
-    return 'about ' + (s < 60 ? s + ' s' : Math.round(s / 60) + ' min');
-  }
-  function plural(n, word) { return n + ' ' + word + (n > 1 ? 's' : ''); }
-  function updateEstimate() {
-    var estimateText = document.getElementById('estimate');
-    var n = files();
-    estimateText.hidden = !estimate || !n || tooMany();
-    if (estimateText.hidden) return reportSize();
-    var avg = function (operation) { return estimate.averages[operation].averageMs; };
-    var waitMs = function (images) {
-      var crop = images ? avg('Image crop (Photoshop)') : 0;
-      return Math.max(avg('Variant render') + crop, (n * avg('Variant render') + images * avg('Image crop (Photoshop)')) / estimate.parallelJobs);
-    };
-    // Image layers of the same name share their image, framed once per ratio of their frames
-    var imageLinks = {};
-    readyTemplates().forEach(function (t) {
-      (t.data.layers || []).forEach(function (l) {
-        if (l.type !== 'smart_object_layer') return;
-        var ratios = imageLinks[l.name] = imageLinks[l.name] || [];
-        var ratio = l.frame && l.frame.width && l.frame.height ? Math.round(l.frame.width / l.frame.height * 100) : 0;
-        if (ratios.indexOf(ratio) < 0) ratios.push(ratio);
-      });
-    });
-    var imageLayers = Object.keys(imageLinks).length;
-    var images = (count() || 0) * Object.keys(imageLinks).reduce(function (total, name) { return total + imageLinks[name].length; }, 0);
-    var sources = Object.keys(estimate.averages).map(function (operation) { return estimate.averages[operation].source; });
-    var basis = sources.indexOf('default') >= 0 ? 'typical times' : sources.indexOf('all') >= 0 ? 'the average times of the service' : 'your average times';
-    estimateText.textContent = 'Estimate: ' + plural(n, 'Photoshop render') + ', ' + duration(waitMs(0))
-      + (images ? '; if ' + (imageLayers > 1 ? 'the ' + imageLayers + ' image layers of the template' + (templates.length > 1 ? 's' : '') + ' vary'
-        : 'the image layer of the template' + (templates.length > 1 ? 's' : '') + ' varies') + ', ' + plural(images, 'image crop')
-        + ' and ' + plural(images, 'crop suggestion') + ' more, ' + duration(waitMs(images)) + ' in all' : '')
-      + ' (from ' + basis + ').';
     reportSize();
   }
 
@@ -2287,11 +2256,13 @@ ${IMAGES_SCRIPT}
 const STEPS_CSS = `
   /* Two steps, as segments of a progress bar: the bar of the current and done steps in the accent color, with the number and
      the name of each step below it */
-  .steps { display: grid; grid-template-columns: 1fr 1fr; gap: var(--spectrum-spacing-200); margin: var(--spectrum-spacing-300) 0 var(--spectrum-spacing-400); padding: 0; list-style: none; }
+  .steps { display: grid; grid-template-columns: 1fr 1fr; gap: var(--spectrum-spacing-200); margin: var(--spectrum-spacing-200) 0 var(--spectrum-spacing-300); padding: 0; list-style: none; }
   .steps.single { grid-template-columns: 1fr; }
-  .steps li { display: flex; flex-direction: column; gap: 2px; padding-top: var(--spectrum-spacing-100); border-top: 4px solid var(--spectrum-gray-200); border-radius: 2px 2px 0 0; transition: border-color 0.15s; }
+  /* A step on one line, under its bar: STEP 1 – VARIANTS AND TEMPLATE */
+  .steps li { display: flex; flex-direction: row; align-items: baseline; gap: 6px; min-width: 0; white-space: nowrap; overflow: hidden; padding-top: var(--spectrum-spacing-75); border-top: 3px solid var(--spectrum-gray-200); border-radius: 2px 2px 0 0; transition: border-color 0.15s; }
   .step-kicker { font-size: var(--spectrum-font-size-50, 11px); font-weight: var(--spectrum-bold-font-weight); letter-spacing: 0.04em; text-transform: uppercase; color: var(--spectrum-neutral-subdued-content-color-default); }
-  .step-title { color: var(--spectrum-neutral-subdued-content-color-default); }
+  .step-title { font-size: var(--spectrum-font-size-50, 11px); font-weight: var(--spectrum-bold-font-weight); letter-spacing: 0.04em; text-transform: uppercase; color: var(--spectrum-neutral-subdued-content-color-default); overflow: hidden; text-overflow: ellipsis; }
+  .step-title::before { content: '\\2013'; margin-right: 6px; font-weight: normal; }
   .steps li.current, .steps li.done { border-top-color: var(--spectrum-accent-background-color-default); }
   .steps li.current .step-kicker { color: var(--spectrum-accent-content-color-default); }
   .steps li.current .step-title { color: var(--spectrum-neutral-content-color-default); font-weight: var(--spectrum-bold-font-weight); }

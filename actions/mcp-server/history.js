@@ -206,20 +206,4 @@ async function usageReport (params, { days }) {
   })
 }
 
-// Average time of the calls of the given operations over the last days, in ms: those of the user, or of all the users for an
-// operation the user has not made yet ({ [operation]: { averageMs, source: 'user' | 'all' } }, missing when never made).
-async function callAverages (params, userId, operations, days = 30) {
-  return withActivity(params, async activity => {
-    const averages = async filter => Object.fromEntries((await activity.aggregate([
-      { $match: { ...filter, ...period(days) } },
-      { $unwind: '$calls' },
-      { $match: { 'calls.operation': { $in: [...operations, ...Object.keys(RENAMED_OPERATIONS)] } } },
-      { $group: { _id: '$calls.operation', count: { $sum: '$calls.count' }, failed: { $sum: '$calls.failed' }, totalMs: { $sum: '$calls.totalMs' } } }
-    ]).toArray().then(mergeRenamed)).map(op => [op._id, average(op.totalMs, op.count - op.failed)]).filter(([, ms]) => ms))
-    const [own, all] = await Promise.all([averages({ userId }), averages({})])
-    return Object.fromEntries(operations.filter(op => own[op] || all[op])
-      .map(op => [op, own[op] ? { averageMs: own[op], source: 'user' } : { averageMs: all[op], source: 'all' }]))
-  })
-}
-
-module.exports = { recordActivity, usageHistory, usageReport, callAverages, withCollection }
+module.exports = { recordActivity, usageHistory, usageReport, withCollection }

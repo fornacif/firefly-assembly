@@ -60,8 +60,6 @@ Each task (template reading, crop, image generation, generation of variants) is 
 - `get-usage-history`: the generations of the user, with their totals.
 - `get-usage-report`: the usage of all the users (totals, per user, per day, per kind of API call), only for the IMS user ids listed in `ADMIN_USER_IDS`.
 
-Before a generation, with the number of variants and languages, the start widget estimates it (`get-generation-estimate`): one Photoshop render per variant and, once the template is read, if its image layers vary, one crop per image (the languages of a variant sharing its images) and the crop suggestions of the image grid; and the time of the generation, from the average time of these calls over the last 30 days (those of the user, or of all the users, or typical times before any) and the jobs run at once.
-
 ## Text checks
 
 The assistant checks the texts of the generated variants by looking at them, right after create-variant, in the same turn: the user has nothing to ask. The assistant calls:
