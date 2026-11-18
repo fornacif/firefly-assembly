@@ -490,7 +490,7 @@ function getStartViewHtml (scriptUrl) {
   /* Languages: a field like a Spectrum 2 picker, naming the languages chosen, that opens a list with a checkbox each */
   .languages-button {
     display: flex; align-items: center; justify-content: space-between; gap: var(--spectrum-spacing-100);
-    width: 240px; max-width: 100%; height: var(--spectrum-component-height-100);
+    width: 400px; max-width: 100%; height: var(--spectrum-component-height-100);
     padding: 0 var(--spectrum-spacing-200) 0 var(--spectrum-spacing-300);
     font: inherit; color: var(--spectrum-neutral-content-color-default); text-align: left;
     background: var(--spectrum-gray-100); border: none; border-radius: var(--spectrum-corner-radius-medium-default); cursor: pointer;
@@ -1146,7 +1146,9 @@ ${LAYERS_SCRIPT}
   // Only the label and the total change while the list is open, so that the checkbox keeps the focus
   function updateLanguages() {
     var names = languages().map(function (code) { return LANGUAGE_NAMES[code]; });
-    languageLabel.textContent = !names.length ? 'Choose languages' : names.length <= 2 ? names.join(', ') : names.length + ' languages selected';
+    // The names of the languages while they fit in the field, otherwise their count
+    languageLabel.textContent = names.length ? names.join(', ') : 'Choose languages';
+    if (names.length > 1 && languageLabel.scrollWidth > languageLabel.clientWidth) languageLabel.textContent = names.length + ' languages selected';
     languageButton.title = names.join(', ');
     updateButton();
   }
