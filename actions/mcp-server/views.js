@@ -487,15 +487,17 @@ function getStartViewHtml (scriptUrl) {
   .field > sp-field-label { padding-block: 0; }
   #count { width: 120px; }
   #naming { width: 360px; max-width: 100%; }
-  /* Languages: a field like a Spectrum 2 picker, naming the languages chosen, that opens a list with a checkbox each */
+  /* Languages: a field like the text fields next to it (white in the light theme, outlined), naming the languages chosen, that
+     opens a list with a checkbox each */
   .languages-button {
     display: flex; align-items: center; justify-content: space-between; gap: var(--spectrum-spacing-100);
     width: 400px; max-width: 100%; height: var(--spectrum-component-height-100);
     padding: 0 var(--spectrum-spacing-200) 0 var(--spectrum-spacing-300);
     font: inherit; color: var(--spectrum-neutral-content-color-default); text-align: left;
-    background: var(--spectrum-gray-100); border: none; border-radius: var(--spectrum-corner-radius-medium-default); cursor: pointer;
+    background: var(--spectrum-gray-25); border: var(--spectrum-border-width-200) solid var(--spectrum-gray-300);
+    border-radius: var(--spectrum-corner-radius-medium-default); cursor: pointer;
   }
-  .languages-button:hover { background: var(--spectrum-gray-200); }
+  .languages-button:hover { border-color: var(--spectrum-gray-400); }
   .languages-button:focus-visible { outline: var(--spectrum-focus-indicator-thickness) solid var(--spectrum-focus-indicator-color); outline-offset: var(--spectrum-focus-indicator-gap); }
   .languages-button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .languages-button sp-icon-chevron-down { flex: none; }
