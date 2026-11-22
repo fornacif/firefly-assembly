@@ -19,11 +19,12 @@
 // A layout can be given (target.layout, from the review of the formats by the assistant): a rectangle in the new canvas per
 // element, by the name of its layer (or of a layer clipped to it). Such an element goes exactly there: a frame of an image is
 // stretched to the rectangle, another element is scaled to fit in it (unstretched) and centered in it; it does not grow. A
-// text can be broken into another number of lines first (lines): its words spread over balanced lines.
+// text can be given its words broken into other lines first (text, made by the server).
 //
 // The script is built per format by buildResizeScript: resizeTemplate is sent as source, called with the photoshop module and the
 // size of the format. The module is required by the script, not by the function: the bundler of the action would otherwise
-// take the require of the function for one of its own.
+// take the require of the function for one of its own. A job whose script fails still succeeds: the error is written in the
+// name of a new layer (RESIZE_FAILED), which the server looks for in the manifest of the PSD made.
 
 // Usual formats of the social networks, in pixels, with the name of their files (slug)
 const SOCIAL_FORMATS = [
@@ -46,9 +47,13 @@ function formatFileName (sourceName, format) {
   return `${base ? base + '_' : ''}${format.slug}.psd`
 }
 
+// Prefix of the name of the layer that tells the error of the script
+const RESIZE_FAILED = 'resize failed: '
+
 // Runs in Photoshop: no closure (the function is sent as its source)
 async function resizeTemplate (photoshop, target) {
   const { app, core, action, constants } = photoshop
+  const RESIZE_FAILED_NAME = target.failed
 
   // Share of the canvas an element covers in both directions to count as a background
   const COVER_SHARE = 0.9
@@ -56,10 +61,6 @@ async function resizeTemplate (photoshop, target) {
   const SAFE_MARGIN = 0.05
   // Kinds of layers with no bounds of their own
   const UNBOUNDED = /solidColor|gradientFill|pattern|brightnessContrast|levels|curves|exposure|vibrance|hueSaturation|colorBalance|blackAndWhite|photoFilter|channelMixer|colorLookup|invert|posterize|threshold|selectiveColor|gradientMap/i
-
-  // With target.debug, what the script did, written in the names of new layers (read in the manifest of the output)
-  const log = []
-  const note = (...parts) => { if (target.debug) log.push(parts.map(part => typeof part === 'string' ? part : JSON.stringify(part)).join(' ')) }
 
   const box = bounds => ({ left: bounds.left, top: bounds.top, right: bounds.right, bottom: bounds.bottom })
   const width = b => b.right - b.left
@@ -104,12 +105,11 @@ async function resizeTemplate (photoshop, target) {
     return elements
   }
 
-  // Runs commands one by one: batchPlay does not throw when a command fails, it answers an error descriptor, noted (with debug)
+  // batchPlay does not throw when a command fails: it answers an error descriptor, thrown here
   async function play (descriptors) {
-    for (const descriptor of descriptors) {
-      const [result] = await action.batchPlay([descriptor], {})
-      note('play', descriptor._obj, JSON.stringify(result || null).slice(0, 160))
-    }
+    const results = await action.batchPlay(descriptors, {})
+    const failed = results.find(result => result && (result._obj === 'error' || typeof result.message === 'string'))
+    if (failed) throw new Error(failed.message || 'A Photoshop command failed')
   }
 
   // The transforms act on the active layer (whatever the layer they are called on)
@@ -152,7 +152,6 @@ async function resizeTemplate (photoshop, target) {
     await play([{ _obj: 'newPlacedLayer' }])
     const framed = app.activeDocument.activeLayers[0]
     if (framed && framed.name !== name) framed.name = name
-    note('framed', name, framed && box(framed.bounds))
   }
 
   // Scales a layer by k around its own center, then moves its center to the point given
@@ -160,43 +159,13 @@ async function resizeTemplate (photoshop, target) {
     await select(layer)
     if (layer.allLocked) layer.allLocked = false
     if (layer.positionLocked) layer.positionLocked = false
-    note('place', layer.name, String(layer.kind), 'k', kx, ky, 'to', Math.round(centerX), Math.round(centerY), 'before', box(layer.bounds))
     if (Math.abs(kx - 1) > 0.001 || Math.abs(ky - 1) > 0.001) await layer.scale(kx * 100, ky * 100, constants.AnchorPosition.MIDDLECENTER)
-    note('scaled', box(layer.bounds))
     const b = box(layer.bounds)
     const dx = centerX - (b.left + b.right) / 2
     const dy = centerY - (b.top + b.bottom) / 2
     if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) await layer.translate(dx, dy)
-    note('moved', box(layer.bounds))
   }
 
-  // Text broken into a number of lines of about the same length (the longest one as short as possible)
-  function balance (text, count) {
-    const words = text.split(/\s+/).filter(Boolean)
-    const lines = Math.min(count, words.length)
-    if (lines < 1) return text
-    const lengths = words.map(word => word.length)
-    const span = (i, j) => lengths.slice(i, j).reduce((total, length) => total + length, 0) + (j - i - 1)
-    // best[k][i]: the longest line when the words from i are spread over k lines, and where its first line ends
-    const best = Array.from({ length: lines + 1 }, () => [])
-    for (let i = 0; i <= words.length; i++) best[0][i] = { longest: i === words.length ? 0 : Infinity }
-    for (let k = 1; k <= lines; k++) {
-      for (let i = 0; i <= words.length; i++) {
-        best[k][i] = { longest: i === words.length ? 0 : Infinity }
-        for (let j = i + 1; j <= words.length; j++) {
-          const longest = Math.max(span(i, j), best[k - 1][j].longest)
-          if (longest < best[k][i].longest) best[k][i] = { longest, end: j }
-        }
-      }
-    }
-    const out = []
-    for (let k = lines, i = 0; k > 0 && i < words.length; k--) {
-      const end = best[k][i].end
-      out.push(words.slice(i, end).join(' '))
-      i = end
-    }
-    return out.join('\r')
-  }
   function findLayers (layers, name) {
     return layers.flatMap(layer => [...(layer.name === name ? [layer] : []), ...(layer.layers ? findLayers(layer.layers, name) : [])])
   }
@@ -204,15 +173,13 @@ async function resizeTemplate (photoshop, target) {
   await core.executeAsModal(async () => {
     const doc = app.activeDocument
     try {
-    // Texts broken into the number of lines given by the layout, before they are measured
-    for (const item of (target.layout || []).filter(item => item.lines > 0)) {
+    // Texts broken into other lines by the layout, before they are measured
+    for (const item of (target.layout || []).filter(item => item.text)) {
       for (const layer of findLayers(doc.layers, item.name).filter(layer => layer.kind === constants.LayerKind.TEXT)) {
         await select(layer)
-        layer.textItem.contents = balance(layer.textItem.contents, item.lines)
-        note('lines', item.name, item.lines, layer.textItem.contents)
+        layer.textItem.contents = item.text
       }
     }
-    note('doc', doc.width, doc.height, 'resolution', doc.resolution, 'layers', doc.layers.map(layer => layer.name + ':' + String(layer.kind)))
     const from = { width: doc.width, height: doc.height }
     const to = { width: target.width, height: target.height }
     await unlockBackground(doc)
@@ -230,9 +197,17 @@ async function resizeTemplate (photoshop, target) {
     // Place of each element in the new canvas: its scale (kx, ky) and its center
     const plans = elements.map(element => {
       const { bounds, covers, stretches } = element
-      const k = covers ? cover : fit
       const centerX = (bounds.left + bounds.right) / 2
       const centerY = (bounds.top + bounds.bottom) / 2
+      // The rectangle given for the element, if any: there exactly
+      const given = (target.layout || []).find(item => item.width > 0 && item.height > 0 && element.members.some(member => member.name === item.name))
+      if (given) {
+        const gx = given.width / width(bounds)
+        const gy = given.height / height(bounds)
+        const g = Math.min(gx, gy)
+        return { ...element, kx: stretches ? gx : g, ky: stretches ? gy : g, centerX, centerY, newX: given.left + given.width / 2, newY: given.top + given.height / 2 }
+      }
+      const k = covers ? cover : fit
       // Center of the element in the new canvas: the middle for a background, the same place relative to the canvas otherwise
       let newX = covers ? to.width / 2 : centerX * ratioX
       let newY = covers ? to.height / 2 : centerY * ratioY
@@ -248,16 +223,6 @@ async function resizeTemplate (photoshop, target) {
         newY = clamp(newY, height(bounds) * k / 2, marginY, to.height)
       }
       const isText = !covers && !stretches && element.members.every(member => member.kind === constants.LayerKind.TEXT)
-      // The rectangle given for the element, if any
-      const given = (target.layout || []).find(item => element.members.some(member => member.name === item.name))
-      if (given && given.width > 0 && given.height > 0) {
-        const gx = given.width / width(bounds)
-        const gy = given.height / height(bounds)
-        const g = Math.min(gx, gy)
-        note('layout', given.name, given)
-        return { ...element, kx: stretches ? gx : g, ky: stretches ? gy : g, centerX, centerY,
-          newX: given.left + given.width / 2, newY: given.top + given.height / 2, marginX, marginY, isText: false, given: true }
-      }
       return { ...element, kx: stretches ? ratioX : k, ky: stretches ? ratioY : k, centerX, centerY, newX, newY, marginX, marginY, isText }
     })
     const boxOf = (plan, kx = plan.kx, ky = plan.ky) => ({
@@ -286,7 +251,6 @@ async function resizeTemplate (photoshop, target) {
         let high = most
         if (fits(high)) low = high
         else for (let i = 0; i < 20; i++) { const mid = (low + high) / 2; if (fits(mid)) low = mid; else high = mid }
-        note('grow', plan.members[0].name, 'from', plan.kx, 'to', low)
         plan.kx = plan.ky = low
       }
     }
@@ -314,18 +278,17 @@ async function resizeTemplate (photoshop, target) {
       }
     }
     } catch (error) {
-      note('error', String(error && (error.stack || error.message || error)))
+      await doc.createLayer({ name: (RESIZE_FAILED_NAME + String(error && (error.message || error))).slice(0, 250) })
     }
-    for (let i = 0; i < log.length; i++) await doc.createLayer({ name: `debug ${String(i).padStart(2, '0')} ${log[i]}`.slice(0, 250) })
   }, { commandName: `Resize to ${target.width}x${target.height}` })
 }
 
 // Source of the script for a format ({ width, height } in pixels), with the layout given if any ([{ name, left, top, width,
-// height }] in pixels of the format)
-function buildResizeScript ({ width, height, debug }, layout) {
+// height, text }] in pixels of the format)
+function buildResizeScript ({ width, height }, layout) {
   if (!(width > 0 && height > 0)) throw new Error('The size of the format is missing.')
-  const target = { width: Math.round(width), height: Math.round(height), ...(layout?.length ? { layout } : {}), ...(debug ? { debug: true } : {}) }
+  const target = { width: Math.round(width), height: Math.round(height), failed: RESIZE_FAILED, ...(layout?.length ? { layout } : {}) }
   return `const photoshop = require('photoshop');\n${resizeTemplate.toString()}\nawait resizeTemplate(photoshop, ${JSON.stringify(target)});\n`
 }
 
-module.exports = { SOCIAL_FORMATS, formatFileName, buildResizeScript, resizeTemplate }
+module.exports = { SOCIAL_FORMATS, RESIZE_FAILED, formatFileName, buildResizeScript }

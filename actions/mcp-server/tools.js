@@ -12,7 +12,7 @@ const { zipFiles } = require('./zip.js')
 const { recordActivity, usageHistory, usageReport } = require('./history.js')
 const { fontNames, listFonts, addFont, removeFont } = require('./fonts.js')
 const spectrumAsset = require('./spectrum-asset.js')
-const { SOCIAL_FORMATS, formatFileName, buildResizeScript } = require('./resize-script.js')
+const { SOCIAL_FORMATS, RESIZE_FAILED, formatFileName, buildResizeScript } = require('./resize-script.js')
 
 const IMS_TOKEN_URL = 'https://ims-na1.adobelogin.com/ims/token/v3'
 const PHOTOSHOP_API = 'https://photoshop-api.adobe.io/v2'
@@ -61,7 +61,7 @@ const WORKFLOW = `Variant creation workflow. When the user asks to create varian
 4. Images: done in the second step of edit-variant-texts when text layers were selected too. Otherwise (smart object layers only), call upload-variant-images ONCE with the labels of the variants without their languages (one row per variant, e.g. "Winter sale" for "Winter sale FR" and "Winter sale DE": all the languages of a variant share its images) and the selected smart object layers (id, name and frame width and height from get-psd-manifest), so the user drops (or picks from AEM Assets, or generates with Firefly from your prompts) one image per variant and layer in a grid and adjusts how each one is cropped to its frame. Do not write prompts for Firefly by default: each slot offers to generate its image with Firefly from a prompt the user writes there. Pass prompts (one per variant and layer, in English, from the brief and the texts of the variant) only for the layers for which the user asks for generated images, in chat or with the option of the start widget: each of their slots then offers to generate its image (Generate with Firefly shows its prompt, which the user can edit), and the main button generates them all. When the user confirms, the widget gives you the URL, size and crop of each image the same way. Never ask for image URLs in chat. Then wait.
 5. Generation: as soon as the images are confirmed (or the texts, without smart object layers), call create-variant ONCE with widgetRef, the reference at the end of the user's confirmation message (both references when the texts and the images were confirmed apart; with images only, also the languages of the start widget), instead of variants: the server builds all the variants (up to ${MAX_VARIANTS}) from what the user confirmed (texts, font scales, images, crops, groups and languages), so do not copy texts, image URLs or crops into the call. Pass also the templateUrl (or templates), fileNamePattern and fonts given by the start widget, and the formats; do not recap the variants or ask for another approval. Without a reference (e.g. a widget result missing), pass the variants as before: for each image the crop chosen in the grid (each language of a variant gets the images and crops of its row of the grid, and its label in the grid as group) and for each variant its language and its group (its label without its language). The widget shows the generated files with download buttons.
 6. Review: right after create-variant, in the same turn and without asking the user, check the texts of the generated files: call review-variants with the task id create-variant gives (it waits for the generation; while it answers that it is not finished, call it again): it shows you each visual with the texts sent. Look at each edited text on its visual: cut or past an edge of the visual or of its panel, letters or words hidden, overlapping another element (logo, image, other text) more than in the template, too small or hard to read on its background, lines broken badly, or not the text sent. Then call report-variant-issues with every variant reviewed (no issues for those that are fine; when review-variants shows the variants in several parts, after each part): per problem, the layer, a short description, the fix you propose (e.g. Reduce the font size of "headline" to 85%.) and the rectangle of the text on the visual, in pixels of the canvas. The widget marks each problem on the visual, with your proposed fix. Each variant has a field of changes, pre-filled with its proposed fixes, that the user edits, then sends to you: nothing is generated again before. Do not list the problems in chat: briefly say that the widget shows them and takes the changes. The user can also click a text on a visual to write a change for it in its field. When the user asks for changes (in the widget or in chat), make exactly the changes asked, nothing else: change a font size only when asked; to change the words of a text, rewrite it as asked (e.g. twice as many words, at most two lines) and keep its font size, even if it may not fit; then call update-variants with the variants to change only, with the same file names and the same edits except the changes (a font size of N% is fontScale N/100), and previousTaskId, the task id of the generation changed: its widget shows these variants generated again in place, and the others unchanged (create-variant with previousTaskId does the same in a new widget). After report-variant-issues, call wait-variant-changes with the task id, and again each time it says so, without writing to the user: it gives you the changes the user sends from the widget, without a message to validate. The texts are checked once generated: do not adjust them beforehand. If a text the user asked for does not fit, you may then suggest a fix (a smaller font size or a shorter text), without applying it.
-Changes after generation: to re-crop or swap images, call upload-variant-images again with images pre-filled from the previous confirmation (never ask to upload again the images you already have, unless their URLs expired); to change texts, call create-variant again with the variants to change only (same file names, groups, languages, fileNamePattern and fonts), with previousTaskId. To get other formats of variants already generated (e.g. PSD after JPEG), call create-variant with these variants unchanged (same file names and edits), only the new formats, and previousTaskId: each variant keeps its earlier files in the widget and the ZIP.
+Changes after generation: to re-crop or swap images, call upload-variant-images again with images pre-filled from the previous confirmation (never ask to upload again the images you already have, unless their URLs expired); to change texts, call update-variants with the variants to change only (same file names, groups, languages, fileNamePattern and fonts) and previousTaskId: the widget of that generation shows them in place. To get other formats of variants already generated (e.g. PSD after JPEG), call update-variants with these variants unchanged (same file names and edits), only the new formats, and previousTaskId: each variant keeps its earlier files in the widget and the ZIP.
 Widgets send their result (template URL, layers, texts, images) in your context and end the user's message with a reference in parentheses like "(r7k2p9)": if you do not have that result in your context, call get-widget-result with this ref before going on; never ask the user to redo a step because a result seems missing.
 The URLs from the widgets are temporary presigned URLs: use them in tool calls, but never show them to the user. Reply in the user's language.`
 
@@ -684,7 +684,8 @@ async function libraryFontsFor (params, userId, manifest, given = []) {
 // its font, when it is edited: the texts are given their own content. The preview is rendered at once with the fonts given
 // (each change of the fonts gives a new render), a default font in place of the fonts still missing, as the variants.
 function renderPreview (params, url, fonts = []) {
-  return previewCache([url, ...fonts].join('|'), async () => {
+  // Keyed on the files, whatever the signature of their URLs (the same template read by the widget, then reviewed)
+  return previewCache([url, ...fonts].map(storageKey).join('|'), async () => {
     const manifest = await getManifest(params, url)
     const texts = drawnLayers(manifest.layers)
       .filter(layer => layer.type === 'text_layer' && layer.text?.content != null)
@@ -1474,20 +1475,23 @@ const TASKS = {
     }
   },
 
-  // Image generated by Firefly for a smart object frame
-  // A template made in a social media format from another one (resize-script.js), kept with the uploads
+  // A template made in a social media format from another one (resize-script.js), kept with the uploads. The script writes its
+  // error in a layer (the job succeeds anyway): read in the manifest of the PSD made (kept for its reading by the widget)
   async resize (params, { args }) {
     const format = SOCIAL_FORMATS.find(f => f.id === args.format)
     const name = formatFileName(args.name || 'template.psd', format)
     const { uploadUrl, readUrl } = await createStorageUrls('uploads', name)
     await runPhotoshopJob(params, '/execute-actions', {
       image: { source: { url: args.url } },
-      options: { uxp: { source: { content: buildResizeScript({ ...format, debug: args.debug }, args.layout), contentType: 'application/javascript' } } },
+      options: { uxp: { source: { content: buildResizeScript(format, args.layout), contentType: 'application/javascript' } } },
       outputs: [{ destination: { url: uploadUrl }, mediaType: 'image/vnd.adobe.photoshop' }]
     }, 'Template resize')
+    const failed = (await getManifest(params, readUrl)).layers?.find(layer => layer.name?.startsWith(RESIZE_FAILED))
+    if (failed) throw new Error(`The format could not be made: ${failed.name.slice(RESIZE_FAILED.length)}`)
     return { url: readUrl, name, format: format.id }
   },
 
+  // Image generated by Firefly for a smart object frame
   async image (params, { args }, update, deadline) {
     return generateImage(params, args, deadline)
   },
@@ -1560,10 +1564,10 @@ async function reviewData (params, args) {
 // Problems reported by the assistant on a generation (report-variant-issues), read by its widget
 const reviewKey = (userId, taskId) => `review-${shortHash(userId)}-${taskId}`
 
-// Review of the social media formats made from a template (step 2 of the start widget), kept in state: { source: { name, url,
-// width, height }, fonts, formats: { [id]: { name, url, width, height, status, comment, request, taskId } } }, status being
-// pending (to check by the assistant, after a change asked by the user too), ok, adjusting (a layout given by the assistant,
-// made by a resize task) or failed
+// Review of the social media formats made from a template (step 2 of the start widget), kept in state: { source: { name, url },
+// fonts, formats: { [id]: { name, url, status, comment, request, taskId } } }, status being pending (to check by the assistant,
+// after a change asked by the user too), ok, adjusting (a layout given by the assistant, made by a resize task), adjusted or
+// failed
 const formatReviewKey = (userId, reviewId) => `formats-${shortHash(userId)}-${reviewId}`
 const FORMAT_REVIEW_ID = /^f[0-9a-z]{6,20}$/
 
@@ -1571,12 +1575,14 @@ async function readFormatReview (params, reviewId) {
   if (!FORMAT_REVIEW_ID.test(String(reviewId))) throw new Error('Invalid review id.')
   const review = (await (await initState()).get(formatReviewKey(currentUserId(params), reviewId)))?.value
   if (!review) throw new Error('This review of the formats is not known: it expired (24 hours) or belongs to another user.')
-  // A layout made since: the template of the format is the one made
-  await Promise.all(Object.values(review.formats).filter(f => f.status === 'adjusting' && f.taskId).map(async f => {
+  // A layout made since: the template of the format is the one made (kept)
+  const ended = await Promise.all(Object.values(review.formats).filter(f => f.status === 'adjusting' && f.taskId).map(async f => {
     const task = await readTask(params, f.taskId)
     if (task?.status === 'done') Object.assign(f, { status: 'adjusted', url: task.result.url, name: task.result.name })
     else if (task?.status === 'failed' || !task) Object.assign(f, { status: 'failed', error: task?.error || 'The layout task expired.' })
+    return f.status !== 'adjusting'
   }))
+  if (ended.some(Boolean)) await saveFormatReview(params, reviewId, review)
   return review
 }
 
@@ -1584,15 +1590,40 @@ async function saveFormatReview (params, reviewId, review) {
   await (await initState()).put(formatReviewKey(currentUserId(params), reviewId), review, { ttl: TASK_TTL_SECONDS })
 }
 
-// The assistant waits for the formats (wait-format-review) from the start widget on, so that it checks them as soon as they are
-// made, without a message to validate: the last review of the user ({ reviewId, at, handed, done }: handed when given to the
-// assistant, done when the user went on to the layers or made no formats), and when the assistant last waited
+// The assistant waits for what the widgets send it (the formats to check, the changes of the variants), so that it gets them
+// without a message to validate: a tool (wait-format-review, wait-variant-changes) waits for a record of the widget that it was
+// not handed yet ({ ..., at, handed }), and a heartbeat tells the widgets whether the assistant is waiting (otherwise they send
+// a message). The format review records the last review of the user ({ reviewId, done }: done when the user went on to the
+// layers or made no formats); the changes of the variants are recorded per generation.
 const formatLatestKey = userId => `formats-latest-${shortHash(userId)}`
 const formatWaitKey = userId => `formats-wait-${shortHash(userId)}`
-const FORMAT_WAIT_MS = 45000
-const FORMAT_WAIT_POLL_MS = 2000
-// The assistant is waiting when it waited this recently
-const FORMAT_WAITING_MS = 60000
+const variantChangesKey = (userId, taskId) => `changes-${shortHash(userId)}-${taskId}`
+const variantWaitKey = userId => `changes-wait-${shortHash(userId)}`
+// Longest wait of one call, its polls, and how recent the heartbeat of a waiting assistant is (longer than a call)
+const WAIT_MS = 45000
+const WAIT_POLL_MS = 2000
+const WAITING_MS = 60000
+// The assistant stops waiting for the changes of the variants after this long without any
+const VARIANT_IDLE_MS = 4 * 60 * 1000
+
+async function assistantWaiting (params, waitKey) {
+  const at = (await (await initState()).get(waitKey(currentUserId(params))).catch(() => null))?.value?.at
+  return Boolean(at && Date.now() - at < WAITING_MS)
+}
+
+// Waits (one call of a wait tool) for check() to answer: check() returns the content to give the assistant, or null to wait.
+// The heartbeat is written once per call (it lasts longer than a call). Answers again to call the tool when nothing came.
+async function waitForWidget (params, waitKey, check, againText) {
+  const state = await initState()
+  const deadline = Date.now() + WAIT_MS
+  await state.put(waitKey(currentUserId(params)), { at: Date.now() }, { ttl: 300 })
+  while (true) {
+    const content = await check()
+    if (content) return { content }
+    if (Date.now() + WAIT_POLL_MS > deadline) return { content: [{ type: 'text', text: againText }] }
+    await wait(WAIT_POLL_MS)
+  }
+}
 
 // The generation made from another one (changes sent from its widget): its widget shows it in place (get-next-generation)
 const nextGenerationKey = (userId, taskId) => `next-${shortHash(userId)}-${taskId}`
@@ -1600,25 +1631,19 @@ async function setNextGeneration (params, previousTaskId, data) {
   await (await initState()).put(nextGenerationKey(currentUserId(params), previousTaskId), data, { ttl: TASK_TTL_SECONDS })
 }
 
-// Changes sent from the widget of a generation, given to the assistant if it waits for them (wait-variant-changes): { context,
-// at, handed }, and when it last waited. It stops waiting after a while without changes.
-const variantChangesKey = (userId, taskId) => `changes-${shortHash(userId)}-${taskId}`
-const variantWaitKey = userId => `changes-wait-${shortHash(userId)}`
-const VARIANT_WAIT_MS = 45000
-const VARIANT_IDLE_MS = 4 * 60 * 1000
-
 async function setFormatLatest (params, latest) {
   await (await initState()).put(formatLatestKey(currentUserId(params)), { ...latest, at: Date.now() }, { ttl: TASK_TTL_SECONDS })
 }
-async function assistantWaiting (params) {
-  const at = (await (await initState()).get(formatWaitKey(currentUserId(params))).catch(() => null))?.value?.at
-  return Boolean(at && Date.now() - at < FORMAT_WAITING_MS)
-}
+
+// Layers described to the assistant: name, id, type and rectangle in pixels of the canvas (left, top, width, height)
+const describeLayers = layers => layers.map(layer => `"${layer.name}" (${layer.id != null ? `id ${layer.id}, ` : ''}${layer.type}${layer.area ? `, ${['left', 'top', 'width', 'height'].map(k => Math.round(layer.area[k])).join(',')}` : ''})`).join('; ')
 
 // Content of review-formats: the master template and each format, with its layers and its preview reduced (the assistant
 // reads images, not their URLs)
 async function formatReviewContent (params, review) {
-  const entries = [{ id: null, label: 'Master template', ...review.source }, ...Object.entries(review.formats).map(([id, f]) => ({ id, label: `Format ${id}`, ...f }))]
+  // The master, and the formats waiting for a verdict (the others, already checked, are not shown again)
+  const entries = [{ id: null, label: 'Master template', ...review.source },
+    ...Object.entries(review.formats).filter(([, f]) => f.status === 'pending').map(([id, f]) => ({ id, label: `Format ${id}`, ...f }))]
   const shown = await Promise.all(entries.map(async entry => {
     const url = await freshStorageUrl(entry.url)
     const [manifest, preview] = await Promise.all([getManifest(params, url), renderPreview(params, url, review.fonts || [])])
@@ -1626,8 +1651,7 @@ async function formatReviewContent (params, review) {
     if (!response.ok) throw new Error(`The preview of ${entry.name} could not be downloaded (HTTP ${response.status})`)
     const image = reviewImage(Buffer.from(await response.arrayBuffer()))
     const size = boundsSize(manifest.document.bounds)
-    const layers = drawnLayers(manifest.layers).map(layer => ({ layer, area: layerArea(layer) })).filter(({ area }) => area)
-      .map(({ layer, area }) => `"${layer.name}" (${layer.type}, ${['left', 'top', 'width', 'height'].map(k => Math.round(area[k])).join(',')})`).join('; ')
+    const layers = describeLayers(drawnLayers(manifest.layers).map(layer => ({ name: layer.name, type: layer.type, area: layerArea(layer) })).filter(layer => layer.area))
     return { entry, image, size, layers }
   }))
   const intro = 'Review of the formats made from the master template. Below, the master template, then each format made by the script ' +
@@ -1639,9 +1663,10 @@ async function formatReviewContent (params, review) {
     '(a rectangle for each layer to move, in pixels of the canvas of the format; a frame of an image is stretched to its rectangle; ' +
     'any other layer is scaled to fit in its rectangle, centered, never stretched: a text keeps its line breaks and its proportions, so ' +
     'its rectangle should have about the ratio of the text (its width / height in the layers below, after lines if you change them), ' +
-    'otherwise it ends up smaller than the rectangle; give lines to break a text into another number of lines, which changes its ratio. ' +
+    'otherwise it ends up smaller than the rectangle; give lines to break a text into another number of lines (balanced by the server), ' +
+    'which changes its ratio. ' +
     'Make sure the rectangles do not overlap where the master does not. The layers not given are placed by the script as before), ' +
-    'with a short comment for the user each time. Recompose when it is better for the format (e.g. in a wide format, the text on one ' +
+    'with a short comment for the user each time. Only the formats waiting for your verdict are shown. Recompose when it is better for the format (e.g. in a wide format, the text on one ' +
     'side and the image on the other), keeping the content of the master. When the user asked for a change on a format, make it.'
   return [{ type: 'text', text: intro }, ...shown.flatMap(({ entry, image, size, layers }) => [{
     type: 'text',
@@ -1729,7 +1754,6 @@ async function reviewContent (generation, fileNames) {
     shown.push({ ...toReview[i], image })
   }
   const left = toReview.slice(shown.length).map(({ variant }) => variant.fileName)
-  const describeLayers = layers => layers.map(layer => `"${layer.name}" (id ${layer.id}, ${layer.type}${layer.area ? `, ${['left', 'top', 'width', 'height'].map(k => Math.round(layer.area[k])).join(',')}` : ''})`).join('; ')
   const templateLayers = review.layerSets
     ? review.layerSets.map((layers, set) => `Layers of the template ${review.templates[review.layerSet.indexOf(set)] || set + 1} (pixels of its canvas: left, top, width, height): ${describeLayers(layers)}`).join('. ')
     : `Layers of the template (pixels of the canvas: left, top, width, height): ${describeLayers(review.layers)}`
@@ -2019,14 +2043,13 @@ function registerTools (server, params) {
       inputSchema: {
         url: z.string().url().describe('HTTPS URL of the PSD template'),
         name: z.string().max(200).optional().describe('File name of the template, for the name of the new one'),
-        format: z.enum(SOCIAL_FORMATS.map(f => f.id)).describe('Social media format'),
-        debug: z.boolean().optional().describe('Writes what the script did in the names of new layers')
+        format: z.enum(SOCIAL_FORMATS.map(f => f.id)).describe('Social media format')
       },
       _meta: { ui: { visibility: ['app'] } }
     },
-    async ({ url, name, format, debug }) => {
+    async ({ url, name, format }) => {
       try {
-        return jsonResult({ taskId: await startTask(params, 'resize', { url: await freshStorageUrl(url), name, format, ...(debug ? { debug } : {}) }) })
+        return jsonResult({ taskId: await startTask(params, 'resize', { url: await freshStorageUrl(url), name, format }) })
       } catch (error) {
         return errorResult(error)
       }
@@ -2061,10 +2084,10 @@ function registerTools (server, params) {
         Object.entries(changes || {}).forEach(([id, request]) => {
           if (review.formats[id] && request.trim()) Object.assign(review.formats[id], { status: 'pending', request: request.trim(), comment: null })
         })
-        await saveFormatReview(params, reviewId, review)
         // Given to the assistant if it waits (wait-format-review), otherwise by a message of the widget
-        await setFormatLatest(params, { reviewId, handed: false })
-        return jsonResult({ reviewId, formats: review.formats, assistantWaiting: await assistantWaiting(params) })
+        const [, , waiting] = await Promise.all([saveFormatReview(params, reviewId, review), setFormatLatest(params, { reviewId, handed: false }),
+          assistantWaiting(params, formatWaitKey)])
+        return jsonResult({ reviewId, formats: review.formats, assistantWaiting: waiting })
       } catch (error) {
         return errorResult(error)
       }
@@ -2103,30 +2126,20 @@ function registerTools (server, params) {
       try {
         const state = await initState()
         const userId = currentUserId(params)
-        const deadline = Date.now() + FORMAT_WAIT_MS
-        while (true) {
-          await state.put(formatWaitKey(userId), { at: Date.now() }, { ttl: 300 })
+        return await waitForWidget(params, formatWaitKey, async () => {
           const latest = (await state.get(formatLatestKey(userId)).catch(() => null))?.value
           if (latest?.done) {
             await state.delete(formatWaitKey(userId)).catch(() => {})
-            return { content: [{ type: 'text', text: 'The user went on without formats to check (or on to the layers): stop calling wait-format-review, and wait for the user.' }] }
+            return [{ type: 'text', text: 'The user went on without formats to check (or on to the layers): stop calling wait-format-review, and wait for the user.' }]
           }
-          if (latest?.reviewId && !latest.handed) {
-            const review = await readFormatReview(params, latest.reviewId)
-            if (Object.values(review.formats).some(f => f.status === 'pending')) {
-              await state.put(formatLatestKey(userId), { ...latest, handed: true }, { ttl: TASK_TTL_SECONDS })
-              await saveFormatReview(params, latest.reviewId, review)
-              return {
-                content: [{ type: 'text', text: `Formats to check, review id "${latest.reviewId}" (check only those waiting for your verdict, or with a change asked by the user). After adjust-formats, call wait-format-review again, without writing to the user, for the changes the user may ask.` },
-                  ...await formatReviewContent(params, review)]
-              }
-            }
-          }
-          if (Date.now() + FORMAT_WAIT_POLL_MS > deadline) {
-            return { content: [{ type: 'text', text: 'Nothing to check yet: call wait-format-review again now, without writing to the user.' }] }
-          }
-          await wait(FORMAT_WAIT_POLL_MS)
-        }
+          if (!latest?.reviewId || latest.handed) return null
+          const review = await readFormatReview(params, latest.reviewId)
+          // Handed once: a review with no format waiting for a verdict is not read again at each poll
+          await state.put(formatLatestKey(userId), { ...latest, handed: true }, { ttl: TASK_TTL_SECONDS })
+          if (!Object.values(review.formats).some(f => f.status === 'pending')) return null
+          return [{ type: 'text', text: `Formats to check, review id "${latest.reviewId}". After adjust-formats, call wait-format-review again, without writing to the user, for the changes the user may ask.` },
+            ...await formatReviewContent(params, review)]
+        }, 'Nothing to check yet: call wait-format-review again now, without writing to the user.')
       } catch (error) {
         return errorResult(error)
       }
@@ -2161,9 +2174,7 @@ function registerTools (server, params) {
     },
     async ({ reviewId }) => {
       try {
-        const review = await readFormatReview(params, reviewId)
-        await saveFormatReview(params, reviewId, review)
-        return { content: await formatReviewContent(params, review) }
+        return { content: await formatReviewContent(params, await readFormatReview(params, reviewId)) }
       } catch (error) {
         return errorResult(error)
       }
@@ -2198,19 +2209,27 @@ function registerTools (server, params) {
     async ({ reviewId, formats }) => {
       try {
         const review = await readFormatReview(params, reviewId)
-        await Promise.all(formats.filter(f => review.formats[f.format]).map(async f => {
+        const sourceUrl = await freshStorageUrl(review.source.url)
+        const given = formats.filter(f => review.formats[f.format])
+        // A text broken into other lines: its words balanced over them here (as the texts of the variants), from the master
+        const master = given.some(f => f.layout?.some(item => item.lines)) ? await getManifest(params, sourceUrl) : null
+        const withTexts = layout => layout.map(({ lines, ...item }) => {
+          const text = lines && drawnLayers(master.layers).find(layer => layer.name === item.name && layer.type === 'text_layer')?.text?.content
+          return text ? { ...item, text: balanceLines(text.replace(/[\r\n]+/g, ' '), lines).replace(/\n/g, '\r') } : item
+        })
+        await Promise.all(given.map(async f => {
           const entry = review.formats[f.format]
           if (f.ok || !f.layout?.length) return Object.assign(entry, { status: 'ok', comment: f.comment, request: null })
-          const taskId = await startTask(params, 'resize', { url: await freshStorageUrl(review.source.url), name: review.source.name, format: f.format, layout: f.layout })
+          const taskId = await startTask(params, 'resize', { url: sourceUrl, name: review.source.name, format: f.format, layout: withTexts(f.layout) })
           Object.assign(entry, { status: 'adjusting', comment: f.comment, request: null, taskId })
         }))
         await saveFormatReview(params, reviewId, review)
-        const adjusting = formats.filter(f => !f.ok && f.layout?.length).length
+        const adjusting = given.filter(f => review.formats[f.format].status === 'adjusting').length
         const left = Object.entries(review.formats).filter(([, f]) => f.status === 'pending').map(([id]) => id)
         return {
           content: [{
             type: 'text',
-            text: `${formats.length - adjusting} format(s) ok, ${adjusting} made again with your layout: the widget shows them with your comments. ` +
+            text: `${given.length - adjusting} format(s) ok, ${adjusting} made again with your layout: the widget shows them with your comments. ` +
               (left.length
                 ? `The formats ${left.join(', ')} still wait for your verdict: call adjust-formats now for them too (ok or a layout).`
                 : 'Now call wait-format-review again, without writing to the user: it gives you the changes the user may ask on the formats.')
@@ -2294,10 +2313,10 @@ function registerTools (server, params) {
       }
       templateUrl = await resign(templateUrl)
       fonts = fonts && await Promise.all(fonts.map(resign))
-      for (const variant of variantList) {
+      await Promise.all(variantList.map(async variant => {
         if (variant.templateUrl) variant.templateUrl = await resign(variant.templateUrl)
         variant.layers = await Promise.all(variant.layers.map(async layer => layer.imageUrl ? { ...layer, imageUrl: await resign(layer.imageUrl) } : layer))
-      }
+      }))
       const warnings = findSharedImages(given).map(shared => `\nWarning: variants ${shared.variants.join(', ')} use the same image for layer ` +
         `${shared.layerId}. If the user chose different images in upload-variant-images, check the image of each variant in its ` +
         'confirmation (one line per variant and layer) and call create-variant again with the right URLs and crops.').join('')
@@ -2316,28 +2335,19 @@ function registerTools (server, params) {
         ...(kept.length ? { kept, order } : {}),
         ...(Object.keys(addedFiles).length ? { addedFiles } : {})
       })
-      const structuredContent = { taskId, templateUrl, pending: uniqueFileNames(variantList), labels: variantList.map(variantLabels), ...(kept.length ? { kept, order } : {}) }
-      // The widget of the generation changed shows this one in place (get-next-generation)
-      if (previousTaskId) await setNextGeneration(params, previousTaskId, structuredContent)
-      if (inPlace) {
-        return {
-          content: [{
-            type: 'text',
-            text: `Generation of ${variantList.length} file(s) started: the widget of the generation changed shows them in place, with the other ` +
-              `variants unchanged. Now check the texts (step 6), without asking the user: call review-variants with taskId "${taskId}", then ` +
-              'report-variant-issues, then wait-variant-changes with the same task id.' + warnings
-          }],
-          structuredContent
-        }
-      }
+      const structuredContent = { taskId, templateUrl, pending: fileNames, labels: variantList.map(variantLabels), ...(kept.length ? { kept, order } : {}) }
+      // The widget of the generation changed shows this one in place (get-next-generation); create-variant shows it in a new widget
+      if (inPlace) await setNextGeneration(params, previousTaskId, structuredContent)
+      const started = inPlace
+        ? `Generation of ${variantList.length} file(s) started: the widget of the generation changed shows them in place, with the other variants unchanged. `
+        : `Generation of ${variantList.length} ${templates ? `file(s) (${given.length} variant(s) x ${templates.length} templates)` : 'variant(s)'} started. The widget shows each variant as soon as it is rendered, with ` +
+          'download buttons, marks the text problems on the visuals, and gives you the result when all are done; the user then sends ' +
+          'you the changes to make. Do not call create-variant again meanwhile. '
       return {
         content: [{
           type: 'text',
-          text: `Generation of ${variantList.length} ${templates ? `file(s) (${given.length} variant(s) x ${templates.length} templates)` : 'variant(s)'} started. The widget shows each variant as soon as it is rendered, with ` +
-            'download buttons, marks the text problems on the visuals, and gives you the result when all are done; the user then sends ' +
-            `you the changes to make. Do not call create-variant again meanwhile. Now check the texts (step 6), without asking the ` +
-            `user: call review-variants with ` +
-            `taskId "${taskId}", then report-variant-issues, then wait-variant-changes with the same task id.` + warnings
+          text: started + `Now check the texts (step 6), without asking the user: call review-variants with taskId "${taskId}", then ` +
+            'report-variant-issues, then wait-variant-changes with the same task id.' + warnings
         }],
         structuredContent
       }
@@ -2408,12 +2418,9 @@ function registerTools (server, params) {
     },
     async ({ taskId, context }) => {
       try {
-        const state = await initState()
-        const userId = currentUserId(params)
-        const waitedAt = (await state.get(variantWaitKey(userId)).catch(() => null))?.value?.at
-        const assistantWaiting = Boolean(waitedAt && Date.now() - waitedAt < FORMAT_WAITING_MS)
-        if (assistantWaiting) await state.put(variantChangesKey(userId, taskId), { context, at: Date.now(), handed: false }, { ttl: TASK_TTL_SECONDS })
-        return jsonResult({ assistantWaiting })
+        const waiting = await assistantWaiting(params, variantWaitKey)
+        if (waiting) await (await initState()).put(variantChangesKey(currentUserId(params), taskId), { context, at: Date.now(), handed: false }, { ttl: TASK_TTL_SECONDS })
+        return jsonResult({ assistantWaiting: waiting })
       } catch (error) {
         return errorResult(error)
       }
@@ -2434,27 +2441,20 @@ function registerTools (server, params) {
         const state = await initState()
         const userId = currentUserId(params)
         const waitStarted = Date.now()
-        const deadline = waitStarted + VARIANT_WAIT_MS
         const generation = await readTask(params, taskId)
-        while (true) {
-          await state.put(variantWaitKey(userId), { at: Date.now() }, { ttl: 300 })
+        return await waitForWidget(params, variantWaitKey, async () => {
           const changes = (await state.get(variantChangesKey(userId, taskId)).catch(() => null))?.value
           if (changes && !changes.handed) {
             await state.put(variantChangesKey(userId, taskId), { ...changes, handed: true }, { ttl: TASK_TTL_SECONDS })
-            return { content: [{ type: 'text', text: changes.context + '\nApply them with update-variants (previousTaskId "' + taskId + '"), then check the texts again and call wait-variant-changes with the new task id.' }] }
+            return [{ type: 'text', text: changes.context + '\nApply them with update-variants (previousTaskId "' + taskId + '"), then check the texts again and call wait-variant-changes with the new task id.' }]
           }
           // The generation (started, or done) and the last changes; a wait that just started counts while the generation runs
           const lastActivity = Math.max(changes?.at || 0, generation?.updatedAt || 0, generation?.startedAt || 0,
             generation?.status === 'running' ? waitStarted : 0)
-          if (Date.now() - lastActivity > VARIANT_IDLE_MS) {
-            await state.delete(variantWaitKey(userId)).catch(() => {})
-            return { content: [{ type: 'text', text: 'No changes for a while: stop calling wait-variant-changes. The changes the user sends later come in a message.' }] }
-          }
-          if (Date.now() + FORMAT_WAIT_POLL_MS > deadline) {
-            return { content: [{ type: 'text', text: 'No changes yet: call wait-variant-changes again now, without writing to the user.' }] }
-          }
-          await wait(FORMAT_WAIT_POLL_MS)
-        }
+          if (Date.now() - lastActivity <= VARIANT_IDLE_MS) return null
+          await state.delete(variantWaitKey(userId)).catch(() => {})
+          return [{ type: 'text', text: 'No changes for a while: stop calling wait-variant-changes. The changes the user sends later come in a message.' }]
+        }, 'No changes yet: call wait-variant-changes again now, without writing to the user.')
       } catch (error) {
         return errorResult(error)
       }

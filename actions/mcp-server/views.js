@@ -7,6 +7,11 @@ const BASE_STYLE = `
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
   html, body { margin: 0; padding: 0; background: transparent; }
+  /* Full screen button, at the top right of the view; full screen, the view scrolls in the space the host gives it */
+  sp-theme { position: relative; }
+  .fullscreen-toggle { position: absolute; top: var(--spectrum-spacing-200); right: var(--spectrum-spacing-200); }
+  body.fullscreen { height: 100vh; overflow: auto; }
+  body.fullscreen sp-theme { min-height: 100%; }
   sp-theme {
     display: block;
     padding: var(--spectrum-spacing-300);
@@ -110,6 +115,7 @@ const BRIDGE_SCRIPT = `
 
     if (msg.method === 'ui/notifications/host-context-changed') {
       applyTheme(msg.params);
+      _applyDisplayMode(msg.params);
     } else if (msg.method === 'ui/notifications/tool-result') {
       if (_early) _early.result = msg.params;
       else if (_toolResultHandler) _toolResultHandler(msg.params);
@@ -159,7 +165,8 @@ const BRIDGE_SCRIPT = `
   var _sizePending = false;
   var _lastSize = '';
   function reportSize() {
-    if (_sizePending) return;
+    // Full screen, the host gives the view its size
+    if (_fullscreen || _sizePending) return;
     _sizePending = true;
     requestAnimationFrame(function () {
       _sizePending = false;
@@ -170,6 +177,40 @@ const BRIDGE_SCRIPT = `
       notification('ui/notifications/size-changed', { width: w, height: h });
     });
   }
+
+  // Full screen: a button at the top right of the view, when the host can show it so (availableDisplayModes of its context), and
+  // Escape to leave it (unless the view used Escape, e.g. to close an enlarged visual: preventDefault)
+  var _fullscreen = false;
+  var _fullscreenBtn = null;
+  var _displayModes = [];
+  function _applyDisplayMode(ctx) {
+    if (!ctx) return;
+    if (ctx.availableDisplayModes) _displayModes = ctx.availableDisplayModes;
+    if (ctx.displayMode) _fullscreen = ctx.displayMode === 'fullscreen';
+    document.body.classList.toggle('fullscreen', _fullscreen);
+    if (!_fullscreenBtn) return;
+    _fullscreenBtn.hidden = _displayModes.indexOf('fullscreen') < 0;
+    _fullscreenBtn.label = _fullscreen ? 'Exit full screen (Esc)' : 'Full screen';
+    _fullscreenBtn.title = _fullscreenBtn.label;
+    _fullscreenBtn.innerHTML = _fullscreen ? '<sp-icon-full-screen-exit slot="icon"></sp-icon-full-screen-exit>' : '<sp-icon-full-screen slot="icon"></sp-icon-full-screen>';
+    if (!_fullscreen) { _lastSize = ''; reportSize(); }
+  }
+  function setDisplayMode(mode) {
+    return request('ui/request-display-mode', { mode: mode })
+      .then(function (result) { _applyDisplayMode({ displayMode: (result && result.mode) || mode }); })
+      .catch(function () {});
+  }
+  function _addFullscreenButton() {
+    _fullscreenBtn = document.createElement('sp-action-button');
+    _fullscreenBtn.setAttribute('quiet', '');
+    _fullscreenBtn.className = 'fullscreen-toggle';
+    _fullscreenBtn.addEventListener('click', function () { setDisplayMode(_fullscreen ? 'inline' : 'fullscreen'); });
+    themeEl.appendChild(_fullscreenBtn);
+    _applyDisplayMode({ displayMode: _fullscreen ? 'fullscreen' : 'inline' });
+  }
+  window.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && _fullscreen && !e.defaultPrevented) setDisplayMode('inline');
+  });
 
   // Text of an error, whatever was thrown or rejected
   function errorText(error) { return (error && error.message) || String(error); }
@@ -230,13 +271,21 @@ const BRIDGE_SCRIPT = `
       });
   }
 
+  // What a widget sends to the assistant through a tool (update-format-review, submit-variant-changes): taken by the assistant
+  // waiting for it (wait-format-review, wait-variant-changes), otherwise sent in a message (sendToModel), which the user validates
+  function handToAssistant(result, context, message, status) {
+    if (result && result.assistantWaiting) { setStatus(status); return Promise.resolve(); }
+    return sendToModel(context, message, status);
+  }
+
   function initialize(appName) {
     request('ui/initialize', {
       protocolVersion: '2026-01-26',
       appInfo: { name: appName, version: '1.0.0' },
-      appCapabilities: { availableDisplayModes: ['inline'] }
+      appCapabilities: { availableDisplayModes: ['inline', 'fullscreen'] }
     }).then(function (result) {
       applyTheme(result.hostContext);
+      _applyDisplayMode(result.hostContext);
       notification('ui/notifications/initialized');
       reportSize();
     }).catch(function () {}).then(_readyResolve);
@@ -366,6 +415,7 @@ ${BRIDGE_SCRIPT}
     document.head.appendChild(bundle);
     return _within(3000, Promise.all(Object.keys(_tags).map(function (tag) { return customElements.whenDefined(tag); })));
   }).then(function () {
+    _addFullscreenButton();
 ${script}
     _deliverEarly();
   });
@@ -542,8 +592,6 @@ function getStartViewHtml (scriptUrl) {
   .format-comment.adjusted { color: var(--spectrum-neutral-content-color-default); }
   .format-card textarea { width: 100%; resize: vertical; }
   .formats-actions { margin-top: var(--spectrum-spacing-300); }
-  /* A step not taken (no formats made) */
-  .steps li.skipped { opacity: 0.5; }
   /* One button per template in the layer step, with the number of layers picked in it, the one shown selected */
   .template-tabs { display: flex; flex-wrap: wrap; gap: var(--spectrum-spacing-100); margin-bottom: var(--spectrum-spacing-300); }
   .linked { margin-top: var(--spectrum-spacing-200); font-size: var(--spectrum-font-size-75); }
@@ -594,11 +642,7 @@ ${STEPS_CSS}
 ${LAYERS_CSS}
 `, `
 <h2 class="heading">Create variants</h2>
-<ol class="steps" aria-label="Steps">
-  <li data-for="1" class="current" role="button" tabindex="-1"><span class="step-kicker">Step 1</span><span class="step-title">Variants and template</span></li>
-  <li data-for="2" role="button" tabindex="-1"><span class="step-kicker">Step 2</span><span class="step-title">Formats</span></li>
-  <li data-for="3" role="button" tabindex="-1"><span class="step-kicker">Step 3</span><span class="step-title">Layers to vary</span></li>
-</ol>
+${stepsHtml({ 1: 1, 2: 2, 3: 3 })}
 <div data-step="1">
 <div class="subtle intro">Drop the layered PSD template, or one template per format, then set the number of variants and their languages.</div>
 <!-- The templates first: their import and reading are seen at once -->
@@ -697,7 +741,7 @@ ${LAYERS_SCRIPT}
   // without formats); 3, the layers of the templates (read meanwhile, as soon as they are uploaded)
   function showStep(step) {
     Array.prototype.forEach.call(document.querySelectorAll('[data-step]'), function (el) { el.hidden = el.getAttribute('data-step') !== String(step); });
-    Array.prototype.forEach.call(document.querySelectorAll('.steps li'), function (li) {
+    Array.prototype.forEach.call(document.querySelectorAll('.steps li[data-for]'), function (li) {
       var n = Number(li.getAttribute('data-for'));
       li.classList.toggle('current', n === step);
       li.classList.toggle('done', n < step);
@@ -725,7 +769,7 @@ ${LAYERS_SCRIPT}
   }
   function updateSteps() {
     document.querySelector('.steps li[data-for="2"]').classList.toggle('skipped', !hasFormats());
-    Array.prototype.forEach.call(document.querySelectorAll('.steps li'), function (li) {
+    Array.prototype.forEach.call(document.querySelectorAll('.steps li[data-for]'), function (li) {
       var ok = reachable(Number(li.getAttribute('data-for')));
       li.classList.toggle('reachable', ok);
       li.tabIndex = ok ? 0 : -1;
@@ -1316,7 +1360,7 @@ ${LAYERS_SCRIPT}
     var own = templates.filter(function (t) { return !t.format; });
     return own.length === 1 ? own[0] : null;
   }
-  function madeIn(f) { return templates.filter(function (t) { return t.format === f.id; })[0]; }
+  function madeIn(id) { return templates.filter(function (t) { return t.format === id; })[0]; }
   function sameSize(t, f) {
     var doc = t.data && t.data.document;
     return Boolean(doc && doc.width === f.width && doc.height === f.height);
@@ -1328,7 +1372,7 @@ ${LAYERS_SCRIPT}
     var source = socialSource();
     var on = Boolean(source && socialOn);
     SOCIAL_FORMATS.forEach(function (f) {
-      var made = madeIn(f);
+      var made = madeIn(f.id);
       // Once the template was read (its size known), kept while it is read again (e.g. with other fonts)
       var wanted = on && socialWanted[f.id] && source.status !== 'error' && Boolean(source.data && source.data.document) && !sameSize(source, f);
       if (made && (!wanted || made.source !== source)) {
@@ -1349,7 +1393,7 @@ ${LAYERS_SCRIPT}
     if (!socialOn) return html + '</div>';
     return html + '<div class="format-lines" role="group" aria-label="Social media formats">' + SOCIAL_FORMATS.map(function (f) {
       var same = sameSize(source, f);
-      var made = madeIn(f);
+      var made = madeIn(f.id);
       var state = same ? 'This template'
         : !made ? (socialWanted[f.id] && !(source.data && source.data.document) ? 'After the reading of the template' : '')
           : made.status === 'error' ? made.error
@@ -1384,7 +1428,8 @@ ${LAYERS_SCRIPT}
   var formatsSignature = '';
   function madeTemplates() { return templates.filter(function (t) { return t.format; }); }
   function hasFormats() { return madeTemplates().length > 0; }
-  function formatOfTemplate(t) { return SOCIAL_FORMATS.filter(function (f) { return f.id === t.format; })[0]; }
+  function formatById(id) { return SOCIAL_FORMATS.filter(function (f) { return f.id === id; })[0]; }
+  function formatOfTemplate(t) { return formatById(t.format); }
   function reviewKeyOf() {
     var source = socialSource();
     return source ? source.url + '|' + madeTemplates().map(function (t) { return t.format; }).sort().join(',') : '';
@@ -1411,12 +1456,10 @@ ${LAYERS_SCRIPT}
       fonts: fontUrls(),
       formats: made.map(function (t) { return { id: t.format, name: t.name, url: t.url }; })
     }).then(function (started) {
-      // The assistant waiting for the formats checks them at once; otherwise it is asked by a message
-      if (started && started.assistantWaiting) return setStatus('The assistant is checking the formats...');
       var context = 'The user made the template ' + source.name + ' (' + sizeOf(source) + ') in ' + made.length + ' social media formats ('
         + made.map(function (t) { return formatOfTemplate(t).name + ', ' + sizeOf(t); }).join('; ') + ') and asks you to check them: call '
         + 'review-formats with reviewId "' + review.id + '", then adjust-formats with your verdict for every format. Then wait for the user.';
-      return sendToModel(context, 'Check the formats made from my template.', 'The assistant is checking the formats...');
+      return handToAssistant(started, context, 'Check the formats made from my template.', 'The assistant is checking the formats...');
     }).then(pollFormatReview).catch(function (error) { setStatus(errorText(error), true); });
     renderFormats();
   }
@@ -1427,6 +1470,8 @@ ${LAYERS_SCRIPT}
     formatReviewEnded = true;
     callTool('end-format-review').catch(function () {});
   }
+  // Every 2.5 s, slower (up to 10 s) while nothing changes, e.g. while the assistant looks at the formats
+  var formatPollDelay = 2500;
   function pollFormatReview() {
     if (formatPoll || !formatReview) return;
     var review = formatReview;
@@ -1435,37 +1480,32 @@ ${LAYERS_SCRIPT}
       if (review !== formatReview) return;
       callTool('get-format-review', { reviewId: review.id }).then(function (result) {
         if (review !== formatReview) return;
+        var before = JSON.stringify(review.formats);
         Object.keys(result.formats).forEach(function (id) { applyFormatState(id, result.formats[id]); });
+        formatPollDelay = JSON.stringify(review.formats) === before ? Math.min(10000, formatPollDelay * 1.3) : 2500;
         renderFormats();
         updateButton();
         var waiting = Object.keys(review.formats).some(function (id) { return /pending|adjusting/.test(review.formats[id].status); });
         if (waiting) pollFormatReview();
         else setStatus('');
       }, function () { pollFormatReview(); });
-    }, 2500);
+    }, formatPollDelay);
   }
   // The state of a format from the server; a format made again with the layout of the assistant is read like a new template
+  // (get-format-review tells when its new layout is made, with its URL)
   function applyFormatState(id, state) {
+    var previous = formatReview.formats[id] || {};
     formatReview.formats[id] = state;
-    var t = madeTemplates().filter(function (m) { return m.format === id; })[0];
-    // A new layout, being made or made already (between two polls)
-    if (!t || !state.taskId || state.taskId === t.layoutTask) return;
-    t.layoutTask = state.taskId;
-    var read = ++t.read;
-    t.status = 'resizing';
-    renderTemplates();
-    (state.status === 'adjusted' ? Promise.resolve({ url: state.url, name: state.name }) : waitForTask(state.taskId)).then(function (made) {
-      if (templates.indexOf(t) < 0 || read !== t.read) return;
-      t.url = made.url;
-      t.name = made.name;
+    var t = madeIn(id);
+    if (!t || state.status === previous.status && state.url === previous.url) return;
+    if (state.status === 'adjusting') t.status = 'resizing';
+    else if (state.status === 'adjusted' && state.url !== t.url) {
+      t.url = state.url;
+      t.name = state.name;
       t.data = null;
-      readTemplateOf(t);
-    }).catch(function (error) {
-      if (templates.indexOf(t) < 0 || read !== t.read) return;
-      t.status = 'error';
-      t.error = errorText(error);
-      renderTemplates();
-    });
+      return readTemplateOf(t);
+    } else if (t.status === 'resizing') t.status = t.data ? 'ready' : 'error';
+    renderTemplates();
   }
   // The cards of the master and the formats; not rebuilt while nothing changed (a change being typed is kept)
   function renderFormats(force) {
@@ -1520,7 +1560,6 @@ ${LAYERS_SCRIPT}
     var changes = changesTyped();
     sendChangesBtn.disabled = true;
     callTool('update-format-review', { reviewId: review.id, changes: changes }).then(function (result) {
-      var waiting = result.assistantWaiting;
       Object.keys(changes).forEach(function (id) {
         review.formats[id] = result.formats[id];
         var area = formatsGrid.querySelector('textarea[data-format="' + id + '"]');
@@ -1528,14 +1567,10 @@ ${LAYERS_SCRIPT}
       });
       renderFormats(true);
       updateButton();
-      var list = Object.keys(changes).map(function (id) {
-        var f = SOCIAL_FORMATS.filter(function (x) { return x.id === id; })[0];
-        return f.name + ': ' + changes[id];
-      });
+      var list = Object.keys(changes).map(function (id) { return formatById(id).name + ': ' + changes[id]; });
       var context = 'The user asks for changes on the formats of the review ' + review.id + ': ' + list.join('; ') + '. Call review-formats '
         + 'with reviewId "' + review.id + '", then adjust-formats for these formats, making the changes asked.';
-      if (waiting) return setStatus('Changes sent to the assistant.');
-      return sendToModel(context, 'Change the formats: ' + list.join('; '), 'Changes sent to the assistant.');
+      return handToAssistant(result, context, 'Change the formats: ' + list.join('; '), 'Changes sent to the assistant.');
     }).then(pollFormatReview).catch(function (error) { setStatus(errorText(error), true); updateSendChanges(); });
   });
 
@@ -2363,7 +2398,7 @@ const IMAGES_SCRIPT = `
     e.dataTransfer.effectAllowed = 'copy';
   });
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape' && armed >= 0) { armed = -1; renderLibrary(); }
+    if (e.key === 'Escape' && armed >= 0) { e.preventDefault(); armed = -1; renderLibrary(); }
   });
   // With an armed library image, a click on a slot (outside its buttons and crop) assigns the image to it.
   grid.addEventListener('click', function (e) {
@@ -2508,7 +2543,7 @@ ${IMAGES_CSS}
 ${STEPS_CSS}
 `, `
 <h2 class="heading" id="title">Drop one image per variant</h2>
-<ol class="steps single" aria-label="Step"><li data-for="5" class="current"><span class="step-kicker">Step 5</span><span class="step-title">Images</span></li></ol>
+${stepsHtml({ 5: 5 }, [4])}
 <div class="subtle intro">Add images, then drag each one onto the slots that use it (or drop a file on a slot). The bright area is what the banner shows: drag it to reposition the crop, use Zoom to resize it.</div>
 ${IMAGES_HTML}<div class="actions">
   <sp-button variant="accent" id="confirm" disabled>Confirm images</sp-button>
@@ -2546,10 +2581,26 @@ ${IMAGES_SCRIPT}
 `)
 }
 
-// Steps of a view (start, texts and images), as segments of a progress bar: <ol class="steps"> of <li data-for="N"> with a
-// .step-kicker and a .step-title; the view marks them current, done and reachable, and shows the element [data-step="N"].
+// The steps of the workflow, across the widgets: each widget shows them all, as segments of a progress bar (stepsHtml), its own
+// steps as <li data-for="N"> (N its step in the view; the view marks them current, done and reachable, and shows the element
+// [data-step="N"]), the steps of the other widgets done (before) or to come (after), or skipped.
+const STEPS = ['Template', 'Formats', 'Layers', 'Texts', 'Images', 'Review']
+
+// own: { [step of the workflow]: step in the view }, the first one current; skipped: steps of the workflow not taken
+function stepsHtml (own, skipped = []) {
+  const steps = Object.keys(own).map(Number)
+  const first = Math.min(...steps)
+  const clickable = steps.length > 1
+  return '<ol class="steps" aria-label="Steps">' + STEPS.map((title, i) => {
+    const n = i + 1
+    const label = `<span class="step-kicker">Step ${n}</span><span class="step-title">${title}</span>`
+    if (own[n]) return `<li data-for="${own[n]}"${n === first ? ' class="current" aria-current="step"' : ''}${clickable ? ' role="button" tabindex="-1"' : ''}>${label}</li>`
+    return `<li class="${n < first ? 'done' : ''}${skipped.includes(n) ? ' skipped' : ''}">${label}</li>`
+  }).join('') + '</ol>'
+}
+
 const STEPS_CSS = `
-  /* Two steps, as segments of a progress bar: the bar of the current and done steps in the accent color, with the number and
+  /* The steps, as segments of a progress bar: the bar of the current and done steps in the accent color, with the number and
      the name of each step below it */
   .steps { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: var(--spectrum-spacing-200); margin: var(--spectrum-spacing-200) 0 var(--spectrum-spacing-300); padding: 0; list-style: none; }
   /* A step on one line, under its bar: STEP 1 – VARIANTS AND TEMPLATE */
@@ -2563,6 +2614,8 @@ const STEPS_CSS = `
   .steps li.done .step-kicker::after { content: ' \\2713'; }
   /* A step that can be gone to (the done one, or the next one once the current one is complete): its bar on hover, a focus ring
      from the keyboard */
+  /* A step not taken (no formats made, no images) */
+  .steps li.skipped { opacity: 0.5; }
   .steps li.reachable { cursor: pointer; }
   .steps li.reachable:hover { border-top-color: var(--spectrum-accent-background-color-hover, var(--spectrum-accent-background-color-default)); }
   .steps li.reachable:focus-visible { outline: var(--spectrum-focus-indicator-thickness) solid var(--spectrum-focus-indicator-color); outline-offset: 2px; }
@@ -2971,10 +3024,7 @@ ${STEPS_CSS}
 ${IMAGES_CSS}
 `, `
 <h2 class="heading" id="title">Texts per variant</h2>
-<ol class="steps" aria-label="Steps" hidden>
-  <li data-for="1" class="current" role="button" tabindex="-1"><span class="step-kicker">Step 4</span><span class="step-title">Texts</span></li>
-  <li data-for="2" role="button" tabindex="-1"><span class="step-kicker">Step 5</span><span class="step-title">Images</span></li>
-</ol>
+${stepsHtml({ 4: 1, 5: 2 })}
 <div data-step="1">
 <div class="subtle intro">Click a text to edit it, then confirm. Keep each text about as long as the original, so that it fits the layout.
 You can also paste cells copied from a spreadsheet, or import an Excel file (.xlsx) with a column per layer (download this table to get one).</div>
@@ -3385,7 +3435,7 @@ ${IMAGES_SCRIPT}
     var pending = step === 2 && imagesPicker.pendingPrompts();
     confirmBtn.textContent = step === 1 ? 'Next' : pending ? 'Generate with Firefly (' + pending + ')' : 'Use these texts and images';
     confirmBtn.disabled = !variants.length || (step === 2 && !pending && !imagesDone);
-    Array.prototype.forEach.call(document.querySelectorAll('.steps li'), function (li) {
+    Array.prototype.forEach.call(document.querySelectorAll('.steps li[data-for]'), function (li) {
       var n = Number(li.getAttribute('data-for'));
       li.classList.toggle('current', n === step);
       li.classList.toggle('done', n < step);
@@ -3428,11 +3478,10 @@ ${IMAGES_SCRIPT}
     layers = args.layers || [];
     variants = args.variants || [];
     withImages = Boolean(args.images && args.images.layers && args.images.layers.length);
-    // Without images, the step of the texts alone
-    var steps = document.querySelector('.steps');
-    steps.hidden = false;
-    steps.classList.toggle('single', !withImages);
-    steps.querySelector('li[data-for="2"]').hidden = !withImages;
+    // Without images, the step of the images is skipped
+    var imagesStep = document.querySelector('.steps li[data-for="2"]');
+    imagesStep.classList.toggle('skipped', !withImages);
+    if (!withImages) { imagesStep.removeAttribute('data-for'); imagesStep.removeAttribute('role'); }
     document.getElementById('title').textContent = args.title || (withImages ? 'Texts and images per variant' : 'Texts per variant');
     render();
     if (withImages) imagesPicker.init(args.images.variants && args.images.variants.length ? args.images
@@ -3667,7 +3716,7 @@ ${STEPS_CSS}
   .card-warning[data-layer]:hover { text-decoration: underline; }
 ${REPORT_CSS}`, `
 <h2 class="heading">Generated variants</h2>
-<ol class="steps single" aria-label="Step"><li data-for="6" class="current"><span class="step-kicker">Step 6</span><span class="step-title">Review and download</span></li></ol>
+${stepsHtml({ 6: 6 })}
 <div class="stage" id="stage">
 <div class="preview" id="preview">
   <div class="preview-bar">
@@ -3883,10 +3932,7 @@ ${REPORT_SCRIPT}
     var from = generationTaskId;
     // Given to the assistant if it waits for the changes, otherwise in a message
     callTool('submit-variant-changes', { taskId: from, context: context })
-      .then(function (result) {
-        if (result.assistantWaiting) return setStatus('Changes sent to the assistant.');
-        return sendToModel(context, 'Please apply my changes to ' + changes.length + ' variant(s).', 'Changes sent.');
-      })
+      .then(function (result) { return handToAssistant(result, context, 'Please apply my changes to ' + changes.length + ' variant(s).', 'Changes sent.'); })
       .then(function () { toChange.forEach(function (v) { requests[v.fileName] = ''; }); render(); waitForNextGeneration(from); })
       .catch(function (error) { setStatus(errorText(error), true); })
       .then(function () { busy = false; updateFixActions(); });
@@ -3905,11 +3951,14 @@ ${REPORT_SCRIPT}
       callTool('get-next-generation', { taskId: from }).then(function (result) {
         if (nextPolling !== from || generationTaskId !== from) return;
         if (result.next) { nextPolling = null; setStatus(''); return loadGeneration(result.next); }
-        if (Date.now() - started < NEXT_WAIT_MS) setTimeout(poll, NEXT_POLL_MS);
+        // Slower and slower (3 s to 30 s) while the assistant does not apply the changes
+        delay = Math.min(30000, delay * 1.3);
+        if (Date.now() - started < NEXT_WAIT_MS) setTimeout(poll, delay);
         else nextPolling = null;
-      }, function () { if (Date.now() - started < NEXT_WAIT_MS) setTimeout(poll, NEXT_POLL_MS); });
+      }, function () { if (Date.now() - started < NEXT_WAIT_MS) setTimeout(poll, delay); });
     }
-    setTimeout(poll, NEXT_POLL_MS);
+    var delay = NEXT_POLL_MS;
+    setTimeout(poll, delay);
   }
 
   sendBtn.addEventListener('click', sendChanges);
@@ -4083,7 +4132,7 @@ ${REPORT_SCRIPT}
   // Escape closes the enlarged view, the arrows go to the previous and next variants
   document.addEventListener('keydown', function (e) {
     if (current < 0) return;
-    if (e.key === 'Escape') showPreview(-1);
+    if (e.key === 'Escape') { e.preventDefault(); showPreview(-1); }
     else if (e.key === 'ArrowLeft') step(-1);
     else if (e.key === 'ArrowRight') step(1);
   });
