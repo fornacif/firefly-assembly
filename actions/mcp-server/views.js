@@ -2307,8 +2307,9 @@ const LAYERS_CSS = `
   .row sp-badge { justify-self: start; }
   /* Preview on the left (half of the width at most) and list on the right; the list goes below on very narrow views */
   .picker { display: flex; align-items: flex-start; gap: var(--spectrum-spacing-300); }
-  .picker .list { flex: 1 1 0; min-width: 0; }
-  @media (max-width: 420px) { .picker { flex-direction: column; align-items: stretch; } .picker .list { flex: none; } }
+  /* The list starts at the top of the preview image (below the padding of the preview) */
+  .picker .list { flex: 1 1 0; min-width: 0; margin-top: 10px; }
+  @media (max-width: 420px) { .picker { flex-direction: column; align-items: stretch; } .picker .list { flex: none; margin-top: 0; } }
   /* The padding leaves room for the numbers, centered on the top left corner of the zones */
   .preview { flex: 0 1 auto; max-width: 50%; padding: 10px; line-height: 0; }
   @media (max-width: 420px) { .preview { max-width: 100%; } }
