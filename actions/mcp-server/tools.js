@@ -55,12 +55,13 @@ for (const view of Object.values(VIEWS)) {
 }
 
 const WORKFLOW = `Variant creation workflow. When the user asks to create variants (or versions, adaptations, localizations...) of a banner, ad, visual, social post or any PSD template, ALWAYS follow these steps in order, one at a time, without skipping any:
-1. Start: call start-variant-creation (pass variantCount and languages if the user already gave them). The user sets the number of variants per language, the languages, uploads the PSD template (from their computer or AEM Assets), or one template per format, and picks the layers to vary in the widget, then says to continue. The widget gives you the template name and URL and the selected layers, with their original texts and frames, in your context (or through get-widget-result, see below): use them. Never ask for the file or its URL in chat. With several templates (one per format), the widget gives a templates JSON and the selected layers with ids that link the layers of the same name and type across the templates: pass templates to every create-variant call instead of templateUrl, and use these layer ids in every step; each variant is then generated in each template (one file per variant and template). With a single template, the user can also make it in the usual social media formats (step 2 of the widget): right after start-variant-creation, call wait-format-review, and again each time it says so, without writing to the user: it gives you the formats as soon as the user made them (or tells you to stop when the user makes none); look at the master and each format as a designer, then call adjust-formats ONCE with your verdict for every format (ok, or a new layout), then wait-format-review again, for the changes the user asks on some formats. If the widget asks you in a message to check the formats (review id), call review-formats with it, then adjust-formats. Then wait: the user continues to the layers in the widget, and the formats made are templates like the others (the templates JSON).
+1. Start: call start-variant-creation (pass variantCount and languages if the user already gave them). The user sets the number of variants per language, the languages, uploads the PSD template (from their computer or AEM Assets), or one template per format, and picks the layers to vary in the widget, then says to continue. The widget gives you the template name and URL and the selected layers, with their original texts and frames, in your context (or through get-widget-result, see below): use them. Never ask for the file or its URL in chat. With several templates (one per format), the widget gives a templates JSON and the selected layers with ids that link the layers of the same name and type across the templates: pass templates to every create-variant call instead of templateUrl, and use these layer ids in every step; each variant is then generated in each template (one file per variant and template). With a single template, the user can also make it in the usual social media formats (step 2 of the widget): the widget then asks you to check the formats (a review id): call review-formats with it, look at the master and each format as a designer, then call adjust-formats ONCE with your verdict for every format (ok, or a new layout); the user can ask for changes on some formats the same way. Then wait: the user continues to the layers in the widget, and the formats made are templates like the others (the templates JSON).
 2. Layer selection: done in the start widget. Call get-psd-manifest with the template URL only when the user wants to pick other layers later, or did not pick them in the start widget.
 3. Texts: right after the start widget, if text layers were selected, get the texts of each variant: the user provides them, or you write them from a brief (subject, tone, language). The user's requests always come first (length, number of words or lines, wording): follow them exactly, even if the text may not fit, and never shorten or change a text the user asked for to make it fit. Otherwise, write each text about as long as the original text of its layer (given by get-psd-manifest): the same number of lines and about the same number of characters per line (within 10%), so that it fits the layout. Write the line breaks yourself (\\n), where the original text has them: a point text layer does not wrap its lines by itself (a text without any line break is spread over the lines of the original text, by length). Each variant is created in each language chosen in the start widget (the total is the number of variants times the number of languages): write the texts of each variant in each language (the same message, translated and adapted, not word for word), and give each a short label ending with its language code (e.g. "Winter sale FR"), in the order variant by variant then language by language. Then call edit-variant-texts with the texts and the original text of each layer; if smart object layers were selected too, pass images as well (as for upload-variant-images in step 4, see there): the widget then asks for the images in a second step, and gives you the texts and the images together. Then wait. When the user has the texts in a spreadsheet or an Excel file, do not ask for them in chat: call edit-variant-texts with the labels and the original texts as texts; the user imports the Excel file (.xlsx, a column per layer) or pastes the cells in the widget.
 4. Images: done in the second step of edit-variant-texts when text layers were selected too. Otherwise (smart object layers only), call upload-variant-images ONCE with the labels of the variants without their languages (one row per variant, e.g. "Winter sale" for "Winter sale FR" and "Winter sale DE": all the languages of a variant share its images) and the selected smart object layers (id, name and frame width and height from get-psd-manifest), so the user drops (or picks from AEM Assets, or generates with Firefly from your prompts) one image per variant and layer in a grid and adjusts how each one is cropped to its frame. Do not write prompts for Firefly by default: each slot offers to generate its image with Firefly from a prompt the user writes there. Pass prompts (one per variant and layer, in English, from the brief and the texts of the variant) only for the layers for which the user asks for generated images, in chat or with the option of the start widget: each of their slots then offers to generate its image (Generate with Firefly shows its prompt, which the user can edit), and the main button generates them all. When the user confirms, the widget gives you the URL, size and crop of each image the same way. Never ask for image URLs in chat. Then wait.
 5. Generation: as soon as the images are confirmed (or the texts, without smart object layers), call create-variant ONCE with widgetRef, the reference at the end of the user's confirmation message (both references when the texts and the images were confirmed apart; with images only, also the languages of the start widget), instead of variants: the server builds all the variants (up to ${MAX_VARIANTS}) from what the user confirmed (texts, font scales, images, crops, groups and languages), so do not copy texts, image URLs or crops into the call. Pass also the templateUrl (or templates), fileNamePattern and fonts given by the start widget, and the formats; do not recap the variants or ask for another approval. Without a reference (e.g. a widget result missing), pass the variants as before: for each image the crop chosen in the grid (each language of a variant gets the images and crops of its row of the grid, and its label in the grid as group) and for each variant its language and its group (its label without its language). The widget shows the generated files with download buttons.
-6. Review: right after create-variant, in the same turn and without asking the user, check the texts of the generated files: call review-variants with the task id create-variant gives (it waits for the generation; while it answers that it is not finished, call it again): it shows you each visual with the texts sent. Look at each edited text on its visual: cut or past an edge of the visual or of its panel, letters or words hidden, overlapping another element (logo, image, other text) more than in the template, too small or hard to read on its background, lines broken badly, or not the text sent. Then call report-variant-issues with every variant reviewed (no issues for those that are fine; when review-variants shows the variants in several parts, after each part): per problem, the layer, a short description, the fix you propose (e.g. Reduce the font size of "headline" to 85%.) and the rectangle of the text on the visual, in pixels of the canvas. The widget marks each problem on the visual, with your proposed fix. Each variant has a field of changes, pre-filled with its proposed fixes, that the user edits, then sends to you: nothing is generated again before. Do not list the problems in chat: briefly say that the widget shows them and takes the changes. The user can also click a text on a visual to write a change for it in its field. When the user asks for changes (in the widget or in chat), make exactly the changes asked, nothing else: change a font size only when asked; to change the words of a text, rewrite it as asked (e.g. twice as many words, at most two lines) and keep its font size, even if it may not fit; then call update-variants with the variants to change only, with the same file names and the same edits except the changes (a font size of N% is fontScale N/100), and previousTaskId, the task id of the generation changed: its widget shows these variants generated again in place, and the others unchanged (create-variant with previousTaskId does the same in a new widget). After report-variant-issues, call wait-variant-changes with the task id, and again each time it says so, without writing to the user: it gives you the changes the user sends from the widget, without a message to validate. The texts are checked once generated: do not adjust them beforehand. If a text the user asked for does not fit, you may then suggest a fix (a smaller font size or a shorter text), without applying it.
+6. Review: right after create-variant, in the same turn and without asking the user, check the texts of the generated files: call review-variants with the task id create-variant gives (it waits for the generation; while it answers that it is not finished, call it again): it shows you each visual with the texts sent. Look at each edited text on its visual: cut or past an edge of the visual or of its panel, letters or words hidden, overlapping another element (logo, image, other text) more than in the template, too small or hard to read on its background, lines broken badly, or not the text sent. Then call report-variant-issues with every variant reviewed (no issues for those that are fine; when review-variants shows the variants in several parts, after each part): per problem, the layer, a short description, the fix you propose (e.g. Reduce the font size of "headline" to 85%.) and the rectangle of the text on the visual, in pixels of the canvas. The widget marks each problem on the visual, with your proposed fix. Each variant has a field of changes, pre-filled with its proposed fixes, that the user edits, then sends to you: nothing is generated again before. Do not list the problems in chat: briefly say that the widget shows them and takes the changes. The user can also click a text on a visual to write a change for it in its field. When the user asks for changes (in the widget or in chat), make exactly the changes asked, nothing else: change a font size only when asked; to change the words of a text, rewrite it as asked (e.g. twice as many words, at most two lines) and keep its font size, even if it may not fit; then call update-variants with the variants to change only, with the same file names and the same edits except the changes (a font size of N% is fontScale N/100), and previousTaskId, the task id of the generation changed: its widget shows these variants generated again in place, and the others unchanged (create-variant with previousTaskId does the same in a new widget). The texts are checked once generated: do not adjust them beforehand. If a text the user asked for does not fit, you may then suggest a fix (a smaller font size or a shorter text), without applying it.
+Widgets: each tool that shows a widget gives a widget channel in its result. Once done with that result (e.g. after the review of the texts for create-variant), call wait-for-widget with this channel, and again each time it says so, without writing to the user: it gives you what the user sends from the widget (confirmations, changes, formats to check) as their messages did, so that they do not have to validate a message; do what it says as you would for the message. If it says to stop, wait for the user's message.
 Changes after generation: to re-crop or swap images, call upload-variant-images again with images pre-filled from the previous confirmation (never ask to upload again the images you already have, unless their URLs expired); to change texts, call update-variants with the variants to change only (same file names, groups, languages, fileNamePattern and fonts) and previousTaskId: the widget of that generation shows them in place. To get other formats of variants already generated (e.g. PSD after JPEG), call update-variants with these variants unchanged (same file names and edits), only the new formats, and previousTaskId: each variant keeps its earlier files in the widget and the ZIP.
 Widgets send their result (template URL, layers, texts, images) in your context and end the user's message with a reference in parentheses like "(r7k2p9)": if you do not have that result in your context, call get-widget-result with this ref before going on; never ask the user to redo a step because a result seems missing.
 The URLs from the widgets are temporary presigned URLs: use them in tool calls, but never show them to the user. Reply in the user's language.`
@@ -1590,49 +1591,42 @@ async function saveFormatReview (params, reviewId, review) {
   await (await initState()).put(formatReviewKey(currentUserId(params), reviewId), review, { ttl: TASK_TTL_SECONDS })
 }
 
-// The assistant waits for what the widgets send it (the formats to check, the changes of the variants), so that it gets them
-// without a message to validate: a tool (wait-format-review, wait-variant-changes) waits for a record of the widget that it was
-// not handed yet ({ ..., at, handed }), and a heartbeat tells the widgets whether the assistant is waiting (otherwise they send
-// a message). The format review records the last review of the user ({ reviewId, done }: done when the user went on to the
-// layers or made no formats); the changes of the variants are recorded per generation.
-const formatLatestKey = userId => `formats-latest-${shortHash(userId)}`
-const formatWaitKey = userId => `formats-wait-${shortHash(userId)}`
-const variantChangesKey = (userId, taskId) => `changes-${shortHash(userId)}-${taskId}`
-const variantWaitKey = userId => `changes-wait-${shortHash(userId)}`
-// Longest wait of one call, its polls, and how recent the heartbeat of a waiting assistant is (longer than a call)
+// What a widget sends the assistant, without a message to validate: each tool that shows a widget opens a channel (its id in
+// the result, for the widget and the assistant), the assistant waits on it (wait-for-widget) once done with the result, and the
+// widget posts there (post-to-assistant) what it sent in a message before; a heartbeat tells the widget whether the assistant
+// waits (otherwise the widget sends a message, to validate). The assistant stops waiting after a while without anything posted.
+const channelKey = (userId, channel) => `channel-${shortHash(userId)}-${channel}`
+const channelWaitKey = (userId, channel) => `channel-wait-${shortHash(userId)}-${channel}`
+const CHANNEL_ID = /^c[0-9a-z]{8,20}$/
+// Longest wait of one call (under the 60 s of a web action), its polls, how recent the heartbeat of a waiting assistant is
 const WAIT_MS = 45000
 const WAIT_POLL_MS = 2000
 const WAITING_MS = 60000
-// The assistant stops waiting for the changes of the variants after this long without any
-const VARIANT_IDLE_MS = 4 * 60 * 1000
+const CHANNEL_IDLE_MS = 10 * 60 * 1000
 
-async function assistantWaiting (params, waitKey) {
-  const at = (await (await initState()).get(waitKey(currentUserId(params))).catch(() => null))?.value?.at
-  return Boolean(at && Date.now() - at < WAITING_MS)
+async function openChannel (params) {
+  const channel = 'c' + crypto.randomUUID().replace(/-/g, '').slice(0, 12)
+  await (await initState()).put(channelKey(currentUserId(params), channel), { at: Date.now(), items: [] }, { ttl: TASK_TTL_SECONDS })
+  return channel
 }
 
-// Waits (one call of a wait tool) for check() to answer: check() returns the content to give the assistant, or null to wait.
-// The heartbeat is written once per call (it lasts longer than a call). Answers again to call the tool when nothing came.
-async function waitForWidget (params, waitKey, check, againText) {
-  const state = await initState()
-  const deadline = Date.now() + WAIT_MS
-  await state.put(waitKey(currentUserId(params)), { at: Date.now() }, { ttl: 300 })
-  while (true) {
-    const content = await check()
-    if (content) return { content }
-    if (Date.now() + WAIT_POLL_MS > deadline) return { content: [{ type: 'text', text: againText }] }
-    await wait(WAIT_POLL_MS)
-  }
+// The result of a tool that shows a widget, with its channel
+async function withChannel (params, result) {
+  if (!result || result.isError) return result
+  const channel = await openChannel(params)
+  const text = `\n\nWidget channel "${channel}": once you are done with what this result asks, call wait-for-widget with this ` +
+    'channel, and again each time it says so, without writing to the user: it gives you what the user sends from this widget ' +
+    '(as their messages did), without a message to validate.'
+  const content = result.content?.length && result.content[0].type === 'text'
+    ? [{ ...result.content[0], text: result.content[0].text + text }, ...result.content.slice(1)]
+    : [...(result.content || []), { type: 'text', text }]
+  return { ...result, content, structuredContent: { ...(result.structuredContent || {}), channel } }
 }
 
 // The generation made from another one (changes sent from its widget): its widget shows it in place (get-next-generation)
 const nextGenerationKey = (userId, taskId) => `next-${shortHash(userId)}-${taskId}`
 async function setNextGeneration (params, previousTaskId, data) {
   await (await initState()).put(nextGenerationKey(currentUserId(params), previousTaskId), data, { ttl: TASK_TTL_SECONDS })
-}
-
-async function setFormatLatest (params, latest) {
-  await (await initState()).put(formatLatestKey(currentUserId(params)), { ...latest, at: Date.now() }, { ttl: TASK_TTL_SECONDS })
 }
 
 // Layers described to the assistant: name, id, type and rectangle in pixels of the canvas (left, top, width, height)
@@ -1946,7 +1940,10 @@ const layerEditSchema = z.discriminatedUnion('type', [
 ])
 
 function registerTools (server, params) {
-  server.registerTool(
+  // A tool that shows a widget: its result opens the channel of the widget (withChannel)
+  const registerWidgetTool = (name, config, handler) => server.registerTool(name, config, async (...args) => withChannel(params, await handler(...args)))
+
+  registerWidgetTool(
     'start-variant-creation',
     {
       title: 'Start Variant Creation',
@@ -1960,11 +1957,11 @@ function registerTools (server, params) {
       _meta: uiMeta(VIEWS.start)
     },
     async () => ({
-      content: [{ type: 'text', text: `Start widget displayed: now call wait-format-review (it waits for the social media formats the user may make), without writing to the user; then wait for the user to pick the layers and continue.\n\n${WORKFLOW}` }]
+      content: [{ type: 'text', text: `Start widget displayed: wait for the user to set the variants and the template, make it in other formats if they want (you check them), pick the layers and continue.\n\n${WORKFLOW}` }]
     })
   )
 
-  server.registerTool(
+  registerWidgetTool(
     'get-psd-manifest',
     {
       title: 'Get PSD Manifest',
@@ -2084,62 +2081,8 @@ function registerTools (server, params) {
         Object.entries(changes || {}).forEach(([id, request]) => {
           if (review.formats[id] && request.trim()) Object.assign(review.formats[id], { status: 'pending', request: request.trim(), comment: null })
         })
-        // Given to the assistant if it waits (wait-format-review), otherwise by a message of the widget
-        const [, , waiting] = await Promise.all([saveFormatReview(params, reviewId, review), setFormatLatest(params, { reviewId, handed: false }),
-          assistantWaiting(params, formatWaitKey)])
-        return jsonResult({ reviewId, formats: review.formats, assistantWaiting: waiting })
-      } catch (error) {
-        return errorResult(error)
-      }
-    }
-  )
-
-  server.registerTool(
-    'end-format-review',
-    {
-      title: 'End Format Review',
-      description: 'Used by the start-variant-creation widget: the user went on to the layers, or made no formats: the assistant ' +
-        'stops waiting for the formats.',
-      inputSchema: {},
-      _meta: { ui: { visibility: ['app'] } }
-    },
-    async () => {
-      try {
-        await setFormatLatest(params, { done: true })
-        return jsonResult({ done: true })
-      } catch (error) {
-        return errorResult(error)
-      }
-    }
-  )
-
-  server.registerTool(
-    'wait-format-review',
-    {
-      title: 'Wait for the Formats',
-      description: 'Call it right after start-variant-creation, and again each time it says so: waits (up to 45 s) for the user to ' +
-        'make the template in social media formats in the widget (step 2), or to ask for changes on them, and then shows you the ' +
-        'formats to check, as review-formats does. Do not write to the user between the calls. Stop calling it when it says so.',
-      inputSchema: {}
-    },
-    async () => {
-      try {
-        const state = await initState()
-        const userId = currentUserId(params)
-        return await waitForWidget(params, formatWaitKey, async () => {
-          const latest = (await state.get(formatLatestKey(userId)).catch(() => null))?.value
-          if (latest?.done) {
-            await state.delete(formatWaitKey(userId)).catch(() => {})
-            return [{ type: 'text', text: 'The user went on without formats to check (or on to the layers): stop calling wait-format-review, and wait for the user.' }]
-          }
-          if (!latest?.reviewId || latest.handed) return null
-          const review = await readFormatReview(params, latest.reviewId)
-          // Handed once: a review with no format waiting for a verdict is not read again at each poll
-          await state.put(formatLatestKey(userId), { ...latest, handed: true }, { ttl: TASK_TTL_SECONDS })
-          if (!Object.values(review.formats).some(f => f.status === 'pending')) return null
-          return [{ type: 'text', text: `Formats to check, review id "${latest.reviewId}". After adjust-formats, call wait-format-review again, without writing to the user, for the changes the user may ask.` },
-            ...await formatReviewContent(params, review)]
-        }, 'Nothing to check yet: call wait-format-review again now, without writing to the user.')
+        await saveFormatReview(params, reviewId, review)
+        return jsonResult({ reviewId, formats: review.formats })
       } catch (error) {
         return errorResult(error)
       }
@@ -2232,7 +2175,7 @@ function registerTools (server, params) {
             text: `${given.length - adjusting} format(s) ok, ${adjusting} made again with your layout: the widget shows them with your comments. ` +
               (left.length
                 ? `The formats ${left.join(', ')} still wait for your verdict: call adjust-formats now for them too (ok or a layout).`
-                : 'Now call wait-format-review again, without writing to the user: it gives you the changes the user may ask on the formats.')
+                : 'Now call wait-for-widget again with the channel of the start widget, without writing to the user.')
           }]
         }
       } catch (error) {
@@ -2347,7 +2290,7 @@ function registerTools (server, params) {
         content: [{
           type: 'text',
           text: started + `Now check the texts (step 6), without asking the user: call review-variants with taskId "${taskId}", then ` +
-            'report-variant-issues, then wait-variant-changes with the same task id.' + warnings
+            'report-variant-issues, then wait-for-widget with the channel of the widget of the variants.' + warnings
         }],
         structuredContent
       }
@@ -2356,7 +2299,7 @@ function registerTools (server, params) {
     }
   }
 
-  server.registerTool(
+  registerWidgetTool(
     'create-variant',
     {
       title: 'Generate Variants',
@@ -2383,7 +2326,7 @@ function registerTools (server, params) {
       description: 'Applies the changes the user sent from the widget of a generation (step 6): the same as create-variant with ' +
         'previousTaskId (the variants to change only, the same file names, the same edits except the changes), but the widget of that ' +
         'generation shows the new variants in place, with the others unchanged, instead of a new widget. Use it for every change sent ' +
-        'from the widget (wait-variant-changes, or its message), then check the texts again (review-variants, report-variant-issues).',
+        'from the widget (wait-for-widget, or its message), then check the texts again (review-variants, report-variant-issues).',
       inputSchema: { ...createVariantInput, previousTaskId: z.string().describe('Task id of the generation changed, given with the changes') }
     },
     args => runCreateVariant(args, true)
@@ -2408,19 +2351,33 @@ function registerTools (server, params) {
   )
 
   server.registerTool(
-    'submit-variant-changes',
+    'post-to-assistant',
     {
-      title: 'Submit Variant Changes',
-      description: 'Used by the create-variant widget: the changes asked by the user, given to the assistant if it waits for them ' +
-        '(wait-variant-changes); otherwise the widget sends them in a message.',
-      inputSchema: { taskId: z.string(), context: z.string().max(100000) },
+      title: 'Post to Assistant',
+      description: 'Used by the widgets: keeps what the user confirmed (a reference for get-widget-result, {{ref}} in the text) and ' +
+        'gives it to the assistant if it waits on the channel of the widget (wait-for-widget); otherwise the widget sends it in a message.',
+      inputSchema: {
+        channel: z.string().regex(CHANNEL_ID).optional().describe('Channel of the widget, from the result of its tool'),
+        text: z.string().min(1).max(500000).describe('What the widget gives the assistant'),
+        message: z.string().max(2000).describe('The message the widget would send for the user'),
+        data: z.object({}).passthrough().optional().describe('Texts and images confirmed, from which create-variant builds the variants (widgetRef)')
+      },
       _meta: { ui: { visibility: ['app'] } }
     },
-    async ({ taskId, context }) => {
+    async ({ channel, text, message, data }) => {
       try {
-        const waiting = await assistantWaiting(params, variantWaitKey)
-        if (waiting) await (await initState()).put(variantChangesKey(currentUserId(params), taskId), { context, at: Date.now(), handed: false }, { ttl: TASK_TTL_SECONDS })
-        return jsonResult({ assistantWaiting: waiting })
+        const ref = await saveWidgetResult(params, text, data)
+        const filled = text.split('{{ref}}').join(ref)
+        const userId = currentUserId(params)
+        const state = await initState()
+        const waitedAt = channel && (await state.get(channelWaitKey(userId, channel)).catch(() => null))?.value?.at
+        const delivered = Boolean(waitedAt && Date.now() - waitedAt < WAITING_MS)
+        if (delivered) {
+          const record = (await state.get(channelKey(userId, channel)).catch(() => null))?.value || { items: [] }
+          record.items = [...(record.items || []), `${message} (${ref})\n${filled}`]
+          await state.put(channelKey(userId, channel), { ...record, at: Date.now() }, { ttl: TASK_TTL_SECONDS })
+        }
+        return jsonResult({ ref, text: filled, delivered })
       } catch (error) {
         return errorResult(error)
       }
@@ -2428,33 +2385,35 @@ function registerTools (server, params) {
   )
 
   server.registerTool(
-    'wait-variant-changes',
+    'wait-for-widget',
     {
-      title: 'Wait for Variant Changes',
-      description: 'Step 6, after report-variant-issues (and after each update-variants checked again): waits (up to 45 s) for ' +
-        'the changes the user sends from the widget of the generation, then gives them to you: apply them with update-variants. ' +
-        'Call it again each time it says so, without writing to the user; stop when it says so.',
-      inputSchema: { taskId: z.string().describe('Task id of the last generation (the one the widget shows)') }
+      title: 'Wait for the Widget',
+      description: 'Call it once done with the result of a tool that shows a widget (its channel is in the result), and again each ' +
+        'time it says so, without writing to the user: waits (up to 45 s) for what the user sends from the widget (a confirmation, ' +
+        'changes, formats to check...), then gives it to you, as the user\'s message did. Stop when it says so.',
+      inputSchema: { channel: z.string().regex(CHANNEL_ID).describe('Channel of the widget, given in the result of its tool') }
     },
-    async ({ taskId }) => {
+    async ({ channel }) => {
       try {
         const state = await initState()
         const userId = currentUserId(params)
-        const waitStarted = Date.now()
-        const generation = await readTask(params, taskId)
-        return await waitForWidget(params, variantWaitKey, async () => {
-          const changes = (await state.get(variantChangesKey(userId, taskId)).catch(() => null))?.value
-          if (changes && !changes.handed) {
-            await state.put(variantChangesKey(userId, taskId), { ...changes, handed: true }, { ttl: TASK_TTL_SECONDS })
-            return [{ type: 'text', text: changes.context + '\nApply them with update-variants (previousTaskId "' + taskId + '"), then check the texts again and call wait-variant-changes with the new task id.' }]
+        const deadline = Date.now() + WAIT_MS
+        // The heartbeat lasts longer than a call: written once
+        await state.put(channelWaitKey(userId, channel), { at: Date.now() }, { ttl: 300 })
+        while (true) {
+          const record = (await state.get(channelKey(userId, channel)).catch(() => null))?.value
+          if (!record) return { content: [{ type: 'text', text: 'This widget channel is not known (expired): stop calling wait-for-widget.' }] }
+          if (record.items?.length) {
+            await state.put(channelKey(userId, channel), { ...record, items: [] }, { ttl: TASK_TTL_SECONDS })
+            return { content: [{ type: 'text', text: `From the widget (the user's message):\n${record.items.join('\n\n')}` }] }
           }
-          // The generation (started, or done) and the last changes; a wait that just started counts while the generation runs
-          const lastActivity = Math.max(changes?.at || 0, generation?.updatedAt || 0, generation?.startedAt || 0,
-            generation?.status === 'running' ? waitStarted : 0)
-          if (Date.now() - lastActivity <= VARIANT_IDLE_MS) return null
-          await state.delete(variantWaitKey(userId)).catch(() => {})
-          return [{ type: 'text', text: 'No changes for a while: stop calling wait-variant-changes. The changes the user sends later come in a message.' }]
-        }, 'No changes yet: call wait-variant-changes again now, without writing to the user.')
+          if (Date.now() - record.at > CHANNEL_IDLE_MS) {
+            await state.delete(channelWaitKey(userId, channel)).catch(() => {})
+            return { content: [{ type: 'text', text: 'Nothing from the widget for a while: stop calling wait-for-widget and wait for the user (the widget will send a message).' }] }
+          }
+          if (Date.now() + WAIT_POLL_MS > deadline) return { content: [{ type: 'text', text: 'Nothing yet: call wait-for-widget again now, without writing to the user.' }] }
+          await wait(WAIT_POLL_MS)
+        }
       } catch (error) {
         return errorResult(error)
       }
@@ -2522,7 +2481,7 @@ function registerTools (server, params) {
             type: 'text',
             text: `${count} problem(s) on ${Object.keys(issues).length} variant(s) given to the widget, which marks them on the visuals ` +
               'with your fixes, for the user to edit and send. Do not list them in chat: say briefly that the widget shows them. Once every ' +
-              `variant is reported, call wait-variant-changes with taskId "${taskId}", without writing more: it gives you the changes the user sends.`
+              'variant is reported, call wait-for-widget with the channel of the widget of the variants: it gives you the changes the user sends.'
           }]
         }
       } catch (error) {
@@ -2708,7 +2667,7 @@ function registerTools (server, params) {
     }
   )
 
-  server.registerTool(
+  registerWidgetTool(
     'edit-variant-texts',
     {
       title: 'Edit Variant Texts',
@@ -2747,7 +2706,7 @@ function registerTools (server, params) {
     })
   )
 
-  server.registerTool(
+  registerWidgetTool(
     'upload-variant-images',
     {
       title: 'Upload Variant Images',
@@ -2768,7 +2727,7 @@ function registerTools (server, params) {
     })
   )
 
-  server.registerTool(
+  registerWidgetTool(
     'upload-file',
     {
       title: 'Upload File',

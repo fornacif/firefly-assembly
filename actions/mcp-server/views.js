@@ -73,6 +73,7 @@ const BRIDGE_SCRIPT = `
   var _pending = {};
   var _toolResultHandler = null;
   var _toolInputHandler = null;
+  var _channel = null;
   // Resolved once the handshake with the host is done: host methods must not be called before
   var _readyResolve;
   var ready = new Promise(function (resolve) { _readyResolve = resolve; });
@@ -117,6 +118,9 @@ const BRIDGE_SCRIPT = `
       applyTheme(msg.params);
       _applyDisplayMode(msg.params);
     } else if (msg.method === 'ui/notifications/tool-result') {
+      // The channel of the widget, which the assistant waits on (see sendToModel)
+      var structured = msg.params && msg.params.structuredContent;
+      if (structured && structured.channel) _channel = structured.channel;
       if (_early) _early.result = msg.params;
       else if (_toolResultHandler) _toolResultHandler(msg.params);
     } else if (msg.method === 'ui/notifications/tool-input') {
@@ -252,30 +256,26 @@ const BRIDGE_SCRIPT = `
     });
   }
 
-  // Sends the result of a view to Claude, then a user message so that it continues. The result (with data, when given: the
-  // texts and images confirmed) is kept by the server under a short reference that ends the user message (get-widget-result),
-  // because some models do not reliably see the model context given with ui/update-model-context (it is still given there);
-  // {{ref}} in the context is replaced with it
+  // Sends the result of a view to Claude. The result (with data, when given: the texts and images confirmed) is kept by the server
+  // under a short reference ({{ref}} in the context; get-widget-result), and given to the assistant waiting on the channel of
+  // the widget (post-to-assistant, wait-for-widget), so that the user has no message to validate. Otherwise it goes in the model
+  // context and a user message ends with the reference (some models do not reliably see the model context), which the user
+  // validates.
   function sendToModel(context, message, sentStatus, data) {
-    return callTool('save-widget-result', data ? { text: context, data: data } : { text: context })
-      .then(function (saved) { return saved.ref; })
+    var post = { text: context, message: message };
+    if (_channel) post.channel = _channel;
+    if (data) post.data = data;
+    return callTool('post-to-assistant', post)
       // Without a reference, Claude can still read the result in the model context
-      .catch(function () { return null; })
-      .then(function (ref) {
-        context = context.split('{{ref}}').join(ref || '(none: pass the variants)');
-        return request('ui/update-model-context', { content: [{ type: 'text', text: context }] })
+      .catch(function () { return { text: context.split('{{ref}}').join('(none: pass the variants)') }; })
+      .then(function (posted) {
+        if (posted.delivered) { if (sentStatus) setStatus(sentStatus); return; }
+        return request('ui/update-model-context', { content: [{ type: 'text', text: posted.text }] })
           .then(function () {
             if (sentStatus) setStatus(sentStatus);
-            return request('ui/message', { role: 'user', content: [{ type: 'text', text: message + (ref ? ' (' + ref + ')' : '') }] });
+            return request('ui/message', { role: 'user', content: [{ type: 'text', text: message + (posted.ref ? ' (' + posted.ref + ')' : '') }] });
           });
       });
-  }
-
-  // What a widget sends to the assistant through a tool (update-format-review, submit-variant-changes): taken by the assistant
-  // waiting for it (wait-format-review, wait-variant-changes), otherwise sent in a message (sendToModel), which the user validates
-  function handToAssistant(result, context, message, status) {
-    if (result && result.assistantWaiting) { setStatus(status); return Promise.resolve(); }
-    return sendToModel(context, message, status);
   }
 
   function initialize(appName) {
@@ -588,7 +588,9 @@ function getStartViewHtml (scriptUrl) {
   .format-visual img { max-width: 100%; max-height: 180px; box-shadow: 0 0 0 1px var(--spectrum-gray-300); }
   .format-title { display: flex; align-items: baseline; justify-content: space-between; gap: var(--spectrum-spacing-100); }
   .format-title .format-name { font-weight: var(--spectrum-bold-font-weight); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .format-comment { font-size: var(--spectrum-font-size-75); color: var(--spectrum-neutral-subdued-content-color-default); }
+  .format-comment { display: flex; align-items: flex-start; gap: var(--spectrum-spacing-100); font-size: var(--spectrum-font-size-75);
+    color: var(--spectrum-neutral-subdued-content-color-default); }
+  .format-comment sp-progress-circle { flex: none; }
   .format-comment.adjusted { color: var(--spectrum-neutral-content-color-default); }
   .format-card textarea { width: 100%; resize: vertical; }
   .formats-actions { margin-top: var(--spectrum-spacing-300); }
@@ -683,7 +685,7 @@ ${stepsHtml({ 1: 1, 2: 2, 3: 3 })}
 <div data-step="2" hidden>
   <div class="subtle intro">The assistant checks each format against the master template and adjusts its layout when needed. Ask for a change on a format, or go on to the layers.</div>
   <div class="formats-grid" id="formats-grid"></div>
-  <div class="formats-actions"><sp-button variant="secondary" treatment="outline" id="send-changes" disabled>Send the changes</sp-button></div>
+  <div class="formats-actions"><sp-button variant="secondary" treatment="outline" id="send-changes" disabled>Send changes</sp-button></div>
 </div>
 <div data-step="3" hidden>
   <div class="subtle intro" id="layers-intro">Click the numbered zones of the template, or the list, to pick the layers to change in the variants.</div>
@@ -751,7 +753,7 @@ ${LAYERS_SCRIPT}
     continueBtn.hidden = step !== 3;
     currentStep = step;
     if (step === 2) { startFormatReview(); renderFormats(true); }
-    if (step === 3) { showActive(); endFormatReview(); }
+    if (step === 3) showActive();
     updateButton();
     reportSize();
   }
@@ -1447,7 +1449,6 @@ ${LAYERS_SCRIPT}
     if (!key || formatReview && formatReview.key === key) return pollFormatReview();
     var source = socialSource();
     var made = madeTemplates();
-    formatReviewEnded = false;
     var review = formatReview = { id: 'f' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), key: key, formats: {} };
     made.forEach(function (t) { review.formats[t.format] = { status: 'pending' }; });
     callTool('update-format-review', {
@@ -1455,20 +1456,13 @@ ${LAYERS_SCRIPT}
       source: { name: source.name, url: source.url },
       fonts: fontUrls(),
       formats: made.map(function (t) { return { id: t.format, name: t.name, url: t.url }; })
-    }).then(function (started) {
+    }).then(function () {
       var context = 'The user made the template ' + source.name + ' (' + sizeOf(source) + ') in ' + made.length + ' social media formats ('
         + made.map(function (t) { return formatOfTemplate(t).name + ', ' + sizeOf(t); }).join('; ') + ') and asks you to check them: call '
         + 'review-formats with reviewId "' + review.id + '", then adjust-formats with your verdict for every format. Then wait for the user.';
-      return handToAssistant(started, context, 'Check the formats made from my template.', 'The assistant is checking the formats...');
+      return sendToModel(context, 'Check the formats made from my template.', 'The assistant is checking the formats...');
     }).then(pollFormatReview).catch(function (error) { setStatus(errorText(error), true); });
     renderFormats();
-  }
-  // The assistant stops waiting for the formats once the user is at the layers (once per visit)
-  var formatReviewEnded = false;
-  function endFormatReview() {
-    if (formatReviewEnded) return;
-    formatReviewEnded = true;
-    callTool('end-format-review').catch(function () {});
   }
   // Every 2.5 s, slower (up to 10 s) while nothing changes, e.g. while the assistant looks at the formats
   var formatPollDelay = 2500;
@@ -1526,7 +1520,10 @@ ${LAYERS_SCRIPT}
           : '<sp-progress-circle size="m" indeterminate label="Loading the preview"></sp-progress-circle>') + '</div>'
         + '<div class="format-title"><span class="format-name" title="' + escapeHtml(t.name) + '">' + escapeHtml(t.format ? formatOfTemplate(t).name : t.name) + '</span>'
         + '<span class="subtle">' + escapeHtml(sizeOf(t)) + '</span></div>'
-        + '<div class="format-comment' + (state.status === 'adjusted' || state.status === 'ok' ? ' adjusted' : '') + '">' + escapeHtml(comment) + '</div>' };
+        // Checked by the assistant, made again or read: a spinner before the state, as for the texts checked in the last step
+        + '<div class="format-comment' + (state.status === 'adjusted' || state.status === 'ok' ? ' adjusted' : '') + '">'
+        + (t.format && t.status !== 'error' && (busy || state.status === 'pending') ? '<sp-progress-circle size="s" indeterminate label="' + escapeHtml(comment) + '"></sp-progress-circle>' : '')
+        + '<span>' + escapeHtml(comment) + '</span></div>' };
     });
     var signature = cards.map(function (c) { return c.html; }).join('');
     if (!force && signature === formatsSignature) return;
@@ -1553,7 +1550,11 @@ ${LAYERS_SCRIPT}
     });
     return changes;
   }
-  function updateSendChanges() { sendChangesBtn.disabled = !formatReview || !Object.keys(changesTyped()).length; }
+  function updateSendChanges() {
+    var count = Object.keys(changesTyped()).length;
+    sendChangesBtn.disabled = !formatReview || !count;
+    sendChangesBtn.textContent = count ? 'Send changes (' + count + ')' : 'Send changes';
+  }
   formatsGrid.addEventListener('input', updateSendChanges);
   sendChangesBtn.addEventListener('click', function () {
     var review = formatReview;
@@ -1570,7 +1571,7 @@ ${LAYERS_SCRIPT}
       var list = Object.keys(changes).map(function (id) { return formatById(id).name + ': ' + changes[id]; });
       var context = 'The user asks for changes on the formats of the review ' + review.id + ': ' + list.join('; ') + '. Call review-formats '
         + 'with reviewId "' + review.id + '", then adjust-formats for these formats, making the changes asked.';
-      return handToAssistant(result, context, 'Change the formats: ' + list.join('; '), 'Changes sent to the assistant.');
+      return sendToModel(context, 'Change the formats: ' + list.join('; '), 'Changes sent to the assistant.');
     }).then(pollFormatReview).catch(function (error) { setStatus(errorText(error), true); updateSendChanges(); });
   });
 
@@ -2546,7 +2547,7 @@ ${STEPS_CSS}
 ${stepsHtml({ 5: 5 }, [4])}
 <div class="subtle intro">Add images, then drag each one onto the slots that use it (or drop a file on a slot). The bright area is what the banner shows: drag it to reposition the crop, use Zoom to resize it.</div>
 ${IMAGES_HTML}<div class="actions">
-  <sp-button variant="accent" id="confirm" disabled>Confirm images</sp-button>
+  <sp-button variant="accent" id="confirm" disabled>Continue</sp-button>
   <sp-help-text class="status" id="status"></sp-help-text>
 </div>
 `, `
@@ -2558,7 +2559,7 @@ ${IMAGES_SCRIPT}
   imagesPicker.onChange(function (done, total) {
     var pending = imagesPicker.pendingPrompts();
     confirmBtn.disabled = !pending && (done !== total || !total);
-    confirmBtn.textContent = pending ? 'Generate with Firefly (' + pending + ')' : 'Confirm images (' + done + '/' + total + ')';
+    confirmBtn.textContent = pending ? 'Generate with Firefly (' + pending + ')' : 'Continue';
   });
 
   onToolInput(function (args) {
@@ -2934,7 +2935,7 @@ ${LAYERS_CSS}
 `, `
 <h2 class="heading" id="title">Editable layers</h2>
 <div class="subtle intro" id="intro">Pick the layers to use for the variants.</div>
-${layersHtml()}<div class="actions"><sp-button variant="accent" id="confirm" disabled>Use these layers</sp-button></div>
+${layersHtml()}<div class="actions"><sp-button variant="accent" id="confirm" disabled>Continue</sp-button></div>
 <sp-help-text class="status" id="status"></sp-help-text>
 `, `
   setStatus('Reading the template...', false, true);
@@ -3042,7 +3043,7 @@ You can also paste cells copied from a spreadsheet, or import an Excel file (.xl
 </div>
 <div class="actions">
   <sp-button variant="secondary" treatment="outline" id="back" hidden>Back</sp-button>
-  <sp-button variant="accent" id="confirm" disabled>Use these texts</sp-button>
+  <sp-button variant="accent" id="confirm" disabled>Continue</sp-button>
   <sp-help-text class="status" id="status"></sp-help-text>
 </div>
 `, `
@@ -3433,7 +3434,7 @@ ${IMAGES_SCRIPT}
   function updateConfirm() {
     if (!withImages) { confirmBtn.disabled = !variants.length; return; }
     var pending = step === 2 && imagesPicker.pendingPrompts();
-    confirmBtn.textContent = step === 1 ? 'Next' : pending ? 'Generate with Firefly (' + pending + ')' : 'Use these texts and images';
+    confirmBtn.textContent = step === 1 ? 'Next' : pending ? 'Generate with Firefly (' + pending + ')' : 'Continue';
     confirmBtn.disabled = !variants.length || (step === 2 && !pending && !imagesDone);
     Array.prototype.forEach.call(document.querySelectorAll('.steps li[data-for]'), function (li) {
       var n = Number(li.getAttribute('data-for'));
@@ -3930,9 +3931,7 @@ ${REPORT_SCRIPT}
     busy = true;
     updateFixActions();
     var from = generationTaskId;
-    // Given to the assistant if it waits for the changes, otherwise in a message
-    callTool('submit-variant-changes', { taskId: from, context: context })
-      .then(function (result) { return handToAssistant(result, context, 'Please apply my changes to ' + changes.length + ' variant(s).', 'Changes sent.'); })
+    sendToModel(context, 'Please apply my changes to ' + changes.length + ' variant(s).', 'Changes sent.')
       .then(function () { toChange.forEach(function (v) { requests[v.fileName] = ''; }); render(); waitForNextGeneration(from); })
       .catch(function (error) { setStatus(errorText(error), true); })
       .then(function () { busy = false; updateFixActions(); });
