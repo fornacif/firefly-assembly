@@ -614,8 +614,8 @@ ${LAYERS_CSS}
 <div data-step="2" hidden>
   <div class="subtle intro" id="layers-intro">Click the numbered zones of the template, or the list, to pick the layers to change in the variants.</div>
   <div class="template-tabs" id="template-tabs" role="group" aria-label="Templates" hidden></div>
-  ${LAYERS_HTML}
-  <div class="subtle linked" id="linked" hidden></div>
+  ${layersHtml(`
+<div class="subtle linked" id="linked" hidden></div>
 <div class="field fonts">
   <div class="fonts-head"><sp-field-label size="m">Fonts</sp-field-label><div id="fonts-help" class="fonts-help" role="status"></div></div>
   <ul class="template-fonts" id="template-fonts" hidden></ul>
@@ -626,6 +626,7 @@ ${LAYERS_CSS}
   </div>
   <div class="font-library" id="font-library" hidden></div>
 </div>
+`)}
 </div>
 <sp-help-text id="quota" variant="negative" icon hidden></sp-help-text>
 <div class="actions">
@@ -2308,8 +2309,8 @@ const LAYERS_CSS = `
   /* Preview on the left (half of the width at most) and list on the right; the list goes below on very narrow views */
   .picker { display: flex; align-items: flex-start; gap: var(--spectrum-spacing-300); }
   /* The list starts at the top of the preview image (below the padding of the preview) */
-  .picker .list { flex: 1 1 0; min-width: 0; margin-top: 10px; }
-  @media (max-width: 420px) { .picker { flex-direction: column; align-items: stretch; } .picker .list { flex: none; margin-top: 0; } }
+  .picker-side { flex: 1 1 0; min-width: 0; margin-top: 10px; }
+  @media (max-width: 420px) { .picker { flex-direction: column; align-items: stretch; } .picker-side { flex: none; margin-top: 0; } }
   /* The padding leaves room for the numbers, centered on the top left corner of the zones */
   .preview { flex: 0 1 auto; max-width: 50%; padding: 10px; line-height: 0; }
   @media (max-width: 420px) { .preview { max-width: 100%; } }
@@ -2366,14 +2367,18 @@ const LAYERS_CSS = `
   .row .num:empty { min-width: 10px; width: 10px; height: 10px; padding: 0; }
 `
 
-const LAYERS_HTML = `<div class="picker">
+// aside: markup under the list (the fonts in the start view)
+const layersHtml = (aside = '') => `<div class="picker">
   <div class="preview" id="preview" hidden>
     <div class="preview-loader" id="preview-loader" hidden><sp-progress-circle size="l" indeterminate label="Rendering the preview"></sp-progress-circle><span class="subtle">Rendering the preview...</span></div>
     <div class="stage" id="stage"><img id="preview-img" alt="Template preview"><div id="zones"></div></div>
   </div>
+  <div class="picker-side">
   <div class="list" id="list">
     <div class="row head"><sp-checkbox id="select-all">Select all</sp-checkbox></div>
     <div id="layers"></div>
+  </div>
+  ${aside}
   </div>
 </div>
 `
@@ -2591,7 +2596,7 @@ ${LAYERS_CSS}
 `, `
 <h2 class="heading" id="title">Editable layers</h2>
 <div class="subtle intro" id="intro">Pick the layers to use for the variants.</div>
-${LAYERS_HTML}<div class="actions"><sp-button variant="accent" id="confirm" disabled>Use these layers</sp-button></div>
+${layersHtml()}<div class="actions"><sp-button variant="accent" id="confirm" disabled>Use these layers</sp-button></div>
 <sp-help-text class="status" id="status"></sp-help-text>
 `, `
   setStatus('Reading the template...', false, true);
