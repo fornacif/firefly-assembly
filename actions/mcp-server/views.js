@@ -7,6 +7,12 @@ const BASE_STYLE = `
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
   html, body { margin: 0; padding: 0; background: transparent; }
+  /* A widget that did its part, reduced to a line (what it sent), shown whole again with its button */
+  .widget-summary { display: flex; align-items: center; gap: var(--spectrum-spacing-100); margin-top: var(--spectrum-spacing-100);
+    color: var(--spectrum-neutral-subdued-content-color-default); }
+  .widget-summary sp-icon-checkmark-circle { flex: none; color: var(--spectrum-positive-visual-color); }
+  .widget-summary span { flex: 1 1 auto; min-width: 0; }
+  body.collapsed:not(.expanded) sp-theme > :not(.heading):not(.widget-summary):not(.fullscreen-toggle) { display: none !important; }
   /* Full screen button, at the top right of the view; full screen, the view scrolls in the space the host gives it */
   sp-theme { position: relative; }
   .fullscreen-toggle { position: absolute; top: var(--spectrum-spacing-200); right: var(--spectrum-spacing-200); }
@@ -120,7 +126,11 @@ const BRIDGE_SCRIPT = `
     } else if (msg.method === 'ui/notifications/tool-result') {
       // The channel of the widget, which the assistant waits on (see sendToModel)
       var structured = msg.params && msg.params.structuredContent;
-      if (structured && structured.channel) _channel = structured.channel;
+      if (structured && structured.channel && structured.channel !== _channel) {
+        _channel = structured.channel;
+        // A widget shown again after it did its part (e.g. moved to the conversation by the host) is shown reduced
+        callTool('get-channel', { channel: _channel }).then(function (state) { if (state.final) collapseWidget(state.final.summary); }, function () {});
+      }
       if (_early) _early.result = msg.params;
       else if (_toolResultHandler) _toolResultHandler(msg.params);
     } else if (msg.method === 'ui/notifications/tool-input') {
@@ -261,14 +271,18 @@ const BRIDGE_SCRIPT = `
   // the widget (post-to-assistant, wait-for-widget), so that the user has no message to validate. Otherwise it goes in the model
   // context and a user message ends with the reference (some models do not reliably see the model context), which the user
   // validates.
-  function sendToModel(context, message, sentStatus, data) {
+  // final: the widget has done its part (its result goes on to the next widget): it is then shown reduced to the message, so that
+  // it takes little room in the conversation when the host moves it there (kept by the server, also when it is shown again)
+  function sendToModel(context, message, sentStatus, data, final) {
     var post = { text: context, message: message };
     if (_channel) post.channel = _channel;
     if (data) post.data = data;
+    if (final) post.final = true;
     return callTool('post-to-assistant', post)
       // Without a reference, Claude can still read the result in the model context
       .catch(function () { return { text: context.split('{{ref}}').join('(none: pass the variants)') }; })
       .then(function (posted) {
+        if (final) collapseWidget(message);
         if (posted.delivered) { if (sentStatus) setStatus(sentStatus); return; }
         return request('ui/update-model-context', { content: [{ type: 'text', text: posted.text }] })
           .then(function () {
@@ -276,6 +290,26 @@ const BRIDGE_SCRIPT = `
             return request('ui/message', { role: 'user', content: [{ type: 'text', text: message + (posted.ref ? ' (' + posted.ref + ')' : '') }] });
           });
       });
+  }
+
+  // The widget reduced to a line (what it sent), with a button to show it whole again
+  function collapseWidget(summary) {
+    if (document.querySelector('.widget-summary')) return;
+    var line = document.createElement('div');
+    line.className = 'widget-summary';
+    line.innerHTML = '<sp-icon-checkmark-circle aria-hidden="true"></sp-icon-checkmark-circle><span></span>'
+      + '<sp-action-button quiet size="s" class="widget-summary-toggle">Show</sp-action-button>';
+    line.querySelector('span').textContent = summary;
+    var toggle = line.querySelector('.widget-summary-toggle');
+    toggle.addEventListener('click', function () {
+      var open = document.body.classList.toggle('expanded');
+      toggle.textContent = open ? 'Hide' : 'Show';
+      reportSize();
+    });
+    var heading = themeEl.querySelector('.heading');
+    if (heading) heading.insertAdjacentElement('afterend', line); else themeEl.insertBefore(line, themeEl.firstChild);
+    document.body.classList.add('collapsed');
+    reportSize();
   }
 
   function initialize(appName) {
@@ -492,7 +526,7 @@ ${UPLOAD_SCRIPT}
           + uploaded.map(function (u, i) { return (i + 1) + '. ' + u.name + ': ' + u.url; }).join('\\n');
         setStatus(uploaded.length > 1 ? uploaded.length + ' files uploaded.' : names + ' uploaded.');
         // The URLs go to Claude only (not shown to the user), with a short prompt so that it continues
-        return sendToModel(context, 'I uploaded ' + names + ', continue.');
+        return sendToModel(context, 'I uploaded ' + names + ', continue.', null, null, true);
       })
       .catch(function (error) {
         setStatus(errorText(error), true);
@@ -1403,7 +1437,7 @@ ${LAYERS_SCRIPT}
               : (made.status === 'resizing' ? 'Making' : 'Reading') + '...';
       var busy = made && (made.status === 'resizing' || made.status === 'reading');
       return '<sp-checkbox data-format="' + f.id + '"' + (socialWanted[f.id] && !same ? ' checked' : '') + (same ? ' disabled' : '') + '>'
-        + escapeHtml(f.name) + ' <span class="format-size">' + f.ratio + ', ' + f.width + ' x ' + f.height + '</span></sp-checkbox>'
+        + escapeHtml(f.name) + '<span class="format-size"> · ' + f.ratio + ' · ' + f.width + ' x ' + f.height + '</span></sp-checkbox>'
         + '<span class="format-state' + (made && made.status === 'error' ? ' negative' : '') + '">'
         + (busy ? '<sp-progress-circle size="s" indeterminate label="' + escapeHtml(state) + '"></sp-progress-circle>' : '')
         + escapeHtml(state) + '</span>';
@@ -1838,7 +1872,7 @@ ${LAYERS_SCRIPT}
         + 'To change a variant in some templates only (e.g. a text too long in one format), pass the names of these templates in its templates. '
         + 'Next step: step 3 (texts) if text layers were selected, otherwise step 4 (images).' + fontsText;
     }
-    sendToModel(context, 'I want ' + n + ' variant(s) of ' + title + ' in ' + names.join(', ') + ', changing ' + picked + ', continue.', 'Template' + (templates.length > 1 ? 's' : '') + ' sent.')
+    sendToModel(context, 'I want ' + n + ' variant(s) of ' + title + ' in ' + names.join(', ') + ', changing ' + picked + ', continue.', 'Template' + (templates.length > 1 ? 's' : '') + ' sent.', null, true)
       .catch(function (error) {
         backBtn.disabled = false;
         updateButton();
@@ -2544,7 +2578,7 @@ ${IMAGES_CSS}
 ${STEPS_CSS}
 `, `
 <h2 class="heading" id="title">Drop one image per variant</h2>
-${stepsHtml({ 5: 5 }, [4])}
+${stepsHtml({ 5: 5 })}
 <div class="subtle intro">Add images, then drag each one onto the slots that use it (or drop a file on a slot). The bright area is what the banner shows: drag it to reposition the crop, use Zoom to resize it.</div>
 ${IMAGES_HTML}<div class="actions">
   <sp-button variant="accent" id="confirm" disabled>Continue</sp-button>
@@ -2573,7 +2607,7 @@ ${IMAGES_SCRIPT}
     sendToModel('To generate the variants with these images, call create-variant with widgetRef "{{ref}}" (with the reference of the '
       + 'texts too, if they were confirmed apart, and languages for the languages of the start widget when there are no texts) instead of '
       + 'copying the images: the server builds the variants from them.\\n' + imagesPicker.result(),
-      'I added and framed the images for the ' + imagesPicker.count() + ' variant(s), continue.', 'Images sent.', { images: imagesPicker.data() })
+      'I added and framed the images for the ' + imagesPicker.count() + ' variant(s), continue.', 'Images sent.', { images: imagesPicker.data() }, true)
       .catch(function (error) {
         confirmBtn.disabled = false;
         setStatus(errorText(error), true);
@@ -2582,22 +2616,18 @@ ${IMAGES_SCRIPT}
 `)
 }
 
-// The steps of the workflow, across the widgets: each widget shows them all, as segments of a progress bar (stepsHtml), its own
-// steps as <li data-for="N"> (N its step in the view; the view marks them current, done and reachable, and shows the element
-// [data-step="N"]), the steps of the other widgets done (before) or to come (after), or skipped.
+// The steps of the workflow, numbered across the widgets: each widget shows its own ones, as segments of a progress bar
+// (stepsHtml), as <li data-for="N"> (N its step in the view; the view marks them current, done and reachable, and shows the
+// element [data-step="N"]).
 const STEPS = ['Template', 'Formats', 'Layers', 'Texts', 'Images', 'Review']
 
-// own: { [step of the workflow]: step in the view }, the first one current; skipped: steps of the workflow not taken
-function stepsHtml (own, skipped = []) {
-  const steps = Object.keys(own).map(Number)
-  const first = Math.min(...steps)
+// own: { [step of the workflow]: step in the view }, the first one current
+function stepsHtml (own) {
+  const steps = Object.keys(own).map(Number).sort((a, b) => a - b)
   const clickable = steps.length > 1
-  return '<ol class="steps" aria-label="Steps">' + STEPS.map((title, i) => {
-    const n = i + 1
-    const label = `<span class="step-kicker">Step ${n}</span><span class="step-title">${title}</span>`
-    if (own[n]) return `<li data-for="${own[n]}"${n === first ? ' class="current" aria-current="step"' : ''}${clickable ? ' role="button" tabindex="-1"' : ''}>${label}</li>`
-    return `<li class="${n < first ? 'done' : ''}${skipped.includes(n) ? ' skipped' : ''}">${label}</li>`
-  }).join('') + '</ol>'
+  return '<ol class="steps" aria-label="Steps">' + steps.map((n, i) =>
+    `<li data-for="${own[n]}"${i === 0 ? ' class="current"' : ''}${clickable ? ' role="button" tabindex="-1"' : ''}>` +
+    `<span class="step-kicker">Step ${n}</span><span class="step-title">${STEPS[n - 1]}</span></li>`).join('') + '</ol>'
 }
 
 const STEPS_CSS = `
@@ -2970,7 +3000,7 @@ ${LAYERS_SCRIPT}
       + '; then call create-variant ONCE with all variants, without a recap.';
     var message = 'I picked these layers: ' + chosen.map(function (l) { return l.name; }).join(', ') + '. '
       + (chosen.length > images.length ? "Let's fill in the texts of each variant." : 'Continue.');
-    sendToModel(context, message, 'Selection sent.')
+    sendToModel(context, message, 'Selection sent.', null, true)
       .catch(function (error) {
         confirmBtn.disabled = false;
         setStatus(errorText(error), true);
@@ -3479,10 +3509,8 @@ ${IMAGES_SCRIPT}
     layers = args.layers || [];
     variants = args.variants || [];
     withImages = Boolean(args.images && args.images.layers && args.images.layers.length);
-    // Without images, the step of the images is skipped
-    var imagesStep = document.querySelector('.steps li[data-for="2"]');
-    imagesStep.classList.toggle('skipped', !withImages);
-    if (!withImages) { imagesStep.removeAttribute('data-for'); imagesStep.removeAttribute('role'); }
+    // Without images, the step of the texts alone
+    document.querySelector('.steps li[data-for="2"]').hidden = !withImages;
     document.getElementById('title').textContent = args.title || (withImages ? 'Texts and images per variant' : 'Texts per variant');
     render();
     if (withImages) imagesPicker.init(args.images.variants && args.images.variants.length ? args.images
@@ -3507,7 +3535,7 @@ ${IMAGES_SCRIPT}
       ? 'I confirmed the texts and the images of the ' + confirmed.length + ' variant(s), continue.'
       : 'I confirmed the texts of the ' + confirmed.length + ' variant(s), continue.';
     sendToModel(context, message, withImages ? 'Texts and images sent.' : 'Texts sent.',
-      { variants: confirmed, images: withImages ? imagesPicker.data() : undefined })
+      { variants: confirmed, images: withImages ? imagesPicker.data() : undefined }, true)
       .catch(function (error) {
         confirmBtn.removeAttribute('data-sending');
         updateConfirm();

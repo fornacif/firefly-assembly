@@ -61,7 +61,7 @@ const WORKFLOW = `Variant creation workflow. When the user asks to create varian
 4. Images: done in the second step of edit-variant-texts when text layers were selected too. Otherwise (smart object layers only), call upload-variant-images ONCE with the labels of the variants without their languages (one row per variant, e.g. "Winter sale" for "Winter sale FR" and "Winter sale DE": all the languages of a variant share its images) and the selected smart object layers (id, name and frame width and height from get-psd-manifest), so the user drops (or picks from AEM Assets, or generates with Firefly from your prompts) one image per variant and layer in a grid and adjusts how each one is cropped to its frame. Do not write prompts for Firefly by default: each slot offers to generate its image with Firefly from a prompt the user writes there. Pass prompts (one per variant and layer, in English, from the brief and the texts of the variant) only for the layers for which the user asks for generated images, in chat or with the option of the start widget: each of their slots then offers to generate its image (Generate with Firefly shows its prompt, which the user can edit), and the main button generates them all. When the user confirms, the widget gives you the URL, size and crop of each image the same way. Never ask for image URLs in chat. Then wait.
 5. Generation: as soon as the images are confirmed (or the texts, without smart object layers), call create-variant ONCE with widgetRef, the reference at the end of the user's confirmation message (both references when the texts and the images were confirmed apart; with images only, also the languages of the start widget), instead of variants: the server builds all the variants (up to ${MAX_VARIANTS}) from what the user confirmed (texts, font scales, images, crops, groups and languages), so do not copy texts, image URLs or crops into the call. Pass also the templateUrl (or templates), fileNamePattern and fonts given by the start widget, and the formats; do not recap the variants or ask for another approval. Without a reference (e.g. a widget result missing), pass the variants as before: for each image the crop chosen in the grid (each language of a variant gets the images and crops of its row of the grid, and its label in the grid as group) and for each variant its language and its group (its label without its language). The widget shows the generated files with download buttons.
 6. Review: right after create-variant, in the same turn and without asking the user, check the texts of the generated files: call review-variants with the task id create-variant gives (it waits for the generation; while it answers that it is not finished, call it again): it shows you each visual with the texts sent. Look at each edited text on its visual: cut or past an edge of the visual or of its panel, letters or words hidden, overlapping another element (logo, image, other text) more than in the template, too small or hard to read on its background, lines broken badly, or not the text sent. Then call report-variant-issues with every variant reviewed (no issues for those that are fine; when review-variants shows the variants in several parts, after each part): per problem, the layer, a short description, the fix you propose (e.g. Reduce the font size of "headline" to 85%.) and the rectangle of the text on the visual, in pixels of the canvas. The widget marks each problem on the visual, with your proposed fix. Each variant has a field of changes, pre-filled with its proposed fixes, that the user edits, then sends to you: nothing is generated again before. Do not list the problems in chat: briefly say that the widget shows them and takes the changes. The user can also click a text on a visual to write a change for it in its field. When the user asks for changes (in the widget or in chat), make exactly the changes asked, nothing else: change a font size only when asked; to change the words of a text, rewrite it as asked (e.g. twice as many words, at most two lines) and keep its font size, even if it may not fit; then call update-variants with the variants to change only, with the same file names and the same edits except the changes (a font size of N% is fontScale N/100), and previousTaskId, the task id of the generation changed: its widget shows these variants generated again in place, and the others unchanged (create-variant with previousTaskId does the same in a new widget). The texts are checked once generated: do not adjust them beforehand. If a text the user asked for does not fit, you may then suggest a fix (a smaller font size or a shorter text), without applying it.
-Widgets: each tool that shows a widget gives a widget channel in its result. Once done with that result (e.g. after the review of the texts for create-variant), call wait-for-widget with this channel, and again each time it says so, without writing to the user: it gives you what the user sends from the widget (confirmations, changes, formats to check) as their messages did, so that they do not have to validate a message; do what it says as you would for the message. If it says to stop, wait for the user's message.
+Widgets: each tool that shows a widget gives a widget channel in its result. Once done with that result (e.g. after the review of the texts for create-variant), call wait-for-widget with this channel, and again each time it says so, without writing any text to the user meanwhile (not even that you are waiting or what the user should do in the widget): it gives you what the user sends from the widget (confirmations, changes, formats to check) as their messages did, so that they do not have to validate a message; do what it says as you would for the message. If it says to stop, wait for the user's message.
 Changes after generation: to re-crop or swap images, call upload-variant-images again with images pre-filled from the previous confirmation (never ask to upload again the images you already have, unless their URLs expired); to change texts, call update-variants with the variants to change only (same file names, groups, languages, fileNamePattern and fonts) and previousTaskId: the widget of that generation shows them in place. To get other formats of variants already generated (e.g. PSD after JPEG), call update-variants with these variants unchanged (same file names and edits), only the new formats, and previousTaskId: each variant keeps its earlier files in the widget and the ZIP.
 Widgets send their result (template URL, layers, texts, images) in your context and end the user's message with a reference in parentheses like "(r7k2p9)": if you do not have that result in your context, call get-widget-result with this ref before going on; never ask the user to redo a step because a result seems missing.
 The URLs from the widgets are temporary presigned URLs: use them in tool calls, but never show them to the user. Reply in the user's language.`
@@ -1615,7 +1615,8 @@ async function withChannel (params, result) {
   if (!result || result.isError) return result
   const channel = await openChannel(params)
   const text = `\n\nWidget channel "${channel}": once you are done with what this result asks, call wait-for-widget with this ` +
-    'channel, and again each time it says so, without writing to the user: it gives you what the user sends from this widget ' +
+    'channel, and again each time it says so, without writing any text to the user before, between or after the calls (not even ' +
+    'that you are waiting): it gives you what the user sends from this widget ' +
     '(as their messages did), without a message to validate.'
   const content = result.content?.length && result.content[0].type === 'text'
     ? [{ ...result.content[0], text: result.content[0].text + text }, ...result.content.slice(1)]
@@ -2360,11 +2361,12 @@ function registerTools (server, params) {
         channel: z.string().regex(CHANNEL_ID).optional().describe('Channel of the widget, from the result of its tool'),
         text: z.string().min(1).max(500000).describe('What the widget gives the assistant'),
         message: z.string().max(2000).describe('The message the widget would send for the user'),
+        final: z.boolean().optional().describe('The widget has done its part: shown reduced to the message from now on (get-channel)'),
         data: z.object({}).passthrough().optional().describe('Texts and images confirmed, from which create-variant builds the variants (widgetRef)')
       },
       _meta: { ui: { visibility: ['app'] } }
     },
-    async ({ channel, text, message, data }) => {
+    async ({ channel, text, message, data, final }) => {
       try {
         const ref = await saveWidgetResult(params, text, data)
         const filled = text.split('{{ref}}').join(ref)
@@ -2372,12 +2374,31 @@ function registerTools (server, params) {
         const state = await initState()
         const waitedAt = channel && (await state.get(channelWaitKey(userId, channel)).catch(() => null))?.value?.at
         const delivered = Boolean(waitedAt && Date.now() - waitedAt < WAITING_MS)
-        if (delivered) {
+        if (channel && (delivered || final)) {
           const record = (await state.get(channelKey(userId, channel)).catch(() => null))?.value || { items: [] }
-          record.items = [...(record.items || []), `${message} (${ref})\n${filled}`]
+          if (delivered) record.items = [...(record.items || []), `${message} (${ref})\n${filled}`]
+          if (final) record.final = { summary: message }
           await state.put(channelKey(userId, channel), { ...record, at: Date.now() }, { ttl: TASK_TTL_SECONDS })
         }
         return jsonResult({ ref, text: filled, delivered })
+      } catch (error) {
+        return errorResult(error)
+      }
+    }
+  )
+
+  server.registerTool(
+    'get-channel',
+    {
+      title: 'Get Channel',
+      description: 'Used by the widgets: whether the widget has done its part (final, with the message it sent), to show it reduced.',
+      inputSchema: { channel: z.string().regex(CHANNEL_ID) },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    async ({ channel }) => {
+      try {
+        const record = (await (await initState()).get(channelKey(currentUserId(params), channel)).catch(() => null))?.value
+        return jsonResult({ final: record?.final || null })
       } catch (error) {
         return errorResult(error)
       }
@@ -2411,7 +2432,9 @@ function registerTools (server, params) {
             await state.delete(channelWaitKey(userId, channel)).catch(() => {})
             return { content: [{ type: 'text', text: 'Nothing from the widget for a while: stop calling wait-for-widget and wait for the user (the widget will send a message).' }] }
           }
-          if (Date.now() + WAIT_POLL_MS > deadline) return { content: [{ type: 'text', text: 'Nothing yet: call wait-for-widget again now, without writing to the user.' }] }
+          if (Date.now() + WAIT_POLL_MS > deadline) {
+            return { content: [{ type: 'text', text: 'Nothing yet: call wait-for-widget again now. Do not write anything to the user (no text at all, not even that you are waiting): the user is working in the widget.' }] }
+          }
           await wait(WAIT_POLL_MS)
         }
       } catch (error) {
