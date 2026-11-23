@@ -84,6 +84,11 @@ const BRIDGE_SCRIPT = `
   var _isEmbedded = false;
   var _frames = [];
   var _embeddedGoHandler = null;
+  // Shown in the start widget: its state ({ generated }: variants generated already), told to the page
+  var _embeddedState = {};
+  var _embeddedStateHandler = null;
+  function onEmbeddedState(handler) { _embeddedStateHandler = handler; handler(_embeddedState); }
+  function setEmbeddedState(entry, state) { _toEmbedded(entry, { jsonrpc: '2.0', method: 'ui/notifications/embedded-state', params: state }); }
   // Something a page shown in this view sent to the assistant
   var _embeddedPostHandler = null;
   function onEmbeddedPost(handler) { _embeddedPostHandler = handler; }
@@ -145,6 +150,9 @@ const BRIDGE_SCRIPT = `
       else if (_toolResultHandler) _toolResultHandler(msg.params);
     } else if (msg.method === 'ui/notifications/embedded-go') {
       if (_embeddedGoHandler) _embeddedGoHandler(msg.params.step);
+    } else if (msg.method === 'ui/notifications/embedded-state') {
+      _embeddedState = msg.params || {};
+      if (_embeddedStateHandler) _embeddedStateHandler(_embeddedState);
     } else if (msg.method === 'ui/notifications/tool-input') {
       var args = (msg.params && msg.params.arguments) || {};
       if (_early) _early.input = args;
@@ -331,6 +339,7 @@ const BRIDGE_SCRIPT = `
         hostContext: Object.assign({}, _hostContext, { embedded: true, displayMode: 'inline', availableDisplayModes: ['inline'] }) } });
     }
     if (msg.method === 'ui/notifications/initialized') {
+      if (e.state) setEmbeddedState(e, e.state);
       if (e.input) _toEmbedded(e, { jsonrpc: '2.0', method: 'ui/notifications/tool-input', params: { arguments: e.input } });
       var structured = Object.assign({}, e.result || {}, _channel ? { channel: _channel } : {});
       _toEmbedded(e, { jsonrpc: '2.0', method: 'ui/notifications/tool-result', params: { structuredContent: structured, content: [] } });
@@ -791,7 +800,7 @@ ${stepsHtml({ 1: 1, 2: 2, 3: 3 }, [4, 5, 6])}
 <div class="actions">
   <sp-button variant="secondary" treatment="outline" id="back" hidden>Back</sp-button>
   <sp-button variant="accent" id="next" disabled>Next</sp-button>
-  <sp-button variant="accent" id="continue" hidden disabled>Continue</sp-button>
+  <sp-button variant="accent" id="continue" hidden disabled>Next</sp-button>
   <sp-help-text class="status" id="status"></sp-help-text>
 </div>
 `, `
@@ -1822,7 +1831,7 @@ ${LAYERS_SCRIPT}
 
   // Steps 4 to 6, in this widget: once the layers are sent, the widget waits for the assistant to send the next step (texts,
   // images, then the variants: get-channel), and shows the page of that step in place (embedView), each page kept with its
-  // state: the steps of the header go to any page shown, or back to the steps 1 to 3 (sent again with Continue).
+  // state: the steps of the header go to any page shown, or back to the steps 1 to 3 (sent again with Next at step 3).
   var nextSteps = document.getElementById('next-steps');
   var embeddedStep = document.getElementById('embedded-step');
   var assistantWaiting = document.getElementById('assistant-waiting');
@@ -1923,20 +1932,29 @@ ${LAYERS_SCRIPT}
     }
     setTimeout(function () {
       callTool('get-channel', { channel: _channel }).then(function (state) {
-        var view = state.view;
-        var shown = view && pages[view.view];
-        if (view && (!shown || shown.view.at !== view.at)) { viewActivity = Date.now(); viewPollDelay = 2500; return showView(view); }
-        viewPollDelay = Math.min(10000, viewPollDelay * 1.3);
+        // The pages whose data changed: the one the assistant sent last is shown, the others are updated in place (e.g. the
+        // texts of step 4 changed with a new generation)
+        var changed = Object.keys(state.views || {}).filter(function (name) {
+          var page = pages[name];
+          return !page || page.view.at !== state.views[name].at;
+        });
+        if (!changed.length) { viewPollDelay = Math.min(10000, viewPollDelay * 1.3); return; }
+        viewActivity = Date.now();
+        viewPollDelay = 2500;
+        return Promise.all(changed.map(function (name) { return showView(state.views[name], name === state.latest); }));
       }, function () {}).then(pollView);
     }, viewPollDelay);
   }
   document.getElementById('check-again-button').addEventListener('click', watchViews);
   onEmbeddedPost(watchViews);
   var viewPages = {};
-  // A step sent by the assistant: its page, new (or in place of the earlier one of that view), shown at once
-  function showView(view) {
+  // A step sent by the assistant: its page, new (or in place of the earlier one of that view), shown at once (show), or kept
+  // hidden until the user goes to it
+  function showView(view, show) {
     viewPages[view.view] = viewPages[view.view] || callTool('get-view-html', { view: view.view }).then(function (result) { return result.html; });
     return viewPages[view.view].then(function (html) {
+      // The page replaced is the one shown: the new one is shown in its place
+      var shownStep = pages[view.view] && embeddedShown && pageFor(embeddedShown) === pages[view.view] ? embeddedShown : null;
       if (pages[view.view]) removeEmbedded(pages[view.view].entry);
       var page = { view: view };
       page.entry = embedView(embeddedStep, view.view, html, view.input, view.result, function (step) {
@@ -1944,8 +1962,20 @@ ${LAYERS_SCRIPT}
         if (embeddedShown && pageFor(embeddedShown) === page) { embeddedShown = step; updateHeader(); }
       });
       pages[view.view] = page;
-      goToStep({ texts: 4, images: 5, variant: 6 }[view.view]);
+      tellGenerated();
+      if (show) goToStep({ texts: 4, images: 5, variant: 6 }[view.view]);
+      else if (shownStep) goToStep(shownStep);
+      else { page.entry.frame.hidden = true; updateHeader(); }
     }, function (error) { setStatus(errorText(error), true); });
+  }
+  // The pages of the texts and images know whether variants were generated (their Regenerate button)
+  function tellGenerated() {
+    var state = { generated: Boolean(pages.variant) };
+    Object.keys(pages).forEach(function (name) {
+      if (name === 'variant') return;
+      pages[name].entry.state = state;
+      setEmbeddedState(pages[name].entry, state);
+    });
   }
   // The header: a click on a step that can be shown
   document.querySelector('.steps').addEventListener('click', function (e) {
@@ -2752,7 +2782,8 @@ ${STEPS_CSS}
 ${stepsHtml({ 5: 5 })}
 <div class="subtle intro">Add images, then drag each one onto the slots that use it (or drop a file on a slot). The bright area is what the banner shows: drag it to reposition the crop, use Zoom to resize it.</div>
 ${IMAGES_HTML}<div class="actions">
-  <sp-button variant="accent" id="confirm" disabled>Continue</sp-button>
+  <sp-button variant="accent" id="confirm" disabled>Generate</sp-button>
+  <sp-button variant="secondary" treatment="outline" id="regenerate" hidden>Regenerate</sp-button>
   <sp-help-text class="status" id="status"></sp-help-text>
 </div>
 `, `
@@ -2763,8 +2794,10 @@ ${IMAGES_SCRIPT}
   // With slots waiting for their prompt to be generated, the button generates them all with Firefly
   imagesPicker.onChange(function (done, total) {
     var pending = imagesPicker.pendingPrompts();
+    imagesReady = done === total && total > 0;
+    if (typeof updateRegenerate === 'function' && regenerateBtn) updateRegenerate();
     confirmBtn.disabled = !pending && (done !== total || !total);
-    confirmBtn.textContent = pending ? 'Generate with Firefly (' + pending + ')' : 'Continue';
+    confirmBtn.textContent = pending ? 'Generate with Firefly (' + pending + ')' : generated ? 'Regenerate' : 'Generate';
   });
 
   onToolInput(function (args) {
@@ -2775,15 +2808,33 @@ ${IMAGES_SCRIPT}
 
   confirmBtn.addEventListener('click', function () {
     if (imagesPicker.pendingPrompts()) return imagesPicker.generateAll();
+    sendImages(false);
+  });
+  // Once variants were generated (in the start widget): the images sent again, to generate again
+  var regenerateBtn = document.getElementById('regenerate');
+  var imagesReady = false;
+  var generated = false;
+  // (Generate becomes Regenerate: no button of its own here)
+  function updateRegenerate() {
+    regenerateBtn.hidden = true;
+    var pending = imagesPicker.pendingPrompts();
+    if (!pending) confirmBtn.textContent = generated ? 'Regenerate' : 'Generate';
+  }
+  onEmbeddedState(function (state) { generated = Boolean(state.generated); updateRegenerate(); });
+  regenerateBtn.addEventListener('click', function () { sendImages(true); });
+  function sendImages(again) {
     confirmBtn.disabled = true;
+    regenerateBtn.disabled = true;
     sendToModel('To generate the variants with these images, call generate-variants with the channel, without variants (and languages, '
       + 'the languages of the start widget, when there are no texts): the server builds the variants from them.\\n' + imagesPicker.result(),
-      'I added and framed the images for the ' + imagesPicker.count() + ' variant(s), continue.', 'Images sent.', { images: imagesPicker.data() })
-      .catch(function (error) {
+      again ? 'Regenerate the ' + imagesPicker.count() + ' variant(s) with these images.' : 'I added and framed the images for the ' + imagesPicker.count() + ' variant(s), continue.',
+      'Images sent.', { images: imagesPicker.data() })
+      .then(function () { confirmBtn.disabled = false; updateRegenerate(); }, function (error) {
         confirmBtn.disabled = false;
+        updateRegenerate();
         setStatus(errorText(error), true);
       });
-  });
+  }
 `)
 }
 
@@ -3195,7 +3246,8 @@ You can also paste cells copied from a spreadsheet, or import an Excel file (.xl
 </div>
 <div class="actions">
   <sp-button variant="secondary" treatment="outline" id="back" hidden>Back</sp-button>
-  <sp-button variant="accent" id="confirm" disabled>Continue</sp-button>
+  <sp-button variant="accent" id="confirm" disabled>Generate</sp-button>
+  <sp-button variant="secondary" treatment="outline" id="regenerate" hidden>Regenerate</sp-button>
   <sp-help-text class="status" id="status"></sp-help-text>
 </div>
 `, `
@@ -3584,9 +3636,12 @@ ${IMAGES_SCRIPT}
   imagesPicker.onChange(function (done, total) { imagesDone = done === total && total > 0; updateConfirm(); });
 
   function updateConfirm() {
-    if (!withImages) { confirmBtn.disabled = !variants.length; return; }
+    if (typeof updateRegenerate === 'function' && regenerateBtn) updateRegenerate();
+    // Next to the images, then Generate (Regenerate once variants were generated)
+    var generate = generated ? 'Regenerate' : 'Generate';
+    if (!withImages) { confirmBtn.textContent = generate; confirmBtn.disabled = !variants.length; return; }
     var pending = step === 2 && imagesPicker.pendingPrompts();
-    confirmBtn.textContent = step === 1 ? 'Next' : pending ? 'Generate with Firefly (' + pending + ')' : 'Continue';
+    confirmBtn.textContent = step === 1 ? 'Next' : pending ? 'Generate with Firefly (' + pending + ')' : generate;
     confirmBtn.disabled = !variants.length || (step === 2 && !pending && !imagesDone);
     Array.prototype.forEach.call(document.querySelectorAll('.steps li[data-for]'), function (li) {
       var n = Number(li.getAttribute('data-for'));
@@ -3646,6 +3701,19 @@ ${IMAGES_SCRIPT}
   confirmBtn.addEventListener('click', function () {
     if (withImages && step === 1) return showStep(2);
     if (withImages && imagesPicker.pendingPrompts()) return imagesPicker.generateAll();
+    sendTexts(false);
+  });
+  // Once variants were generated (in the start widget): the texts (and images) sent again from any step, to generate again
+  var regenerateBtn = document.getElementById('regenerate');
+  var generated = false;
+  // Beside Next (texts then images): Regenerate at once, once variants were generated; elsewhere the main button generates
+  function updateRegenerate() {
+    regenerateBtn.hidden = !generated || !withImages || step !== 1;
+    regenerateBtn.disabled = !variants.length || confirmBtn.hasAttribute('data-sending') || withImages && (!imagesDone || imagesPicker.pendingPrompts() > 0);
+  }
+  onEmbeddedState(function (state) { generated = Boolean(state.generated); updateConfirm(); });
+  regenerateBtn.addEventListener('click', function () { sendTexts(true); });
+  function sendTexts(again) {
     confirmBtn.disabled = true;
     confirmBtn.setAttribute('data-sending', '');
     updateConfirm();
@@ -3656,17 +3724,23 @@ ${IMAGES_SCRIPT}
       + (withImages ? 'images and crops, ' : '') + 'groups and languages from the labels). Do not copy the texts'
       + (withImages ? ', image URLs or crops' : '') + ' into the call. Texts, for reference:\\n' + JSON.stringify({ variants: confirmed })
       + (withImages ? '\\n\\n' + imagesPicker.result() + '\\nThe images are chosen: call generate-variants now.' : '');
-    var message = withImages
-      ? 'I confirmed the texts and the images of the ' + confirmed.length + ' variant(s), continue.'
-      : 'I confirmed the texts of the ' + confirmed.length + ' variant(s), continue.';
+    var message = again
+      ? 'Regenerate the ' + confirmed.length + ' variant(s) with these texts' + (withImages ? ' and images.' : '.')
+      : withImages
+        ? 'I confirmed the texts and the images of the ' + confirmed.length + ' variant(s), continue.'
+        : 'I confirmed the texts of the ' + confirmed.length + ' variant(s), continue.';
     sendToModel(context, message, withImages ? 'Texts and images sent.' : 'Texts sent.',
       { variants: confirmed, images: withImages ? imagesPicker.data() : undefined })
-      .catch(function (error) {
+      .then(function () {
+        // Sent: the texts can be changed and sent again
+        confirmBtn.removeAttribute('data-sending');
+        updateConfirm();
+      }, function (error) {
         confirmBtn.removeAttribute('data-sending');
         updateConfirm();
         setStatus(errorText(error), true);
       });
-  });
+  }
 `)
 }
 

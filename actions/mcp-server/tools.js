@@ -1597,14 +1597,42 @@ async function openChannel (params) {
   return channel
 }
 
-// What the start widget shows next, in place (show-variant-texts, show-variant-images, generate-variants): { view, input,
-// result, at }, polled by the widget (get-channel), which shows the view of that step in it
-async function setChannelView (params, channel, view) {
+// What the start widget shows in place (show-variant-texts, show-variant-images, generate-variants): the page of each step,
+// views: { [texts, images, variant]: { view, input, result, at } }, and the one to show (latest), polled by the widget
+// (get-channel), which shows the latest and updates the others
+async function setChannelView (params, channel, view, show = true) {
   const state = await initState()
   const key = channelKey(currentUserId(params), channel)
   const record = (await state.get(key).catch(() => null))?.value
   if (!record) throw new Error('This widget channel is not known (expired): call the tool that shows the step in a new widget instead.')
-  await state.put(key, { ...record, view: { ...view, at: Date.now() } }, { ttl: TASK_TTL_SECONDS })
+  const views = { ...(record.views || {}), [view.view]: { ...view, at: Date.now() } }
+  await state.put(key, { ...record, views, ...(show ? { latest: view.view } : {}) }, { ttl: TASK_TTL_SECONDS })
+}
+
+// The texts of step 4 with the texts of variants generated again (a change asked in chat): each variant of the table (its group
+// and language from its label) takes the texts and font scales of its text layers
+async function updateChannelTexts (params, channel, variants) {
+  const record = (await (await initState()).get(channelKey(currentUserId(params), channel)).catch(() => null))?.value
+  const texts = record?.views?.texts
+  if (!texts?.input?.variants) return
+  let changed = false
+  const rows = texts.input.variants.map(row => {
+    const { group, language } = labelParts(row.label)
+    const variant = variants.find(v => (v.group || '') === group && (v.language || undefined) === language) ||
+      (variants.length === 1 && texts.input.variants.length === 1 ? variants[0] : null)
+    if (!variant) return row
+    const edits = variant.layers.filter(layer => layer.type === 'text_layer' && typeof layer.text === 'string')
+    if (!edits.length) return row
+    changed = true
+    return {
+      ...row,
+      texts: row.texts.map(text => {
+        const edit = edits.find(layer => layer.id === text.layerId)
+        return edit ? { ...text, text: edit.text, ...(edit.fontScale ? { fontScale: edit.fontScale } : {}) } : text
+      })
+    }
+  })
+  if (changed) await setChannelView(params, channel, { view: 'texts', input: { ...texts.input, variants: rows } }, false)
 }
 
 // The result of a tool that shows a widget, with its channel
@@ -2289,7 +2317,7 @@ function registerTools (server, params) {
     async ({ channel }) => {
       try {
         const record = (await (await initState()).get(channelKey(currentUserId(params), channel)).catch(() => null))?.value
-        return jsonResult({ view: record?.view || null })
+        return jsonResult({ views: record?.views || {}, latest: record?.latest || null })
       } catch (error) {
         return errorResult(error)
       }
@@ -2640,6 +2668,8 @@ function registerTools (server, params) {
       const result = await runCreateVariant(args)
       if (result.isError) return result
       try {
+        // The texts changed (a change asked in chat): step 4 shows them too
+        if (args.variants?.length) await updateChannelTexts(params, channel, args.variants)
         await setChannelView(params, channel, { view: 'variant', result: result.structuredContent })
       } catch (error) {
         return errorResult(error)
