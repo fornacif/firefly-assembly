@@ -7,12 +7,11 @@ const BASE_STYLE = `
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
   html, body { margin: 0; padding: 0; background: transparent; }
-  /* A widget that did its part, reduced to a line (what it sent), shown whole again with its button */
-  .widget-summary { display: flex; align-items: center; gap: var(--spectrum-spacing-100); margin-top: var(--spectrum-spacing-100);
-    color: var(--spectrum-neutral-subdued-content-color-default); }
-  .widget-summary sp-icon-checkmark-circle { flex: none; color: var(--spectrum-positive-visual-color); }
-  .widget-summary span { flex: 1 1 auto; min-width: 0; }
-  body.collapsed:not(.expanded) sp-theme > :not(.heading):not(.widget-summary):not(.fullscreen-toggle) { display: none !important; }
+  /* A view shown in another one (embedView): its heading, steps and full screen button are those of that view */
+  body.embedded { overflow: hidden; }
+  body.embedded sp-theme { padding: 0; }
+  body.embedded sp-theme > .heading, body.embedded .steps, body.embedded .fullscreen-toggle { display: none !important; }
+  .embedded-view { display: block; width: 100%; height: 200px; border: 0; }
   /* Full screen button, at the top right of the view; full screen, the view scrolls in the space the host gives it */
   sp-theme { position: relative; }
   .fullscreen-toggle { position: absolute; top: var(--spectrum-spacing-200); right: var(--spectrum-spacing-200); }
@@ -80,6 +79,10 @@ const BRIDGE_SCRIPT = `
   var _toolResultHandler = null;
   var _toolInputHandler = null;
   var _channel = null;
+  var _hostContext = {};
+  // This view shown in another one, and the view shown in this one: { frame, view, onStep }
+  var _isEmbedded = false;
+  var _embedded = null;
   // Resolved once the handshake with the host is done: host methods must not be called before
   var _readyResolve;
   var ready = new Promise(function (resolve) { _readyResolve = resolve; });
@@ -112,6 +115,8 @@ const BRIDGE_SCRIPT = `
   window.addEventListener('message', function (event) {
     var msg = event.data;
     if (!msg || msg.jsonrpc !== '2.0') return;
+    // A view shown in this one (embedView): its messages go through this view to the host
+    if (_embedded && _embedded.frame.contentWindow === event.source) return _fromEmbedded(msg);
 
     if (msg.id !== undefined && _pending[msg.id]) {
       if (msg.error) _pending[msg.id].reject(msg.error);
@@ -121,16 +126,14 @@ const BRIDGE_SCRIPT = `
     }
 
     if (msg.method === 'ui/notifications/host-context-changed') {
+      _hostContext = Object.assign({}, _hostContext, msg.params);
       applyTheme(msg.params);
       _applyDisplayMode(msg.params);
+      if (_embedded) _toEmbedded(msg);
     } else if (msg.method === 'ui/notifications/tool-result') {
       // The channel of the widget, which the assistant waits on (see sendToModel)
       var structured = msg.params && msg.params.structuredContent;
-      if (structured && structured.channel && structured.channel !== _channel) {
-        _channel = structured.channel;
-        // A widget shown again after it did its part (e.g. moved to the conversation by the host) is shown reduced
-        callTool('get-channel', { channel: _channel }).then(function (state) { if (state.final) collapseWidget(state.final.summary); }, function () {});
-      }
+      if (structured && structured.channel) _channel = structured.channel;
       if (_early) _early.result = msg.params;
       else if (_toolResultHandler) _toolResultHandler(msg.params);
     } else if (msg.method === 'ui/notifications/tool-input') {
@@ -271,18 +274,14 @@ const BRIDGE_SCRIPT = `
   // the widget (post-to-assistant, wait-for-widget), so that the user has no message to validate. Otherwise it goes in the model
   // context and a user message ends with the reference (some models do not reliably see the model context), which the user
   // validates.
-  // final: the widget has done its part (its result goes on to the next widget): it is then shown reduced to the message, so that
-  // it takes little room in the conversation when the host moves it there (kept by the server, also when it is shown again)
-  function sendToModel(context, message, sentStatus, data, final) {
+  function sendToModel(context, message, sentStatus, data) {
     var post = { text: context, message: message };
     if (_channel) post.channel = _channel;
     if (data) post.data = data;
-    if (final) post.final = true;
     return callTool('post-to-assistant', post)
       // Without a reference, Claude can still read the result in the model context
       .catch(function () { return { text: context.split('{{ref}}').join('(none: pass the variants)') }; })
       .then(function (posted) {
-        if (final) collapseWidget(message);
         if (posted.delivered) { if (sentStatus) setStatus(sentStatus); return; }
         return request('ui/update-model-context', { content: [{ type: 'text', text: posted.text }] })
           .then(function () {
@@ -292,24 +291,46 @@ const BRIDGE_SCRIPT = `
       });
   }
 
-  // The widget reduced to a line (what it sent), with a button to show it whole again
-  function collapseWidget(summary) {
-    if (document.querySelector('.widget-summary')) return;
-    var line = document.createElement('div');
-    line.className = 'widget-summary';
-    line.innerHTML = '<sp-icon-checkmark-circle aria-hidden="true"></sp-icon-checkmark-circle><span></span>'
-      + '<sp-action-button quiet size="s" class="widget-summary-toggle">Show</sp-action-button>';
-    line.querySelector('span').textContent = summary;
-    var toggle = line.querySelector('.widget-summary-toggle');
-    toggle.addEventListener('click', function () {
-      var open = document.body.classList.toggle('expanded');
-      toggle.textContent = open ? 'Hide' : 'Show';
-      reportSize();
-    });
-    var heading = themeEl.querySelector('.heading');
-    if (heading) heading.insertAdjacentElement('afterend', line); else themeEl.insertBefore(line, themeEl.firstChild);
-    document.body.classList.add('collapsed');
+  // The step of the workflow shown by this view, told to the view it is shown in (its steps)
+  function announceStep(step) { if (_isEmbedded) notification('ui/notifications/embedded-step', { step: step }); }
+
+  // Shows another view (its page) in this one, in a frame, as the host would: its requests go to the host through this view, its
+  // tool input and result are those given (input, result, with the channel of this view), its height follows its content.
+  function embedView(container, view, html, input, result, onStep) {
+    container.innerHTML = '';
+    var frame = document.createElement('iframe');
+    frame.className = 'embedded-view';
+    frame.title = view;
+    frame.setAttribute('scrolling', 'no');
+    frame.srcdoc = html;
+    container.appendChild(frame);
+    _embedded = { frame: frame, view: view, input: input, result: result, onStep: onStep };
     reportSize();
+  }
+  function _toEmbedded(msg) { if (_embedded && _embedded.frame.contentWindow) _embedded.frame.contentWindow.postMessage(msg, '*'); }
+  function _fromEmbedded(msg) {
+    var e = _embedded;
+    if (msg.method === 'ui/initialize') {
+      return _toEmbedded({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2026-01-26', hostCapabilities: {},
+        hostContext: Object.assign({}, _hostContext, { embedded: true, displayMode: 'inline', availableDisplayModes: ['inline'] }) } });
+    }
+    if (msg.method === 'ui/notifications/initialized') {
+      if (e.input) _toEmbedded({ jsonrpc: '2.0', method: 'ui/notifications/tool-input', params: { arguments: e.input } });
+      var structured = Object.assign({}, e.result || {}, _channel ? { channel: _channel } : {});
+      _toEmbedded({ jsonrpc: '2.0', method: 'ui/notifications/tool-result', params: { structuredContent: structured, content: [] } });
+      return;
+    }
+    if (msg.method === 'ui/notifications/size-changed') {
+      e.frame.style.height = Math.ceil(msg.params.height) + 'px';
+      return reportSize();
+    }
+    if (msg.method === 'ui/notifications/embedded-step') return e.onStep && e.onStep(msg.params.step);
+    if (msg.id === undefined || !msg.method) return;
+    request(msg.method, msg.params).then(function (result) {
+      _toEmbedded({ jsonrpc: '2.0', id: msg.id, result: result });
+    }, function (error) {
+      _toEmbedded({ jsonrpc: '2.0', id: msg.id, error: error && error.code ? error : { code: -32603, message: errorText(error) } });
+    });
   }
 
   function initialize(appName) {
@@ -318,8 +339,11 @@ const BRIDGE_SCRIPT = `
       appInfo: { name: appName, version: '1.0.0' },
       appCapabilities: { availableDisplayModes: ['inline', 'fullscreen'] }
     }).then(function (result) {
+      _hostContext = result.hostContext || {};
       applyTheme(result.hostContext);
       _applyDisplayMode(result.hostContext);
+      // Shown in another view (embedView): without its heading, steps and full screen button, which are those of that view
+      if (_hostContext.embedded) { _isEmbedded = true; document.body.classList.add('embedded'); }
       notification('ui/notifications/initialized');
       reportSize();
     }).catch(function () {}).then(_readyResolve);
@@ -526,7 +550,7 @@ ${UPLOAD_SCRIPT}
           + uploaded.map(function (u, i) { return (i + 1) + '. ' + u.name + ': ' + u.url; }).join('\\n');
         setStatus(uploaded.length > 1 ? uploaded.length + ' files uploaded.' : names + ' uploaded.');
         // The URLs go to Claude only (not shown to the user), with a short prompt so that it continues
-        return sendToModel(context, 'I uploaded ' + names + ', continue.', null, null, true);
+        return sendToModel(context, 'I uploaded ' + names + ', continue.');
       })
       .catch(function (error) {
         setStatus(errorText(error), true);
@@ -615,6 +639,8 @@ function getStartViewHtml (scriptUrl) {
   .format-state { display: flex; align-items: center; gap: var(--spectrum-spacing-100); font-size: var(--spectrum-font-size-75);
     color: var(--spectrum-neutral-subdued-content-color-default); white-space: nowrap; }
   .format-state.negative { color: var(--spectrum-negative-content-color-default); white-space: normal; }
+  /* Steps 4 to 6 in place: the wait for the assistant, then the page of the step */
+  .assistant-waiting { display: flex; align-items: center; gap: var(--spectrum-spacing-100); color: var(--spectrum-neutral-subdued-content-color-default); }
   /* Step 2: a card per format (the master first), with its preview, the comment of the assistant and a field for a change */
   .formats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: var(--spectrum-spacing-300); align-items: start; }
   .format-card { display: flex; flex-direction: column; gap: var(--spectrum-spacing-100); min-width: 0; }
@@ -678,7 +704,7 @@ ${STEPS_CSS}
 ${LAYERS_CSS}
 `, `
 <h2 class="heading">Create variants</h2>
-${stepsHtml({ 1: 1, 2: 2, 3: 3 })}
+${stepsHtml({ 1: 1, 2: 2, 3: 3 }, [4, 5, 6])}
 <div data-step="1">
 <div class="subtle intro">Drop the layered PSD template, or one template per format, then set the number of variants and their languages.</div>
 <!-- The templates first: their import and reading are seen at once -->
@@ -739,6 +765,11 @@ ${stepsHtml({ 1: 1, 2: 2, 3: 3 })}
 `)}
 </div>
 <sp-help-text id="quota" variant="negative" icon hidden></sp-help-text>
+<!-- The next steps (texts, images, variants), shown in place once the assistant sends them (embedView) -->
+<div id="next-steps" hidden>
+  <div class="assistant-waiting" id="assistant-waiting"><sp-progress-circle size="s" indeterminate label="Waiting for the assistant"></sp-progress-circle><span id="assistant-waiting-text">The assistant is writing the texts...</span></div>
+  <div id="embedded-step"></div>
+</div>
 <div class="actions">
   <sp-button variant="secondary" treatment="outline" id="back" hidden>Back</sp-button>
   <sp-button variant="accent" id="next" disabled>Next</sp-button>
@@ -1213,7 +1244,7 @@ ${LAYERS_SCRIPT}
   }
 
   // Model of the file names, with {date} replaced, and {template} with a single template: {variant}, {language} (and
-  // {template} with several templates) are replaced by create-variant
+  // {template} with several templates) are replaced by generate-variants
   function fileNamePattern() {
     var now = new Date();
     var date = now.getFullYear() + '-' + ('0' + (now.getMonth() + 1)).slice(-2) + '-' + ('0' + now.getDate()).slice(-2);
@@ -1791,6 +1822,60 @@ ${LAYERS_SCRIPT}
   nextBtn.addEventListener('click', function () { showStep(currentStep === 1 && !hasFormats() ? 3 : currentStep + 1); });
   backBtn.addEventListener('click', function () { showStep(currentStep === 3 && hasFormats() ? 2 : 1); });
 
+  // Steps 4 to 6, in this widget: once the layers are sent, the widget waits for the assistant to send the next step (texts,
+  // images, then the variants: get-channel), and shows its page in place (embedView). The page tells which step it shows.
+  var nextSteps = document.getElementById('next-steps');
+  var embeddedStep = document.getElementById('embedded-step');
+  var assistantWaiting = document.getElementById('assistant-waiting');
+  var shownView = null;
+  var viewPages = {};
+  var viewPollDelay = 2500;
+  // Text layers picked (otherwise the images only, step 5)
+  function hasTextLayers() {
+    return templates.some(function (t) {
+      return (t.data && t.data.layers || []).some(function (l) { return t.checked[l.id] && l.type === 'text_layer'; });
+    });
+  }
+  function markStep(step) {
+    Array.prototype.forEach.call(document.querySelectorAll('.steps li'), function (li) {
+      var n = Number(li.getAttribute('data-global') || li.getAttribute('data-for'));
+      li.classList.toggle('current', n === step);
+      li.classList.toggle('done', n < step);
+      li.classList.remove('reachable');
+      li.tabIndex = -1;
+    });
+  }
+  function showNextSteps() {
+    Array.prototype.forEach.call(document.querySelectorAll('[data-step]'), function (el) { el.hidden = true; });
+    backBtn.hidden = nextBtn.hidden = continueBtn.hidden = true;
+    nextSteps.hidden = false;
+    document.getElementById('assistant-waiting-text').textContent = hasTextLayers() ? 'The assistant is writing the texts...' : 'The assistant is preparing the images...';
+    markStep(hasTextLayers() ? 4 : 5);
+    reportSize();
+    pollView();
+  }
+  // Every 2.5 s, slower (up to 10 s) while the assistant sends nothing
+  function pollView() {
+    setTimeout(function () {
+      callTool('get-channel', { channel: _channel }).then(function (state) {
+        var view = state.view;
+        if (view && (!shownView || view.at !== shownView.at)) { viewPollDelay = 2500; return showView(view); }
+        viewPollDelay = Math.min(10000, viewPollDelay * 1.3);
+      }, function () {}).then(pollView);
+    }, viewPollDelay);
+  }
+  function showView(view) {
+    shownView = view;
+    viewPages[view.view] = viewPages[view.view] || callTool('get-view-html', { view: view.view }).then(function (result) { return result.html; });
+    return viewPages[view.view].then(function (html) {
+      if (shownView !== view) return;
+      assistantWaiting.hidden = true;
+      setStatus('');
+      embedView(embeddedStep, view.view, html, view.input, view.result, markStep);
+      markStep({ texts: 4, images: 5, variant: 6 }[view.view]);
+    }, function (error) { setStatus(errorText(error), true); });
+  }
+
   continueBtn.addEventListener('click', function () {
     var n = count();
     var codes = languages();
@@ -1801,7 +1886,7 @@ ${LAYERS_SCRIPT}
     var intro = 'Variant creation started. Number of variants per language: ' + n + '. Languages: '
       + codes.map(function (code, i) { return names[i] + ' (' + code + ')'; }).join(', ') + '. Total: ' + n * codes.length
       + ' variants, each of the ' + n + ' variants in each language. ';
-    var fontsText = fonts.length ? ' Fonts added by the user: pass fonts ' + JSON.stringify(fontUrls()) + ' to every create-variant call.' : '';
+    var fontsText = fonts.length ? ' Fonts added by the user: pass fonts ' + JSON.stringify(fontUrls()) + ' to every generate-variants call.' : '';
     if (imageLayerNames().length) {
       var promptLayers = aiPromptLayers();
       fontsText += promptLayers.length
@@ -1823,9 +1908,8 @@ ${LAYERS_SCRIPT}
       title = t.name;
       picked = pickedLayers.map(function (l) { return l.name; }).join(', ');
       context = intro + 'PSD template: ' + t.name + ', URL (valid 24 hours): ' + t.url + '. File names: pass fileNamePattern "' + fileNamePattern()
-        + '" to every create-variant call. Layers selected by the user in the template (with their original texts and frames; '
-        + 'do not call get-psd-manifest): ' + JSON.stringify(pickedLayers) + '. Next step: step 3 (texts) if text layers were '
-        + 'selected, otherwise step 4 (images).' + fontsText;
+        + '" to every generate-variants call. Layers selected by the user in the template (with their original texts and frames): ' + JSON.stringify(pickedLayers) + '. Next step: step 4 (texts) if text layers were '
+        + 'selected, otherwise step 5 (images).' + fontsText;
     } else {
       var tNames = templateNames();
       var links = linkedLayers();
@@ -1860,19 +1944,25 @@ ${LAYERS_SCRIPT}
       picked = forModel.map(function (l) { return l.name; }).join(', ');
       context = intro + templates.length + ' PSD templates, one per format, each variant being created in each of them: '
         + templates.map(function (t, ti) { return tNames[ti] + ' (' + sizeOf(t) + ')'; }).join(', ') + '. '
-        + 'For every create-variant call, pass templates (instead of templateUrl) exactly as this JSON (URLs valid 24 hours): '
+        + 'For every generate-variants call, pass templates (instead of templateUrl) exactly as this JSON (URLs valid 24 hours): '
         + JSON.stringify(templatesJson) + ' and fileNamePattern "' + fileNamePattern() + '". '
-        + 'Layers selected by the user, those of the same name and type in several templates linked as one (do not call get-psd-manifest; '
-        + 'use these ids everywhere: in edit-variant-texts, upload-variant-images and the edits of create-variant): ' + JSON.stringify(forModel) + '. '
+        + 'Layers selected by the user, those of the same name and type in several templates linked as one (use '
+        + 'these ids everywhere: in show-variant-texts, show-variant-images and the edits of generate-variants): ' + JSON.stringify(forModel) + '. '
         + 'Each text goes to its layer in every template listed for it: where the templates break its original text differently '
         + '(textsByTemplate), write the text without line breaks, unless the user asks for them, so that each template spreads it over its own lines. '
         + (images.length ? 'For the image grid, pass these layers as is (with their frames: the user frames each image for each ratio): '
           + JSON.stringify(images.map(function (l) { return { id: l.id, name: l.name, width: l.frame && l.frame.width, height: l.frame && l.frame.height, frames: l.frames }; }))
-          + ', and pass the crops of each image (crops) to create-variant as given by the grid. ' : '')
+          + ', and pass the crops of each image (crops) to generate-variants as given by the grid. ' : '')
         + 'To change a variant in some templates only (e.g. a text too long in one format), pass the names of these templates in its templates. '
-        + 'Next step: step 3 (texts) if text layers were selected, otherwise step 4 (images).' + fontsText;
+        + 'Next step: step 4 (texts) if text layers were selected, otherwise step 5 (images).' + fontsText;
     }
-    sendToModel(context, 'I want ' + n + ' variant(s) of ' + title + ' in ' + names.join(', ') + ', changing ' + picked + ', continue.', 'Template' + (templates.length > 1 ? 's' : '') + ' sent.', null, true)
+    // The next steps go on in this widget, when it has a channel (the assistant sends them with show-variant-texts...)
+    if (_channel) {
+      context += ' Next: call ' + (hasTextLayers() ? 'show-variant-texts' : 'show-variant-images') + ' with channel "' + _channel
+        + '", then, when the user confirms there, generate-variants with this channel.';
+    }
+    sendToModel(context, 'I want ' + n + ' variant(s) of ' + title + ' in ' + names.join(', ') + ', changing ' + picked + ', continue.', 'Template' + (templates.length > 1 ? 's' : '') + ' sent.')
+      .then(function () { if (_channel) showNextSteps(); })
       .catch(function (error) {
         backBtn.disabled = false;
         updateButton();
@@ -2363,7 +2453,7 @@ const IMAGES_SCRIPT = `
       .then(render);
   }
 
-  // Shows the grid of the variants and layers given ({ variants, layers, images, prompts }, as upload-variant-images gets them)
+  // Shows the grid of the variants and layers given ({ variants, layers, images, prompts }, as show-variant-images gets them)
   function init(args) {
     variants = (args.variants || []).map(String);
     layers = (args.layers && args.layers.length) ? args.layers : [{ name: 'Image' }];
@@ -2544,15 +2634,15 @@ const IMAGES_SCRIPT = `
     });
     var context = 'Images chosen by the user for each variant and smart object layer (URLs valid 24 hours):\\n'
       + mapping.map(function (m) { return '- variant "' + m.variant + '", layer "' + m.layerName + '": ' + m.fileName; }).join('\\n')
-      + '\\nFor create-variant, use for each variant exactly the entries below whose "variant" is its label '
+      + '\\nFor generate-variants, use for each variant exactly the entries below whose "variant" is its label '
       + '(smart_object_layer edit = { id: layerId, type: "smart_object_layer", imageUrl: url, crop' + (multiFrame ? ', crops' : '') + ' }'
       + (multiFrame ? ': crops has the crop of the image for each frame ratio of the templates, pass it as is' : '') + '). '
-      + 'To re-crop later, pass this "images" array as is to upload-variant-images:\\n'
+      + 'To re-crop later, pass this "images" array as is to show-variant-images:\\n'
       + JSON.stringify({ images: images });
     return context;
   }
 
-  // The images chosen, as data for the server (create-variant with widgetRef)
+  // The images chosen, as data for the server (generate-variants)
   function data() {
     var rounded = function (c) { return c && { left: Math.round(c.left), top: Math.round(c.top), right: Math.round(c.right), bottom: Math.round(c.bottom) }; };
     return slots.map(function (slot, i) {
@@ -2599,15 +2689,15 @@ ${IMAGES_SCRIPT}
   onToolInput(function (args) {
     if (args.title) document.getElementById('title').textContent = args.title;
     imagesPicker.init(args);
+    announceStep(5);
   });
 
   confirmBtn.addEventListener('click', function () {
     if (imagesPicker.pendingPrompts()) return imagesPicker.generateAll();
     confirmBtn.disabled = true;
-    sendToModel('To generate the variants with these images, call create-variant with widgetRef "{{ref}}" (with the reference of the '
-      + 'texts too, if they were confirmed apart, and languages for the languages of the start widget when there are no texts) instead of '
-      + 'copying the images: the server builds the variants from them.\\n' + imagesPicker.result(),
-      'I added and framed the images for the ' + imagesPicker.count() + ' variant(s), continue.', 'Images sent.', { images: imagesPicker.data() }, true)
+    sendToModel('To generate the variants with these images, call generate-variants with the channel, without variants (and languages, '
+      + 'the languages of the start widget, when there are no texts): the server builds the variants from them.\\n' + imagesPicker.result(),
+      'I added and framed the images for the ' + imagesPicker.count() + ' variant(s), continue.', 'Images sent.', { images: imagesPicker.data() })
       .catch(function (error) {
         confirmBtn.disabled = false;
         setStatus(errorText(error), true);
@@ -2621,13 +2711,15 @@ ${IMAGES_SCRIPT}
 // element [data-step="N"]).
 const STEPS = ['Template', 'Formats', 'Layers', 'Texts', 'Images', 'Review']
 
-// own: { [step of the workflow]: step in the view }, the first one current
-function stepsHtml (own) {
+// own: { [step of the workflow]: step in the view }, the first one current; others: the steps of the views shown in this one
+// (embedView), as <li data-global="N">
+function stepsHtml (own, others = []) {
   const steps = Object.keys(own).map(Number).sort((a, b) => a - b)
   const clickable = steps.length > 1
+  const label = n => `<span class="step-kicker">Step ${n}</span><span class="step-title">${STEPS[n - 1]}</span>`
   return '<ol class="steps" aria-label="Steps">' + steps.map((n, i) =>
-    `<li data-for="${own[n]}"${i === 0 ? ' class="current"' : ''}${clickable ? ' role="button" tabindex="-1"' : ''}>` +
-    `<span class="step-kicker">Step ${n}</span><span class="step-title">${STEPS[n - 1]}</span></li>`).join('') + '</ol>'
+    `<li data-for="${own[n]}"${i === 0 ? ' class="current"' : ''}${clickable ? ' role="button" tabindex="-1"' : ''}>${label(n)}</li>`).join('') +
+    others.map(n => `<li data-global="${n}">${label(n)}</li>`).join('') + '</ol>'
 }
 
 const STEPS_CSS = `
@@ -2653,7 +2745,7 @@ const STEPS_CSS = `
 `
 
 // Picker of the layers of a template (preview with numbered zones, and list), shared by the start and layers views:
-// showTemplate(data) shows the layers and the preview of a template read in a task (get-psd-manifest, read-psd-template),
+// showTemplate(data) shows the layers and the preview of a template read in a task (read-psd-template),
 // selectedForModel() gives the layers picked; the view defines onLayersChange(count).
 const LAYERS_CSS = `
   .list { border: 1px solid var(--spectrum-gray-200); border-radius: var(--spectrum-corner-radius-200); overflow: hidden; display: none; }
@@ -2957,57 +3049,6 @@ const LAYERS_SCRIPT = `
   }
 
 `
-
-function getLayersViewHtml (scriptUrl) {
-  return page(scriptUrl, 'PSD Layers', `
-  .subtle.intro { margin-bottom: var(--spectrum-spacing-200); }
-${LAYERS_CSS}
-`, `
-<h2 class="heading" id="title">Editable layers</h2>
-<div class="subtle intro" id="intro">Pick the layers to use for the variants.</div>
-${layersHtml()}<div class="actions"><sp-button variant="accent" id="confirm" disabled>Continue</sp-button></div>
-<sp-help-text class="status" id="status"></sp-help-text>
-`, `
-  setStatus('Reading the template...', false, true);
-${LAYERS_SCRIPT}
-  var confirmBtn = document.getElementById('confirm');
-  function onLayersChange(count) { confirmBtn.disabled = !count; }
-
-  // The template is read in a task: the layers come with the tool result when read in time, otherwise from the task, then
-  // the preview from the task.
-  onToolResult(function (result) {
-    if (result.isError) {
-      setStatus(result.content && result.content[0] ? result.content[0].text : 'Error', true);
-      return;
-    }
-    showTemplate(result.structuredContent || {});
-  });
-
-  confirmBtn.addEventListener('click', function () {
-    var chosen = selected();
-    if (!chosen.length) return;
-    confirmBtn.disabled = true;
-    var images = chosen.filter(function (l) { return l.type === 'smart_object_layer'; });
-    var context = 'Layers selected by the user for the variants: ' + JSON.stringify(chosen.map(function (l) {
-      return { id: l.id, name: l.name, type: l.type };
-    })) + '. Next: if text layers were selected, get the texts of each variant (from the user, or written from a brief), each as long as '
-      + 'the original text of its layer, give each variant a short label, then call edit-variant-texts'
-      + (images.length
-        ? (chosen.length > images.length ? ' with images (the grid of these smart object layers, as a second step)' : '')
-          + '; with smart object layers only, call upload-variant-images ONCE with all variant labels and layers ' + JSON.stringify(images.map(function (l) { return { id: l.id, name: l.name, width: l.frame && l.frame.width, height: l.frame && l.frame.height }; }))
-          + ' (one grid for all variants; never call upload-file per image)'
-        : '')
-      + '; then call create-variant ONCE with all variants, without a recap.';
-    var message = 'I picked these layers: ' + chosen.map(function (l) { return l.name; }).join(', ') + '. '
-      + (chosen.length > images.length ? "Let's fill in the texts of each variant." : 'Continue.');
-    sendToModel(context, message, 'Selection sent.', null, true)
-      .catch(function (error) {
-        confirmBtn.disabled = false;
-        setStatus(errorText(error), true);
-      });
-  });
-`)
-}
 
 function getTextsViewHtml (scriptUrl) {
   return page(scriptUrl, 'Variant Texts', `
@@ -3478,6 +3519,7 @@ ${IMAGES_SCRIPT}
 
   function showStep(n) {
     step = n;
+    announceStep(n === 1 ? 4 : 5);
     Array.prototype.forEach.call(document.querySelectorAll('[data-step]'), function (el) { el.hidden = el.getAttribute('data-step') !== String(n); });
     backBtn.hidden = n !== 2;
     updateConfirm();
@@ -3526,16 +3568,16 @@ ${IMAGES_SCRIPT}
     updateConfirm();
     var confirmed = currentTexts();
     var context = 'Texts confirmed by the user for each variant'
-      + (withImages ? ', and their images (below)' : '') + '. To generate them, call create-variant with widgetRef "{{ref}}" '
-      + 'instead of variants: the server builds every variant from what the user confirmed (texts, font scales, '
+      + (withImages ? ', and their images (below)' : '') + '. To generate them, call generate-variants with the channel, '
+      + 'without variants: the server builds every variant from what the user confirmed (texts, font scales, '
       + (withImages ? 'images and crops, ' : '') + 'groups and languages from the labels). Do not copy the texts'
       + (withImages ? ', image URLs or crops' : '') + ' into the call. Texts, for reference:\\n' + JSON.stringify({ variants: confirmed })
-      + (withImages ? '\\n\\n' + imagesPicker.result() + '\\nThe images are chosen: do not call upload-variant-images, call create-variant now (with widgetRef).' : '');
+      + (withImages ? '\\n\\n' + imagesPicker.result() + '\\nThe images are chosen: call generate-variants now.' : '');
     var message = withImages
       ? 'I confirmed the texts and the images of the ' + confirmed.length + ' variant(s), continue.'
       : 'I confirmed the texts of the ' + confirmed.length + ' variant(s), continue.';
     sendToModel(context, message, withImages ? 'Texts and images sent.' : 'Texts sent.',
-      { variants: confirmed, images: withImages ? imagesPicker.data() : undefined }, true)
+      { variants: confirmed, images: withImages ? imagesPicker.data() : undefined })
       .catch(function (error) {
         confirmBtn.removeAttribute('data-sending');
         updateConfirm();
@@ -3938,7 +3980,7 @@ ${REPORT_SCRIPT}
 
   downloadAllBtn.addEventListener('click', downloadAll);
 
-  // Sends the changes of the variants to the model, which generates them again with create-variant. With the problems found
+  // Sends the changes of the variants to the model, which generates them again with generate-variants. With the problems found
   // in each text (layer id and name), so that it finds the layers named in the changes.
   function sendChanges() {
     var toChange = variants.filter(function (v) { return !v.error && requestOf(v); });
@@ -3950,42 +3992,18 @@ ${REPORT_SCRIPT}
         texts: (v.textIssues || []).map(function (issue) { return { layerId: issue.layerId, layerName: issue.layerName, problems: issue.problems }; })
       };
     });
-    var context = 'Changes requested by the user in the create-variant widget, one per variant. Make exactly the changes written in '
+    var context = 'Changes requested by the user for the generated variants, one per variant. Make exactly the changes written in '
       + '"change", nothing else: change the font size of a text only when the change asks for it ("Reduce the font size of X to N%" is '
       + 'fontScale N/100); to change the words of a text (shorter, longer, other words), rewrite it as asked and keep its fontScale as '
-      + 'before. "texts" gives the layer id of the texts by name. Then call update-variants ONCE with these variants only, with the same '
-      + 'file names and the same edits as before except the changes, and previousTaskId "' + generationTaskId + '" (its widget shows the '
-      + 'new variants in place, with the others unchanged). If a change is unclear, ask the user first.\\n' + JSON.stringify(changes);
+      + 'before. "texts" gives the layer id of the texts by name. Then call generate-variants ONCE with the channel, these variants only, '
+      + 'the same file names and the same edits as before except the changes, and previousTaskId "' + generationTaskId + '" (the widget '
+      + 'shows them with the others, unchanged). If a change is unclear, ask the user first.\\n' + JSON.stringify(changes);
     busy = true;
     updateFixActions();
-    var from = generationTaskId;
     sendToModel(context, 'Please apply my changes to ' + changes.length + ' variant(s).', 'Changes sent.')
-      .then(function () { toChange.forEach(function (v) { requests[v.fileName] = ''; }); render(); waitForNextGeneration(from); })
+      .then(function () { toChange.forEach(function (v) { requests[v.fileName] = ''; }); render(); })
       .catch(function (error) { setStatus(errorText(error), true); })
       .then(function () { busy = false; updateFixActions(); });
-  }
-
-  // The generation made with the changes sent from this widget (update-variants), shown here in place
-  var NEXT_POLL_MS = 3000;
-  var NEXT_WAIT_MS = 15 * 60 * 1000;
-  var nextPolling = null;
-  function waitForNextGeneration(from) {
-    if (nextPolling === from) return;
-    nextPolling = from;
-    var started = Date.now();
-    function poll() {
-      if (nextPolling !== from || generationTaskId !== from) return;
-      callTool('get-next-generation', { taskId: from }).then(function (result) {
-        if (nextPolling !== from || generationTaskId !== from) return;
-        if (result.next) { nextPolling = null; setStatus(''); return loadGeneration(result.next); }
-        // Slower and slower (3 s to 30 s) while the assistant does not apply the changes
-        delay = Math.min(30000, delay * 1.3);
-        if (Date.now() - started < NEXT_WAIT_MS) setTimeout(poll, delay);
-        else nextPolling = null;
-      }, function () { if (Date.now() - started < NEXT_WAIT_MS) setTimeout(poll, delay); });
-    }
-    var delay = NEXT_POLL_MS;
-    setTimeout(poll, delay);
   }
 
   sendBtn.addEventListener('click', sendChanges);
@@ -4210,7 +4228,7 @@ ${REPORT_SCRIPT}
     reportEl.hidden = false;
   }
 
-  // Texts checked by the assistant (review-variants, report-variant-issues), which create-variant tells to do it in the same
+  // Texts checked by the assistant (review-variants, report-variant-issues), which generate-variants tells to do it in the same
   // turn: once the generation is done, the widget waits for the problems it reports (get-variant-review) and shows them
   var REVIEW_POLL_MS = 3000;
   var REVIEW_WAIT_MS = 5 * 60 * 1000;
@@ -4284,6 +4302,7 @@ ${REPORT_SCRIPT}
   });
 
   function loadGeneration(data) {
+    announceStep(6);
     generating = true;
     generationTaskId = data.taskId;
     // Variants of the earlier generation not generated again, in its order with the new ones
@@ -4317,7 +4336,7 @@ ${REPORT_SCRIPT}
         render();
         showReport(generation.report);
         if (generation.review) return startReview(generation);
-        return request('ui/update-model-context', { content: [{ type: 'text', text: 'Result of create-variant: ' + generation.summary }] });
+        return request('ui/update-model-context', { content: [{ type: 'text', text: 'Result of generate-variants: ' + generation.summary }] });
       })
       .catch(function (error) {
         generating = false;
@@ -4468,4 +4487,4 @@ ${REPORT_SCRIPT}
 `)
 }
 
-module.exports = { getStartViewHtml, getUploadViewHtml, getVariantImagesViewHtml, getLayersViewHtml, getTextsViewHtml, getVariantViewHtml, getUsageViewHtml }
+module.exports = { getStartViewHtml, getUploadViewHtml, getVariantImagesViewHtml, getTextsViewHtml, getVariantViewHtml, getUsageViewHtml }

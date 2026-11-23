@@ -4,7 +4,7 @@ const { Readable } = require('stream')
 const { z } = require('zod')
 const filesLib = require('@adobe/aio-lib-files')
 const { reviewImage } = require('./review.js')
-const { getStartViewHtml, getUploadViewHtml, getVariantImagesViewHtml, getLayersViewHtml, getTextsViewHtml, getVariantViewHtml, getUsageViewHtml } = require('./views.js')
+const { getStartViewHtml, getUploadViewHtml, getVariantImagesViewHtml, getTextsViewHtml, getVariantViewHtml, getUsageViewHtml } = require('./views.js')
 const stateStore = require('./state')
 const { getTokenFromRequest, getUnverifiedClaims, getUnverifiedClientId } = require('./validator.js')
 const { createPickerSession, getPickerResult } = require('./aem-picker.js')
@@ -40,41 +40,37 @@ const AEM_PICKER_PAGE = 'aem-picker.html'
 
 const RESOURCE_MIME_TYPE = 'text/html;profile=mcp-app'
 const VIEWS = {
-  start: { uri: 'ui://start-variants/app.html', name: 'Create Variants App', description: 'Variant count and PSD template upload', html: getStartViewHtml },
+  start: { uri: 'ui://start-variants/app.html', name: 'Create Variants App', description: 'The variant workflow, from the template to the generated variants', html: getStartViewHtml },
   upload: { uri: 'ui://upload-file/app.html', name: 'Upload File App', description: 'File upload widget', html: getUploadViewHtml },
-  variantImages: { uri: 'ui://variant-images/app.html', name: 'Variant Images App', description: 'Image grid per variant and smart object layer', html: getVariantImagesViewHtml },
-  layers: { uri: 'ui://psd-layers/app.html', name: 'PSD Layers App', description: 'Editable layers picker', html: getLayersViewHtml },
-  texts: { uri: 'ui://variant-texts/app.html', name: 'Variant Texts App', description: 'Editable table of the texts per variant', html: getTextsViewHtml },
-  variant: { uri: 'ui://psd-variant/app.html', name: 'PSD Variant App', description: 'Variant preview and download', html: getVariantViewHtml },
   usage: { uri: 'ui://usage/app.html', name: 'Usage App', description: 'Dashboard of the usage of the service', html: getUsageViewHtml }
 }
+// Pages of the steps 4 to 6, shown in the start widget (get-view-html)
+const STEP_PAGES = { texts: getTextsViewHtml, images: getVariantImagesViewHtml, variant: getVariantViewHtml }
 // Version of each view in its URI (hash of its HTML): the hosts keep the resources they read by URI, a changed view gets a new one
 for (const view of Object.values(VIEWS)) {
   const version = crypto.createHash('sha256').update(view.html('')).digest('hex').slice(0, 8)
   view.uri = view.uri.replace(/\/app\.html$/, `/${version}/app.html`)
 }
 
-const WORKFLOW = `Variant creation workflow. When the user asks to create variants (or versions, adaptations, localizations...) of a banner, ad, visual, social post or any PSD template, ALWAYS follow these steps in order, one at a time, without skipping any:
-1. Start: call start-variant-creation (pass variantCount and languages if the user already gave them). The user sets the number of variants per language, the languages, uploads the PSD template (from their computer or AEM Assets), or one template per format, and picks the layers to vary in the widget, then says to continue. The widget gives you the template name and URL and the selected layers, with their original texts and frames, in your context (or through get-widget-result, see below): use them. Never ask for the file or its URL in chat. With several templates (one per format), the widget gives a templates JSON and the selected layers with ids that link the layers of the same name and type across the templates: pass templates to every create-variant call instead of templateUrl, and use these layer ids in every step; each variant is then generated in each template (one file per variant and template). With a single template, the user can also make it in the usual social media formats (step 2 of the widget): the widget then asks you to check the formats (a review id): call review-formats with it, look at the master and each format as a designer, then call adjust-formats ONCE with your verdict for every format (ok, or a new layout); the user can ask for changes on some formats the same way. Then wait: the user continues to the layers in the widget, and the formats made are templates like the others (the templates JSON).
-2. Layer selection: done in the start widget. Call get-psd-manifest with the template URL only when the user wants to pick other layers later, or did not pick them in the start widget.
-3. Texts: right after the start widget, if text layers were selected, get the texts of each variant: the user provides them, or you write them from a brief (subject, tone, language). The user's requests always come first (length, number of words or lines, wording): follow them exactly, even if the text may not fit, and never shorten or change a text the user asked for to make it fit. Otherwise, write each text about as long as the original text of its layer (given by get-psd-manifest): the same number of lines and about the same number of characters per line (within 10%), so that it fits the layout. Write the line breaks yourself (\\n), where the original text has them: a point text layer does not wrap its lines by itself (a text without any line break is spread over the lines of the original text, by length). Each variant is created in each language chosen in the start widget (the total is the number of variants times the number of languages): write the texts of each variant in each language (the same message, translated and adapted, not word for word), and give each a short label ending with its language code (e.g. "Winter sale FR"), in the order variant by variant then language by language. Then call edit-variant-texts with the texts and the original text of each layer; if smart object layers were selected too, pass images as well (as for upload-variant-images in step 4, see there): the widget then asks for the images in a second step, and gives you the texts and the images together. Then wait. When the user has the texts in a spreadsheet or an Excel file, do not ask for them in chat: call edit-variant-texts with the labels and the original texts as texts; the user imports the Excel file (.xlsx, a column per layer) or pastes the cells in the widget.
-4. Images: done in the second step of edit-variant-texts when text layers were selected too. Otherwise (smart object layers only), call upload-variant-images ONCE with the labels of the variants without their languages (one row per variant, e.g. "Winter sale" for "Winter sale FR" and "Winter sale DE": all the languages of a variant share its images) and the selected smart object layers (id, name and frame width and height from get-psd-manifest), so the user drops (or picks from AEM Assets, or generates with Firefly from your prompts) one image per variant and layer in a grid and adjusts how each one is cropped to its frame. Do not write prompts for Firefly by default: each slot offers to generate its image with Firefly from a prompt the user writes there. Pass prompts (one per variant and layer, in English, from the brief and the texts of the variant) only for the layers for which the user asks for generated images, in chat or with the option of the start widget: each of their slots then offers to generate its image (Generate with Firefly shows its prompt, which the user can edit), and the main button generates them all. When the user confirms, the widget gives you the URL, size and crop of each image the same way. Never ask for image URLs in chat. Then wait.
-5. Generation: as soon as the images are confirmed (or the texts, without smart object layers), call create-variant ONCE with widgetRef, the reference at the end of the user's confirmation message (both references when the texts and the images were confirmed apart; with images only, also the languages of the start widget), instead of variants: the server builds all the variants (up to ${MAX_VARIANTS}) from what the user confirmed (texts, font scales, images, crops, groups and languages), so do not copy texts, image URLs or crops into the call. Pass also the templateUrl (or templates), fileNamePattern and fonts given by the start widget, and the formats; do not recap the variants or ask for another approval. Without a reference (e.g. a widget result missing), pass the variants as before: for each image the crop chosen in the grid (each language of a variant gets the images and crops of its row of the grid, and its label in the grid as group) and for each variant its language and its group (its label without its language). The widget shows the generated files with download buttons.
-6. Review: right after create-variant, in the same turn and without asking the user, check the texts of the generated files: call review-variants with the task id create-variant gives (it waits for the generation; while it answers that it is not finished, call it again): it shows you each visual with the texts sent. Look at each edited text on its visual: cut or past an edge of the visual or of its panel, letters or words hidden, overlapping another element (logo, image, other text) more than in the template, too small or hard to read on its background, lines broken badly, or not the text sent. Then call report-variant-issues with every variant reviewed (no issues for those that are fine; when review-variants shows the variants in several parts, after each part): per problem, the layer, a short description, the fix you propose (e.g. Reduce the font size of "headline" to 85%.) and the rectangle of the text on the visual, in pixels of the canvas. The widget marks each problem on the visual, with your proposed fix. Each variant has a field of changes, pre-filled with its proposed fixes, that the user edits, then sends to you: nothing is generated again before. Do not list the problems in chat: briefly say that the widget shows them and takes the changes. The user can also click a text on a visual to write a change for it in its field. When the user asks for changes (in the widget or in chat), make exactly the changes asked, nothing else: change a font size only when asked; to change the words of a text, rewrite it as asked (e.g. twice as many words, at most two lines) and keep its font size, even if it may not fit; then call update-variants with the variants to change only, with the same file names and the same edits except the changes (a font size of N% is fontScale N/100), and previousTaskId, the task id of the generation changed: its widget shows these variants generated again in place, and the others unchanged (create-variant with previousTaskId does the same in a new widget). The texts are checked once generated: do not adjust them beforehand. If a text the user asked for does not fit, you may then suggest a fix (a smaller font size or a shorter text), without applying it.
-Widgets: each tool that shows a widget gives a widget channel in its result. Once done with that result (e.g. after the review of the texts for create-variant), call wait-for-widget with this channel, and again each time it says so, without writing any text to the user meanwhile (not even that you are waiting or what the user should do in the widget): it gives you what the user sends from the widget (confirmations, changes, formats to check) as their messages did, so that they do not have to validate a message; do what it says as you would for the message. If it says to stop, wait for the user's message.
-Changes after generation: to re-crop or swap images, call upload-variant-images again with images pre-filled from the previous confirmation (never ask to upload again the images you already have, unless their URLs expired); to change texts, call update-variants with the variants to change only (same file names, groups, languages, fileNamePattern and fonts) and previousTaskId: the widget of that generation shows them in place. To get other formats of variants already generated (e.g. PSD after JPEG), call update-variants with these variants unchanged (same file names and edits), only the new formats, and previousTaskId: each variant keeps its earlier files in the widget and the ZIP.
-Widgets send their result (template URL, layers, texts, images) in your context and end the user's message with a reference in parentheses like "(r7k2p9)": if you do not have that result in your context, call get-widget-result with this ref before going on; never ask the user to redo a step because a result seems missing.
-The URLs from the widgets are temporary presigned URLs: use them in tool calls, but never show them to the user. Reply in the user's language.`
+const WORKFLOW = `Variant creation workflow. When the user asks to create variants (or versions, adaptations, localizations...) of a banner, ad, visual, social post or any PSD template, follow these steps in order. The whole workflow runs in one widget, the start widget: its steps are numbered 1 to 6, and you send it the next steps with its channel (given in the result of start-variant-creation), so that no new widget is shown.
+Listening to the widget: once done with what a result asks, call wait-for-widget with the channel, and again each time it says so, without writing any text to the user meanwhile (not even that you are waiting or what the user should do in the widget): it gives you what the user confirms or asks in the widget, as their messages would, so that they have nothing to validate; do what it says. If it says to stop, wait for the user's message (the widget then sends its result in a message, ending with a reference in parentheses like "(r7k2p9)": if that result is not in your context, call get-widget-result with this ref; never ask the user to redo a step).
+1. Template (step 1): call start-variant-creation (pass variantCount and languages if the user already gave them), then listen to the widget. The user sets the number of variants per language and the languages, imports the PSD template (from their computer or AEM Assets), or one template per format. Never ask for the file or its URL in chat.
+2. Formats (step 2): with a single template, the user can make it in the usual social media formats; the widget then asks you to check them (a review id): call review-formats with it, look at the master and each format as a designer, then call adjust-formats ONCE with your verdict for every format (ok, or a new layout), and listen again; the user can ask for changes on some formats the same way.
+3. Layers (step 3): the user picks the layers to vary; the widget gives you the template name and URL (or, with several templates or formats, a templates JSON whose layer ids link the layers of the same name and type: pass templates instead of templateUrl, each variant is then generated in each template) and the selected layers with their original texts and frames: use them.
+4. Texts (step 4), if text layers were picked: get the texts of each variant: the user gives them, or you write them from a brief (subject, tone, language). The user's requests always come first (length, number of words or lines, wording): follow them exactly, even if the text may not fit. Otherwise write each text about as long as the original text of its layer: the same number of lines and about the same number of characters per line (within 10%), with the line breaks (\\n) where the original has them (a point text layer does not wrap by itself). Each variant is created in each language chosen in the widget: write the texts of each variant in each language (translated and adapted, not word for word), each with a short label ending with its language code (e.g. "Winter sale FR"), variant by variant then language by language. Call show-variant-texts with the channel, the texts and the original text of each layer; if smart object layers were picked too, pass images as well (step 5): the widget asks for them next, and the texts and images are confirmed together. When the user has the texts in a spreadsheet or an Excel file, call it with the original texts: the user imports or pastes them in the widget.
+5. Images (step 5): with the texts (images of show-variant-texts), or alone (show-variant-images with the channel) without text layers: the labels of the variants without their languages (one row per variant: its languages share its images) and the selected smart object layers with their frames. The user drops, picks in AEM or generates with Firefly one image per variant and layer, and frames it. Do not write Firefly prompts by default; pass prompts (one per variant and layer, in English, from the brief and the texts) only for the layers the user wants generated. Never ask for image URLs in chat.
+6. Generation and review (step 6): as soon as the user confirms the texts and images, call generate-variants with the channel, the templateUrl (or templates), fileNamePattern, fonts and formats given by the widget, without variants: the server builds them from what the user confirmed (up to ${MAX_VARIANTS}); do not recap them or ask for another approval. Then, in the same turn, check the texts of the generated files: call review-variants with the task id (while it answers that the generation is not finished, call it again): look at each edited text on its visual: cut or past an edge of the visual or of its panel, letters or words hidden, overlapping another element more than in the template, too small or hard to read on its background, lines broken badly, or not the text sent. Then call report-variant-issues with every variant reviewed (none for those that are fine): per problem, the layer, a short description, the fix you propose (e.g. Reduce the font size of "headline" to 85%.) and the rectangle of the text in pixels of the canvas. The widget marks them and pre-fills a field of changes per variant; do not list them in chat. Then listen: when the user sends changes, make exactly the changes asked, nothing else (change a font size only when asked; to change the words of a text, rewrite it as asked and keep its font size), then call generate-variants with the channel, the variants to change only (same file names, groups, languages and edits except the changes; a font size of N% is fontScale N/100) and previousTaskId, the task id of the generation changed: the widget shows them with the others, unchanged. To get other formats of the variants (e.g. PSD after JPEG), call generate-variants with these variants unchanged, only the new formats, and previousTaskId. To re-crop or swap images, call show-variant-images with the images of the previous confirmation, then generate-variants. If a text the user asked for does not fit, you may suggest a fix without applying it.
+The URLs from the widget are temporary presigned URLs: use them in tool calls, but never show them to the user. Reply in the user's language.`
 
 // Input of the image grid (upload-variant-images, and edit-variant-texts with images): variants, layers, images, prompts
 const IMAGES_INPUT = {
   variants: z.array(z.string().min(1)).min(1).max(MAX_VARIANTS).describe('Short label of each variant without its language, in ' +
     'order (e.g. their titles): one row per variant, whose images all its languages share'),
   layers: z.array(z.object({
-    id: z.number().int().describe('Layer id from get-psd-manifest'),
+    id: z.number().int().describe('Layer id given by the start widget'),
     name: z.string().describe('Layer name'),
-    width: z.number().positive().optional().describe('Frame width of the layer, from get-psd-manifest (frame.width)'),
-    height: z.number().positive().optional().describe('Frame height of the layer, from get-psd-manifest (frame.height)'),
+    width: z.number().positive().optional().describe('Frame width of the layer, given by the start widget (frame.width)'),
+    height: z.number().positive().optional().describe('Frame height of the layer, given by the start widget (frame.height)'),
     frames: z.array(z.object({ width: z.number().positive(), height: z.number().positive() })).optional()
       .describe('With several templates: the frame sizes of the layer in all the templates, as given by the start widget; the ' +
         'user then frames each image for each ratio')
@@ -102,15 +98,6 @@ const IMAGES_INPUT = {
   })).optional().describe('Only when the user asks you to write the prompts (in chat or with the option of the start widget): prompts proposed to generate the images with Firefly, ' +
     'written from the brief; the user edits them in the widget. Without prompts, the user writes the prompt of a slot')
 }
-
-const NEXT_STEPS_AFTER_SELECTION = 'Wait for the user to pick layers in the widget. Then: (1) if text layers were selected, get the ' +
-  'texts of each variant (from the user, or written from a brief: subject, tone, language), each with the same number of lines and ' +
-  'about the same number of characters (within 10%) as the original text of its layer, give each variant a short label, then ' +
-  'call edit-variant-texts with the texts and the original texts, and, if smart object layers were selected too, with images (the grid of step 4, ' +
-  'shown as a second step of the same widget); (2) if only smart object layers were selected, call upload-variant-images ONCE with the labels of the variants without their languages (their languages share their images) and ' +
-  'the selected smart object layers (id, name, and frame width and height): it shows a single grid, one image per variant and layer, ' +
-  'where the user adjusts each crop. Never call upload-file per image and never ask for image URLs; (3) then call create-variant ONCE ' +
-  'with all variants, passing each image crop as given by the grid, without a recap or another approval.'
 
 // Server-to-server token for Firefly Services, reused across warm invocations.
 let cachedToken = null
@@ -844,7 +831,7 @@ function toLayerEdit (layer) {
   return edit
 }
 
-// Output files of create-variant by format. A PSD cannot be shown in the view: when no format is displayable, the
+// Output files of generate-variants by format. A PSD cannot be shown in the view: when no format is displayable, the
 // same job also renders a JPEG preview.
 const VARIANT_OUTPUTS = {
   png: { extension: 'png', displayable: true, output: { mediaType: 'image/png', compression: 'medium' } },
@@ -932,7 +919,7 @@ function checkLayerEdits (manifest, layers) {
   const seen = new Set()
   layers.forEach(layer => {
     const original = findLayer(manifest.layers, layer.id)
-    if (!original) throw new Error(`Layer ${layer.id} is not in the template: use the layer ids of get-psd-manifest.`)
+    if (!original) throw new Error(`Layer ${layer.id} is not in the template: use the layer ids given by the start widget.`)
     if (original.type !== layer.type) throw new Error(`Layer ${layer.id} ("${original.name}") is a ${original.type}, not a ${layer.type}.`)
     if (seen.has(layer.id)) throw new Error(`Layer ${layer.id} ("${original.name}") is edited twice.`)
     seen.add(layer.id)
@@ -1080,7 +1067,7 @@ async function cropImage (params, imageUrl, bounds) {
   return readUrl
 }
 
-// Centered crop of an image to the ratio of a frame, for images without a crop chosen in upload-variant-images.
+// Centered crop of an image to the ratio of a frame, for images without a crop chosen in the image grid.
 async function cropToFrameCenter (params, imageUrl, frame) {
   const ratio = frame.width / frame.height
   const image = await getImageSize(params, imageUrl)
@@ -1316,7 +1303,7 @@ function currentUserId (params) {
 const shortHash = value => crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 16)
 
 // A widget result is kept as the text given to the model and, for the texts and images confirmed, as data (texts and images of
-// each variant), from which create-variant builds the variants (widgetRef) instead of the model copying them
+// each variant), from which generate-variants builds the variants (widgetRef) instead of the model copying them
 async function saveWidgetResult (params, text, data) {
   const ref = 'r' + Array.from({ length: 6 }, () => REF_ALPHABET[crypto.randomInt(REF_ALPHABET.length)]).join('')
   const userId = currentUserId(params)
@@ -1426,7 +1413,7 @@ function taskWriter (task) {
   }
 }
 
-// What get-psd-manifest shows of a template: its title, size and editable layers.
+// What the start widget is given of a template: its title, size and editable layers.
 function templateData (manifest) {
   return {
     document: {
@@ -1610,6 +1597,16 @@ async function openChannel (params) {
   return channel
 }
 
+// What the start widget shows next, in place (show-variant-texts, show-variant-images, generate-variants): { view, input,
+// result, at }, polled by the widget (get-channel), which shows the view of that step in it
+async function setChannelView (params, channel, view) {
+  const state = await initState()
+  const key = channelKey(currentUserId(params), channel)
+  const record = (await state.get(key).catch(() => null))?.value
+  if (!record) throw new Error('This widget channel is not known (expired): call the tool that shows the step in a new widget instead.')
+  await state.put(key, { ...record, view: { ...view, at: Date.now() } }, { ttl: TASK_TTL_SECONDS })
+}
+
 // The result of a tool that shows a widget, with its channel
 async function withChannel (params, result) {
   if (!result || result.isError) return result
@@ -1622,12 +1619,6 @@ async function withChannel (params, result) {
     ? [{ ...result.content[0], text: result.content[0].text + text }, ...result.content.slice(1)]
     : [...(result.content || []), { type: 'text', text }]
   return { ...result, content, structuredContent: { ...(result.structuredContent || {}), channel } }
-}
-
-// The generation made from another one (changes sent from its widget): its widget shows it in place (get-next-generation)
-const nextGenerationKey = (userId, taskId) => `next-${shortHash(userId)}-${taskId}`
-async function setNextGeneration (params, previousTaskId, data) {
-  await (await initState()).put(nextGenerationKey(currentUserId(params), previousTaskId), data, { ttl: TASK_TTL_SECONDS })
 }
 
 // Layers described to the assistant: name, id, type and rectangle in pixels of the canvas (left, top, width, height)
@@ -1918,23 +1909,23 @@ function uiMeta (view) {
 
 const layerEditSchema = z.discriminatedUnion('type', [
   z.object({
-    id: z.number().int().describe('Layer id from get-psd-manifest'),
+    id: z.number().int().describe('Layer id given by the start widget'),
     type: z.literal('text_layer'),
     text: z.string().describe('New text content'),
     fontScale: z.number().min(0.5).max(1.5).optional().describe('Font size relative to the template, e.g. 0.9 for 10% smaller (default 1)')
   }),
   z.object({
-    id: z.number().int().describe('Layer id from get-psd-manifest'),
+    id: z.number().int().describe('Layer id given by the start widget'),
     type: z.literal('smart_object_layer'),
-    imageUrl: z.string().url().describe('HTTPS URL of the replacement image (e.g. from upload-variant-images)'),
+    imageUrl: z.string().url().describe('HTTPS URL of the replacement image (from the image grid)'),
     crop: z.object({ left: z.number(), top: z.number(), right: z.number(), bottom: z.number() }).optional()
-      .describe('Crop of the image in pixels, as chosen by the user in upload-variant-images: pass it as is'),
+      .describe('Crop of the image in pixels, as chosen by the user in the image grid: pass it as is'),
     crops: z.array(z.object({
       width: z.number().positive(),
       height: z.number().positive(),
       crop: z.object({ left: z.number(), top: z.number(), right: z.number(), bottom: z.number() })
     })).optional().describe('With several templates: the crop of the image for each frame size (its ratio), as chosen by the user ' +
-      'in upload-variant-images: pass them as is'),
+      'in the image grid: pass them as is'),
     fit: z.enum(['fill', 'fit']).default('fill')
       .describe('Without crop: "fill" (default) crops the image, centered, to the frame ratio so it fills the frame; "fit" keeps the whole image, which may leave empty bands')
   })
@@ -1962,57 +1953,12 @@ function registerTools (server, params) {
     })
   )
 
-  registerWidgetTool(
-    'get-psd-manifest',
-    {
-      title: 'Get PSD Manifest',
-      description: 'Step 2 of the variant workflow. Reads a Photoshop PSD template with the Photoshop API and shows the user its ' +
-        'unlocked text and smart object layers, so they can pick the layers to vary (their choice is added to your context). ' +
-        'The start-variant-creation widget already lets the user pick the layers: call it only to pick other layers later, or when ' +
-        'the user did not pick them there, with the template URL. ' +
-        'After the user\'s selection, go to step 3: ask for the texts of the selected text layers.',
-      inputSchema: { url: z.string().url().describe('HTTPS URL of the PSD file') },
-      _meta: uiMeta(VIEWS.layers)
-    },
-    async ({ url }) => {
-      try {
-        url = await freshStorageUrl(url)
-        const taskId = await startTask(params, 'template', { url })
-        // The model needs the layers: they are waited for here, the preview is waited for by the view
-        const ready = await awaitTask(params, taskId, Date.now() + RESPONSE_BUDGET_MS,
-          task => task?.status === 'done' ? task.result : task?.partial)
-        if (!ready) {
-          return {
-            content: [{
-              type: 'text',
-              text: 'The template is still being read: the widget shows its layers when ready. Wait for the user\'s selection, which gives ' +
-                'you the selected layers with their original texts and frames.\n\n' + NEXT_STEPS_AFTER_SELECTION
-            }],
-            structuredContent: { taskId, templateUrl: url }
-          }
-        }
-        // The preview URL and the layer areas are for the view only
-        const forModel = { document: ready.document, layers: ready.layers.map(({ area, ...layer }) => layer) }
-        return {
-          content: [{
-            type: 'text',
-            text: `Editable layers (unlocked text and smart object layers), shown to the user for selection:\n${JSON.stringify(forModel, null, 2)}\n\n` +
-              NEXT_STEPS_AFTER_SELECTION
-          }],
-          structuredContent: { ...ready, taskId, templateUrl: url }
-        }
-      } catch (error) {
-        return errorResult(error)
-      }
-    }
-  )
-
   server.registerTool(
     'read-psd-template',
     {
       title: 'Read PSD Template',
       description: 'Used by the start-variant-creation widget: starts a task (see get-task) that reads a PSD template, whose result ' +
-        'is its editable layers then its preview, as for get-psd-manifest, and the fonts missing for the render.',
+        'is its editable layers then its preview, with the layers, and the fonts missing for the render.',
       inputSchema: {
         url: z.string().url().describe('HTTPS URL of the PSD file'),
         fonts: FONTS_INPUT.describe('URLs of the font files (OTF or TTF) added by the user'),
@@ -2186,7 +2132,7 @@ function registerTools (server, params) {
   )
 
   const createVariantInput = {
-    templateUrl: z.string().url().optional().describe('HTTPS URL of the PSD template (same URL as given to get-psd-manifest)'),
+    templateUrl: z.string().url().optional().describe('HTTPS URL of the PSD template (given by the start widget)'),
     templates: z.array(z.object({
       name: z.string().min(1).describe('Name of the template'),
       url: z.string().url().describe('HTTPS URL of the template'),
@@ -2206,7 +2152,7 @@ function registerTools (server, params) {
       fileName: z.string().optional().describe('Output file name without extension, e.g. "variant-summer"'),
       layers: z.array(layerEditSchema).min(1).describe('Edits to apply, one per layer'),
       language: z.string().optional().describe('Language of the texts of this variant, as an ISO 639-1 code (e.g. "fr"), given to the review'),
-      group: z.string().optional().describe('Label of this variant in upload-variant-images (without its language): the languages ' +
+      group: z.string().optional().describe('Label of this variant in the image grid (without its language): the languages ' +
         'of a variant share its images'),
       formats: z.array(z.enum(VARIANT_FORMATS)).min(1).optional()
         .describe('Formats of this variant only, when they differ between variants (e.g. ["png", "psd"] for one of them); ' +
@@ -2231,8 +2177,8 @@ function registerTools (server, params) {
       'widget give its task id): that task id. The new widget also shows the variants of that generation not passed here, as they are')
   }
 
-  // create-variant, and update-variants (inPlace: changes sent from the widget of a generation, which shows the new one in place)
-  const runCreateVariant = async ({ templateUrl, templates, formats, format, variants, layers, fileName, fileNamePattern, fonts, previousTaskId, widgetRef, languages }, inPlace) => {
+  // generate-variants: the variants of a generation, started in a task
+  const runCreateVariant = async ({ templateUrl, templates, formats, format, variants, layers, fileName, fileNamePattern, fonts, previousTaskId, widgetRef, languages }) => {
     try {
       if (!variants && !layers && !widgetRef) throw new Error('Missing "widgetRef" (or "variants": a list of variants, each with its "layers").')
       if (!templateUrl && !templates) throw new Error('Missing "templateUrl" (or "templates" given by the start widget).')
@@ -2262,8 +2208,8 @@ function registerTools (server, params) {
         variant.layers = await Promise.all(variant.layers.map(async layer => layer.imageUrl ? { ...layer, imageUrl: await resign(layer.imageUrl) } : layer))
       }))
       const warnings = findSharedImages(given).map(shared => `\nWarning: variants ${shared.variants.join(', ')} use the same image for layer ` +
-        `${shared.layerId}. If the user chose different images in upload-variant-images, check the image of each variant in its ` +
-        'confirmation (one line per variant and layer) and call create-variant again with the right URLs and crops.').join('')
+        `${shared.layerId}. If the user chose different images in the image grid, check the image of each variant in its ` +
+        'confirmation (one line per variant and layer) and call generate-variants again with the right URLs and crops.').join('')
       const callFormats = [...new Set(formats || [format || 'jpeg'])]
       const fileNames = uniqueFileNames(variantList)
       const { kept, earlier, order } = await keptVariants(params, previousTaskId, fileNames)
@@ -2280,18 +2226,13 @@ function registerTools (server, params) {
         ...(Object.keys(addedFiles).length ? { addedFiles } : {})
       })
       const structuredContent = { taskId, templateUrl, pending: fileNames, labels: variantList.map(variantLabels), ...(kept.length ? { kept, order } : {}) }
-      // The widget of the generation changed shows this one in place (get-next-generation); create-variant shows it in a new widget
-      if (inPlace) await setNextGeneration(params, previousTaskId, structuredContent)
-      const started = inPlace
-        ? `Generation of ${variantList.length} file(s) started: the widget of the generation changed shows them in place, with the other variants unchanged. `
-        : `Generation of ${variantList.length} ${templates ? `file(s) (${given.length} variant(s) x ${templates.length} templates)` : 'variant(s)'} started. The widget shows each variant as soon as it is rendered, with ` +
-          'download buttons, marks the text problems on the visuals, and gives you the result when all are done; the user then sends ' +
-          'you the changes to make. Do not call create-variant again meanwhile. '
       return {
         content: [{
           type: 'text',
-          text: started + `Now check the texts (step 6), without asking the user: call review-variants with taskId "${taskId}", then ` +
-            'report-variant-issues, then wait-for-widget with the channel of the widget of the variants.' + warnings
+          text: `Generation of ${variantList.length} ${templates ? `file(s) (${given.length} variant(s) x ${templates.length} templates)` : 'variant(s)'} ` +
+            'started: the widget shows each variant as soon as it is rendered (step 6), with the others of the generation changed, if any. ' +
+            `Now check the texts, without asking the user: call review-variants with taskId "${taskId}", then report-variant-issues, then ` +
+            'wait-for-widget with the channel.' + warnings
         }],
         structuredContent
       }
@@ -2299,57 +2240,6 @@ function registerTools (server, params) {
       return errorResult(error)
     }
   }
-
-  registerWidgetTool(
-    'create-variant',
-    {
-      title: 'Generate Variants',
-      description: 'Step 5 of the variant workflow. Generates variants of a PSD template with the Photoshop API, in parallel: ' +
-        'for each variant, replaces the text of text layers and the content of smart object layers (with image URLs from upload-variant-images), ' +
-        'then saves it in the requested formats (PNG, JPEG and/or layered PSD, several at once if asked). Only call it once the layers are selected (get-psd-manifest) and all values are known. ' +
-        'For the first generation, pass widgetRef (the reference of the confirmation of the texts and images) instead of variants: the server builds them from what the user confirmed, much faster than copying them. ' +
-        'Otherwise pass all variants in a single call (up to ' + MAX_VARIANTS + '), even when their formats differ (set formats on those variants). It starts the generation and answers at once: the widget shows each variant as soon as it is rendered, with download buttons, and gives you the result (failures, text problems) when all are done; do not print the image URLs. ' +
-        'Use layer ids and types from get-psd-manifest. For each smart object image, pass the crop chosen in upload-variant-images; ' +
-        'without crop, the image is cropped centered to its frame (fit "fill", default). Do not crop or resize images with other tools. ' +
-        'Pass the fontScale of each text as confirmed in edit-variant-texts or in the changes sent from the widget of the generated variants. The ' +
-        'widget marks the texts that do not fit on the visuals, with proposed fixes, and sends you the changes of the user (step 6). To change some variants, pass only those, with the same file names: ' +
-        'with previousTaskId (the task id of that generation), the new widget also shows its other variants, unchanged, and zips them with the new ones.',
-      inputSchema: createVariantInput,
-      _meta: uiMeta(VIEWS.variant)
-    },
-    args => runCreateVariant(args, false)
-  )
-
-  server.registerTool(
-    'update-variants',
-    {
-      title: 'Update Variants',
-      description: 'Applies the changes the user sent from the widget of a generation (step 6): the same as create-variant with ' +
-        'previousTaskId (the variants to change only, the same file names, the same edits except the changes), but the widget of that ' +
-        'generation shows the new variants in place, with the others unchanged, instead of a new widget. Use it for every change sent ' +
-        'from the widget (wait-for-widget, or its message), then check the texts again (review-variants, report-variant-issues).',
-      inputSchema: { ...createVariantInput, previousTaskId: z.string().describe('Task id of the generation changed, given with the changes') }
-    },
-    args => runCreateVariant(args, true)
-  )
-
-  server.registerTool(
-    'get-next-generation',
-    {
-      title: 'Get Next Generation',
-      description: 'Used by the create-variant widget: the generation made from this one with the changes sent from it (update-variants), to show it in place.',
-      inputSchema: { taskId: z.string() },
-      _meta: { ui: { visibility: ['app'] } }
-    },
-    async ({ taskId }) => {
-      try {
-        const next = (await (await initState()).get(nextGenerationKey(currentUserId(params), taskId)))?.value
-        return jsonResult(next ? { next } : {})
-      } catch (error) {
-        return errorResult(error)
-      }
-    }
-  )
 
   server.registerTool(
     'post-to-assistant',
@@ -2361,12 +2251,11 @@ function registerTools (server, params) {
         channel: z.string().regex(CHANNEL_ID).optional().describe('Channel of the widget, from the result of its tool'),
         text: z.string().min(1).max(500000).describe('What the widget gives the assistant'),
         message: z.string().max(2000).describe('The message the widget would send for the user'),
-        final: z.boolean().optional().describe('The widget has done its part: shown reduced to the message from now on (get-channel)'),
-        data: z.object({}).passthrough().optional().describe('Texts and images confirmed, from which create-variant builds the variants (widgetRef)')
+        data: z.object({}).passthrough().optional().describe('Texts and images confirmed, from which generate-variants builds the variants (widgetRef)')
       },
       _meta: { ui: { visibility: ['app'] } }
     },
-    async ({ channel, text, message, data, final }) => {
+    async ({ channel, text, message, data }) => {
       try {
         const ref = await saveWidgetResult(params, text, data)
         const filled = text.split('{{ref}}').join(ref)
@@ -2374,10 +2263,12 @@ function registerTools (server, params) {
         const state = await initState()
         const waitedAt = channel && (await state.get(channelWaitKey(userId, channel)).catch(() => null))?.value?.at
         const delivered = Boolean(waitedAt && Date.now() - waitedAt < WAITING_MS)
-        if (channel && (delivered || final)) {
+        // The texts or images confirmed: the default of generate-variants
+        const confirmation = data && (data.variants || data.images)
+        if (channel && (delivered || confirmation)) {
           const record = (await state.get(channelKey(userId, channel)).catch(() => null))?.value || { items: [] }
           if (delivered) record.items = [...(record.items || []), `${message} (${ref})\n${filled}`]
-          if (final) record.final = { summary: message }
+          if (confirmation) record.confirmation = ref
           await state.put(channelKey(userId, channel), { ...record, at: Date.now() }, { ttl: TASK_TTL_SECONDS })
         }
         return jsonResult({ ref, text: filled, delivered })
@@ -2391,14 +2282,14 @@ function registerTools (server, params) {
     'get-channel',
     {
       title: 'Get Channel',
-      description: 'Used by the widgets: whether the widget has done its part (final, with the message it sent), to show it reduced.',
+      description: 'Used by the start widget: the step the assistant sent it to show (view, with its input or result).',
       inputSchema: { channel: z.string().regex(CHANNEL_ID) },
       _meta: { ui: { visibility: ['app'] } }
     },
     async ({ channel }) => {
       try {
         const record = (await (await initState()).get(channelKey(currentUserId(params), channel)).catch(() => null))?.value
-        return jsonResult({ final: record?.final || null })
+        return jsonResult({ view: record?.view || null })
       } catch (error) {
         return errorResult(error)
       }
@@ -2447,7 +2338,7 @@ function registerTools (server, params) {
     'review-variants',
     {
       title: 'Review Variants',
-      description: 'Step 6 of the variant workflow: call it right after create-variant, without asking the user. Shows you the ' +
+      description: 'Step 6 of the variant workflow: call it right after generate-variants, without asking the user. Shows you the ' +
         'visuals of a generation (images) with the texts sent and the layers of the template, once the generation is done: it waits ' +
         'for it, and answers that it is not finished after a while, then call it again. Look at the visuals, then call report-variant-issues.',
       inputSchema: {
@@ -2535,7 +2426,7 @@ function registerTools (server, params) {
     'get-variant-review',
     {
       title: 'Get Variant Review',
-      description: 'Used by the create-variant widget: the text problems reported by the assistant on a generation, by file name ' +
+      description: 'Used by the start widget (variants): the text problems reported by the assistant on a generation, by file name ' +
         '(reviewed: false until reported).',
       inputSchema: { taskId: z.string().describe('Task id of the generation') },
       _meta: { ui: { visibility: ['app'] } }
@@ -2575,10 +2466,10 @@ function registerTools (server, params) {
     'create-variants-zip',
     {
       title: 'Create Variants ZIP',
-      description: 'Used by the create-variant widget: starts a task (see get-task) whose result is the URL of a ZIP archive of ' +
+      description: 'Used by the start widget (variants): starts a task (see get-task) whose result is the URL of a ZIP archive of ' +
         'all the files of a generation.',
       inputSchema: {
-        taskId: z.string().describe('Task id of the generation, returned by create-variant')
+        taskId: z.string().describe('Task id of the generation, returned by generate-variants')
       },
       _meta: { ui: { visibility: ['app'] } }
     },
@@ -2665,89 +2556,86 @@ function registerTools (server, params) {
   )
 
   server.registerTool(
-    'save-widget-result',
+    'show-variant-texts',
     {
-      title: 'Save Widget Result',
-      description: 'Used by the widgets: stores what the user confirmed and returns a reference for get-widget-result.',
-      inputSchema: {
-        text: z.string().min(1).max(500000).describe('Result of the widget, as sent to the model context'),
-        data: z.object({
-          variants: z.array(z.object({
-            label: z.string(),
-            texts: z.array(z.object({ layerId: z.number().int(), text: z.string(), fontScale: z.number().optional() }).passthrough())
-          }).passthrough()).optional(),
-          images: z.array(z.object({ variant: z.union([z.string(), z.number()]), layerId: z.number().int(), url: z.string().optional() }).passthrough()).optional()
-        }).passthrough().optional().describe('Texts and images confirmed, from which create-variant builds the variants (widgetRef)')
-      },
-      _meta: { ui: { visibility: ['app'] } }
+      title: 'Show Variant Texts',
+      description: 'Steps 4-5 of the variant workflow: shows in the start widget (its channel) a table of the texts per variant, ' +
+        'which the user edits (or imports from Excel, or pastes from a spreadsheet), then the image grid when images is given (smart ' +
+        'object layers picked too), so that the texts and the images are confirmed together. Pass the original text of each layer and ' +
+        'the fontScale of each text, if any. When the user confirms, wait-for-widget gives it to you: then call generate-variants.',
+      inputSchema: { channel: CHANNEL_INPUT, ...textsInput }
     },
-    async ({ text, data }) => {
+    async ({ channel, ...input }) => {
       try {
-        return jsonResult({ ref: await saveWidgetResult(params, text, data) })
+        await setChannelView(params, channel, { view: 'texts', input })
+        return { content: [{ type: 'text', text: `Texts table (${input.variants.length} variant(s))${input.images ? ' and image grid' : ''} sent to the start widget. ${inWidget} Then call generate-variants with this channel.` }] }
       } catch (error) {
         return errorResult(error)
       }
     }
   )
 
-  registerWidgetTool(
-    'edit-variant-texts',
+  server.registerTool(
+    'show-variant-images',
     {
-      title: 'Edit Variant Texts',
-      description: 'Step 3 of the variant workflow. Shows the texts of the selected text layers for each variant in an editable table, ' +
-        'so the user reviews and edits them. Call it ONCE with all variants, once their texts ' +
-        'are known (given by the user or written by you); do not write the texts as a table in chat. When the user confirms, the final ' +
-        'texts are added to your context and the user says to continue: use them exactly in create-variant. To let the user edit texts ' +
-        'again, call it again with the latest texts. Pass the original text of each layer: the table shows it under the layer ' +
-        'name. Pass the fontScale of each text, if any: it is kept, without being shown. The user can also fill the table from an Excel ' +
-        'file (.xlsx: Variant column, then a column per layer name) or by pasting cells copied from a spreadsheet, and download it as .xlsx.',
-      inputSchema: {
-        layers: z.array(z.object({
-          id: z.number().int().describe('Layer id from get-psd-manifest'),
-          name: z.string().describe('Layer name'),
-          text: z.string().optional().describe('Original text of the layer in the template, from get-psd-manifest')
-        })).min(1).describe('Selected text layers, in the order of get-psd-manifest'),
-        variants: z.array(z.object({
-          label: z.string().min(1).describe('Short label of the variant'),
-          texts: z.array(z.object({
-            layerId: z.number().int().describe('Layer id'),
-            text: z.string().describe('Text of the layer for this variant'),
-            fontScale: z.number().min(0.5).max(1.5).optional().describe('Font size relative to the template, e.g. 0.9 (default 1)')
-          })).describe('One text per text layer')
-        })).min(1).max(MAX_VARIANTS).describe('Variants, in order'),
-        images: z.object({ ...IMAGES_INPUT, variants: IMAGES_INPUT.variants.optional() }).optional().describe('When smart object ' +
-          'layers were selected too: the image grid, as for upload-variant-images (variant labels without their languages, by default ' +
-          'the labels of the variants without their language code; smart object layers with their frames; prompts if any), ' +
-          'shown as a second step of the widget, so that the texts and the images are confirmed together'),
-        title: z.string().optional().describe('Heading shown in the widget')
-      },
-      _meta: uiMeta(VIEWS.texts)
+      title: 'Show Variant Images',
+      description: 'Step 5 of the variant workflow, without text layers: shows in the start widget (its channel) the grid where the user ' +
+        'drops one image per variant and smart object layer (one row per variant, its languages sharing its images), picks it in AEM ' +
+        'or generates it with Firefly, and frames it. To re-crop or swap images after a generation, call it again with images (from ' +
+        'the previous confirmation). When the user confirms, wait-for-widget gives it to you: then call generate-variants.',
+      inputSchema: { channel: CHANNEL_INPUT, ...IMAGES_INPUT, title: z.string().optional().describe('Heading shown in the widget') }
     },
-    async ({ layers, variants, images }) => ({
-      content: [{ type: 'text', text: `Texts table displayed (${variants.length} variant(s) x ${layers.length} text layer(s))` +
-        (images ? `, then the image grid (${images.variants ? `${images.variants.length} variant(s)` : 'one row per variant'} x ${images.layers.length} layer(s))` : '') + '. Wait for the user to confirm.' }]
-    })
+    async ({ channel, ...input }) => {
+      try {
+        await setChannelView(params, channel, { view: 'images', input })
+        return { content: [{ type: 'text', text: `Image grid sent to the start widget. ${inWidget} Then call generate-variants with this channel.` }] }
+      } catch (error) {
+        return errorResult(error)
+      }
+    }
   )
 
-  registerWidgetTool(
-    'upload-variant-images',
+  server.registerTool(
+    'generate-variants',
     {
-      title: 'Upload Variant Images',
-      description: 'Step 4 of the variant workflow. Shows a grid where the user drops one image per variant and smart object layer ' +
-        '(one row per variant, not per language: the languages of a variant share its images; one column per layer). Each image is cropped to the frame of its layer, framed on its subject, and the user ' +
-        'can reposition and zoom the crop. When the user confirms, the widget adds to your context, for each variant and layer, the image ' +
-        'file name, its temporary HTTPS URL (valid 24 hours), its size and its crop, and the user says to continue: then call create-variant. ' +
-        'To adjust crops or replace some images after a generation, call it again with images (URLs, crops and sizes from the previous ' +
-        'confirmation): the grid opens pre-filled, without uploading again; then call create-variant again with the new crops.',
-      inputSchema: {
-        ...IMAGES_INPUT,
-        title: z.string().optional().describe('Heading shown in the widget')
-      },
-      _meta: uiMeta(VIEWS.variantImages)
+      title: 'Generate Variants in the Widget',
+      description: 'Step 6 of the variant workflow: generates the variants with the Photoshop API, in parallel, shown in the start ' +
+        'widget (its channel) as they are rendered, with download buttons. Without variants nor widgetRef, it uses the texts and ' +
+        'images the user confirmed last in the widget: do not copy them. Pass the templateUrl (or templates), fileNamePattern, fonts ' +
+        'and formats given by the start widget. To change some variants, pass only those, with the same file names and the same ' +
+        'edits except the changes, and previousTaskId: the widget shows them with the others of that generation, unchanged. Then ' +
+        'check the texts (review-variants, report-variant-issues) and call wait-for-widget with the channel.',
+      inputSchema: { channel: CHANNEL_INPUT, ...createVariantInput }
     },
-    async ({ variants, layers }) => ({
-      content: [{ type: 'text', text: `Image grid displayed (${variants.length} variant(s) x ${layers.length} layer(s)). Wait for the user to confirm.` }]
-    })
+    async ({ channel, ...args }) => {
+      // Without variants, the texts and images the user confirmed last in the widget
+      if (!args.variants && !args.layers && !args.widgetRef) {
+        args.widgetRef = (await (await initState()).get(channelKey(currentUserId(params), channel)).catch(() => null))?.value?.confirmation
+      }
+      const result = await runCreateVariant(args)
+      if (result.isError) return result
+      try {
+        await setChannelView(params, channel, { view: 'variant', result: result.structuredContent })
+      } catch (error) {
+        return errorResult(error)
+      }
+      return result
+    }
+  )
+
+  server.registerTool(
+    'get-view-html',
+    {
+      title: 'Get View HTML',
+      description: 'Used by the start widget: the page of a step it shows in place (texts, images, variant).',
+      inputSchema: { view: z.enum(['texts', 'images', 'variant']) },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    async ({ view }) => {
+      const scriptUrl = `${getStaticOrigin(params)}/${spectrumAsset.fileName}`
+      const html = STEP_PAGES[view](scriptUrl)
+      return jsonResult({ html })
+    }
   )
 
   registerWidgetTool(
@@ -2755,7 +2643,7 @@ function registerTools (server, params) {
     {
       title: 'Upload File',
       description: 'Shows a widget to upload ONE file. Only for a single file outside the variant workflow. ' +
-        'NEVER use it for the replacement images of smart object layers: call upload-variant-images ONCE instead, which shows one grid for all variants. ' +
+        'NEVER use it for the replacement images of smart object layers: the start widget has the image grid. ' +
         'To start a variant workflow, call start-variant-creation.',
       inputSchema: {
         title: z.string().optional().describe('Heading shown in the widget')
@@ -2766,7 +2654,7 @@ function registerTools (server, params) {
       content: [{
         type: 'text',
         text: 'Upload widget displayed. Wait for the user to upload. Reminder: for smart object replacement images, ' +
-          'do not call upload-file once per image; call upload-variant-images ONCE with all variant labels and layers.'
+          'do not call upload-file once per image: the start widget has the image grid.'
       }]
     })
   )
@@ -2775,7 +2663,7 @@ function registerTools (server, params) {
     'suggest-crop',
     {
       title: 'Suggest Crop',
-      description: 'Used by the upload-variant-images widget: starts a task (see get-task) whose result is the image size and a crop ' +
+      description: 'Used by the image grid of the start widget: starts a task (see get-task) whose result is the image size and a crop ' +
         'at the given ratio framed on its subject.',
       inputSchema: {
         imageUrl: z.string().url().describe('HTTPS URL of the image'),
@@ -2796,7 +2684,7 @@ function registerTools (server, params) {
     'generate-image',
     {
       title: 'Generate Image',
-      description: 'Used by the upload-variant-images widget: starts a task (see get-task) whose result is an image generated by ' +
+      description: 'Used by the image grid of the start widget: starts a task (see get-task) whose result is an image generated by ' +
         'Firefly from a prompt, at the ratio closest to the frame, in storage: { name, url, width, height }.',
       inputSchema: {
         prompt: z.string().min(1).max(1024).describe('Description of the image'),
@@ -2907,7 +2795,7 @@ function registerTools (server, params) {
     'get-aem-selector-config',
     {
       title: 'Get AEM Selector Config',
-      description: 'Used by the start and upload-variant-images widgets: tells whether AEM Assets is configured on this server.',
+      description: 'Used by the start widget (template and image grid): tells whether AEM Assets is configured on this server.',
       inputSchema: {},
       _meta: { ui: { visibility: ['app'] } }
     },
@@ -2921,7 +2809,7 @@ function registerTools (server, params) {
     'create-aem-picker-session',
     {
       title: 'Create AEM Picker Session',
-      description: 'Used by the start and upload-variant-images widgets: creates a session of the AEM Asset Selector page, ' +
+      description: 'Used by the start widget (template and image grid): creates a session of the AEM Asset Selector page, ' +
         'to open in a browser tab, and returns its URL and id (see get-aem-picker-result).',
       inputSchema: { multiple: z.boolean().default(false).describe('Allow selecting several assets') },
       _meta: { ui: { visibility: ['app'] } }
@@ -2955,7 +2843,7 @@ function registerTools (server, params) {
     'get-aem-picker-result',
     {
       title: 'Get AEM Picker Result',
-      description: 'Used by the start and upload-variant-images widgets: returns the status of an AEM picker session ' +
+      description: 'Used by the start widget (template and image grid): returns the status of an AEM picker session ' +
         '(pending, selected, cancelled or expired) and the selected assets.',
       inputSchema: { sessionId: z.string().describe('Session id from create-aem-picker-session') },
       _meta: { ui: { visibility: ['app'] } }
@@ -2974,7 +2862,7 @@ function registerTools (server, params) {
     'import-aem-asset',
     {
       title: 'Import AEM Asset',
-      description: 'Used by the start and upload-variant-images widgets: copies an AEM asset picked in the Asset Selector to ' +
+      description: 'Used by the start widget (template and image grid): copies an AEM asset picked in the Asset Selector to ' +
         'temporary storage and returns its HTTPS URL (valid 24 hours).',
       inputSchema: {
         repositoryId: z.string().optional().describe('repo:repositoryId of the asset, e.g. delivery-p12345-e67890.adobeaemcloud.com'),
