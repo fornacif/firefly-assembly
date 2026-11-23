@@ -62,7 +62,7 @@ Listening to the widget: once done with what a result asks, call wait-for-widget
 6. Generation and review (step 6): as soon as the user confirms the texts and images, call generate-variants with the channel, the templateUrl (or templates), fileNamePattern, fonts and formats given by the widget, without variants: the server builds them from what the user confirmed (up to ${MAX_VARIANTS}); do not recap them or ask for another approval. Then, in the same turn, check the texts of the generated files: call review-variants with the task id (while it answers that the generation is not finished, call it again): look at each edited text on its visual: cut or past an edge of the visual or of its panel, letters or words hidden, overlapping another element more than in the template, too small or hard to read on its background, lines broken badly, or not the text sent. Then call report-variant-issues with every variant reviewed (none for those that are fine): per problem, the layer, a short description, the fix you propose (e.g. Reduce the font size of "headline" to 85%.) and the rectangle of the text in pixels of the canvas. The widget marks them and pre-fills a field of changes per variant; do not list them in chat. Then listen: when the user sends changes, make exactly the changes asked, nothing else (change a font size only when asked; to change the words of a text, rewrite it as asked and keep its font size), then call generate-variants with the channel, the variants to change only (same file names, groups, languages and edits except the changes; a font size of N% is fontScale N/100) and previousTaskId, the task id of the generation changed: the widget shows them with the others, unchanged. To get other formats of the variants (e.g. PSD after JPEG), call generate-variants with these variants unchanged, only the new formats, and previousTaskId. To re-crop or swap images, call show-variant-images with the images of the previous confirmation, then generate-variants. If a text the user asked for does not fit, you may suggest a fix without applying it.
 The URLs from the widget are temporary presigned URLs: use them in tool calls, but never show them to the user. Reply in the user's language.`
 
-// Input of the image grid (upload-variant-images, and edit-variant-texts with images): variants, layers, images, prompts
+// Input of the image grid (show-variant-images, and show-variant-texts with images): variants, layers, images, prompts
 const IMAGES_INPUT = {
   variants: z.array(z.string().min(1)).min(1).max(MAX_VARIANTS).describe('Short label of each variant without its language, in ' +
     'order (e.g. their titles): one row per variant, whose images all its languages share'),
@@ -2555,6 +2555,31 @@ function registerTools (server, params) {
     }
   )
 
+  const textsInput = {
+    layers: z.array(z.object({
+      id: z.number().int().describe('Layer id given by the start widget'),
+      name: z.string().describe('Layer name'),
+      text: z.string().optional().describe('Original text of the layer in the template, given by the start widget')
+    })).min(1).describe('Selected text layers, in the order given by the start widget'),
+    variants: z.array(z.object({
+      label: z.string().min(1).describe('Short label of the variant'),
+      texts: z.array(z.object({
+        layerId: z.number().int().describe('Layer id'),
+        text: z.string().describe('Text of the layer for this variant'),
+        fontScale: z.number().min(0.5).max(1.5).optional().describe('Font size relative to the template, e.g. 0.9 (default 1)')
+      })).describe('One text per text layer')
+    })).min(1).max(MAX_VARIANTS).describe('Variants, in order'),
+    images: z.object({ ...IMAGES_INPUT, variants: IMAGES_INPUT.variants.optional() }).optional().describe('When smart object ' +
+      'layers were selected too: the image grid (variant labels without their languages, by default ' +
+      'the labels of the variants without their language code; smart object layers with their frames; prompts if any), ' +
+      'shown as a second step of the widget, so that the texts and the images are confirmed together'),
+    title: z.string().optional().describe('Heading shown in the widget')
+  }
+
+  // The steps after the layers, shown in the start widget (its channel)
+  const CHANNEL_INPUT = z.string().regex(CHANNEL_ID).describe('Channel of the start widget, given in the result of start-variant-creation')
+  const inWidget = 'The start widget shows it in place (no new widget). Call wait-for-widget with this channel, without writing to the user: ' +
+    'it gives you what the user confirms there.'
   server.registerTool(
     'show-variant-texts',
     {
