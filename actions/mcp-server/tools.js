@@ -2,6 +2,7 @@ const crypto = require('crypto')
 const { AsyncLocalStorage } = require('async_hooks')
 const { Readable } = require('stream')
 const { z } = require('zod')
+const { ResourceTemplate } = require('@modelcontextprotocol/sdk/server/mcp.js')
 const filesLib = require('@adobe/aio-lib-files')
 const { reviewImage } = require('./review.js')
 const { getStartViewHtml, getUploadViewHtml, getVariantImagesViewHtml, getTextsViewHtml, getVariantViewHtml, getUsageViewHtml } = require('./views.js')
@@ -1898,7 +1899,8 @@ function registerTools (server, params) {
   // generate-variants: the variants of a generation, started in a task
   const runCreateVariant = async ({ templateUrl, templates, formats, format, variants, layers, fileName, fileNamePattern, fonts, previousTaskId, widgetRef, languages }) => {
     try {
-      if (!variants && !layers && !widgetRef) throw new Error('Missing "widgetRef" (or "variants": a list of variants, each with its "layers").')
+      if (!variants && !layers && !widgetRef) throw new Error('Missing "widgetRef": pass the reference that ends the message of the widget that confirmed the texts and ' +
+        'images, e.g. "r7k2p9" for "(r7k2p9)" (or "variants": a list of variants, each with its "layers").')
       if (!templateUrl && !templates) throw new Error('Missing "templateUrl" (or "templates" given by the start widget).')
       // Built from the widget results, the variants given replacing those of the same label
       const fromWidgets = widgetRef ? await variantsFromWidgets(params, [].concat(widgetRef), languages) : []
@@ -2557,20 +2559,15 @@ function registerResources (server, params) {
     connectDomains: [STORAGE_ORIGIN],
     resourceDomains: [STORAGE_ORIGIN, staticOrigin]
   }
+  const contents = (view, uri) => ({ contents: [{ uri, mimeType: RESOURCE_MIME_TYPE, text: view.html(scriptUrl), _meta: { ui: { csp } } }] })
   for (const view of Object.values(VIEWS)) {
-    server.resource(
-      view.name,
-      view.uri,
+    server.resource(view.name, view.uri, { mimeType: RESOURCE_MIME_TYPE, description: view.description }, async () => contents(view, view.uri))
+    // An earlier version of the view (a host that kept the tool list of an earlier deployment): the current view, so that the
+    // widget still opens
+    server.resource(`${view.name} (earlier version)`,
+      new ResourceTemplate(view.uri.replace(/\/[0-9a-f]{8}\/app\.html$/, '/{version}/app.html'), { list: undefined }),
       { mimeType: RESOURCE_MIME_TYPE, description: view.description },
-      async () => ({
-        contents: [{
-          uri: view.uri,
-          mimeType: RESOURCE_MIME_TYPE,
-          text: view.html(scriptUrl),
-          _meta: { ui: { csp } }
-        }]
-      })
-    )
+      async uri => contents(view, uri.href))
   }
 }
 
