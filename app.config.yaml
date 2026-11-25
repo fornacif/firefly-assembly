@@ -12,7 +12,9 @@ application:
         # File names carry a content hash, so they can be cached for long
         cache-control: public, max-age=31536000, immutable
   hooks:
-    # Builds the bundle into web-src and publishes web-src as is, instead of the default Parcel build
+    # Builds the bundle before the action, which reads its file name (actions/mcp-server/spectrum-asset.js, generated)
+    pre-app-build: npm run build:ui
+    # Publishes web-src as is (with the bundle), instead of the default Parcel build
     build-static: ui/build-static.js
   runtimeManifest:
     packages:
