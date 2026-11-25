@@ -6,8 +6,6 @@ MCP server, deployed as an Adobe I/O Runtime (App Builder) action, that creates 
 
 **Server URL:** `https://<namespace>.adobeioruntime.net/api/v1/web/firefly-assembly/mcp-server`, where `<namespace>` is the Runtime namespace of your deployment (`AIO_runtime_namespace` in `.env`, see [Deployment](#deployment)).
 
-Use the `adobeioruntime.net` domain, not `adobeio-static.net`: the resource in the OAuth metadata must match the server URL, otherwise sign-in fails.
-
 - **Claude:** **Settings > Connectors > Add custom connector**, name it **Firefly Assembly**, enter the server URL, leave the OAuth client ID empty, click **Connect** and sign in with your Adobe ID.
 - **ChatGPT:** add the server as a custom app with **OAuth** authentication, leave the client ID empty and sign in with your Adobe ID.
 
@@ -46,24 +44,6 @@ Then enable the connector in your conversation. After a deployment that changes 
 - **Keep each element in its own layer** (logo, button, badge), and name the layers ("headline", "cta").
 - **Use smart object layers for the images to replace**, framed at the size they should fill; do not lock the layers to vary.
 - **Use fonts that Photoshop has** (Adobe Fonts included), or add their files in the start widget, if their license allows it.
-
-## Project structure
-
-| Path | Content |
-|---|---|
-| `actions/mcp-server/index.js` | Action entry point: HTTP routing, OAuth metadata, MCP transport |
-| `actions/mcp-server/tools.js` | MCP tools, resources and prompt, Photoshop API and storage calls |
-| `actions/mcp-server/views.js` | HTML of the widgets |
-| `actions/mcp-server/review.js` | Visuals reduced for the review by the assistant |
-| `actions/mcp-server/state.js` | App Builder state (tasks, widget results, reviews) |
-| `actions/mcp-server/history.js` | Activity in the database: recording, history, usage report |
-| `actions/mcp-server/fonts.js` | Font library of each user |
-| `actions/mcp-server/zip.js` | ZIP archives of a generation |
-| `actions/mcp-server/aem-picker.js` | Sessions of the AEM Asset Selector page |
-| `actions/mcp-server/validator.js` | IMS token validation |
-| `ui/` | Build of the Spectrum Web Components bundle |
-| `web-src/` | Static files (AEM picker page, Spectrum bundle) |
-| `app.config.yaml` | App Builder configuration |
 
 ## Configuration
 
