@@ -2338,9 +2338,8 @@ const STEPS_CSS = `
   .steps li.reachable:focus-visible { outline: var(--spectrum-focus-indicator-thickness) solid var(--spectrum-focus-indicator-color); outline-offset: 2px; }
 `
 
-// Picker of the layers of a template (preview with numbered zones, and list), shared by the start and layers views:
-// showTemplate(data) shows the layers and the preview of a template read in a task (read-psd-template),
-// selectedForModel() gives the layers picked; the view defines onLayersChange(count).
+// Picker of the layers of a template (preview with numbered zones, and list), in the start view, which defines
+// onLayersChange(count).
 const LAYERS_CSS = `
   .list { border: 1px solid var(--spectrum-gray-200); border-radius: var(--spectrum-corner-radius-200); overflow: hidden; display: none; }
   .row {
@@ -2360,7 +2359,6 @@ const LAYERS_CSS = `
   #layers .row { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; cursor: default; }
   #layers .row.hover { background: var(--spectrum-gray-100); }
   .layer-name { font-weight: var(--spectrum-bold-font-weight); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .row sp-badge { justify-self: start; }
   /* Preview on the left (half of the width at most) and list on the right; the list goes below on very narrow views */
   .picker { display: flex; align-items: flex-start; gap: var(--spectrum-spacing-300); }
   /* The list starts at the top of the preview image (below the padding of the preview) */
@@ -2499,7 +2497,7 @@ const LAYERS_SCRIPT = `
     setStatus(layers.length + ' editable layer(s).');
   }
 
-  // Spinner in place of the preview while it renders; hidePreviewLoader when it cannot be shown.
+  // Spinner in place of the preview while it renders.
   // With the size of the document, the spinner takes the place the preview will take (same ratio, same largest height), so
   // that the layout does not change when it appears
   function showPreviewLoader(doc) {
@@ -2513,10 +2511,6 @@ const LAYERS_SCRIPT = `
     document.getElementById('stage').hidden = true;
     document.getElementById('preview-loader').hidden = false;
     document.getElementById('preview').hidden = false;
-  }
-  function hidePreviewLoader() {
-    if (!document.getElementById('stage').hidden) return;
-    document.getElementById('preview').hidden = true;
   }
 
   // Shows the preview rendered after the list, with the numbers of the layers, without changing the boxes already ticked.
@@ -2590,38 +2584,6 @@ const LAYERS_SCRIPT = `
     updateSelection();
   });
 
-  // The template is read in a task: the layers come with the tool result when read in time, otherwise from the task, then
-  // the preview from the task.
-  // isCurrent(), when given, tells whether the template is still the one shown (another one may be dropped meanwhile).
-  // onMissingFonts(list), when given, gets the fonts of the template missing for the render.
-  function showTemplate(data, isCurrent, onMissingFonts) {
-    var current = isCurrent || function () { return true; };
-    if (data.layers) render(data);
-    if (!data.taskId || data.previewUrl) return;
-    setStatus(layers.length ? layers.length + ' editable layer(s). Rendering the preview of the template...' : 'Reading the template...', false, true);
-    showPreviewLoader();
-    return waitForTask(data.taskId, function (partial) {
-      if (!current() || layers.length || !partial.layers) return;
-      render(partial);
-      setStatus(layers.length + ' editable layer(s). Rendering the preview of the template...', false, true);
-      showPreviewLoader();
-    })
-      .then(function (template) {
-        if (!current()) return;
-        if (!layers.length) render(template);
-        else if (template.previewUrl) showLatePreview(template.previewUrl, template.document || {});
-        if (!template.previewUrl) hidePreviewLoader();
-        if (onMissingFonts && template.missingFonts) onMissingFonts(template.missingFonts);
-        setStatus(layers.length + ' editable layer(s).' + (template.previewUrl ? '' : ' Preview not available: ' + (template.previewError || 'no preview')));
-      })
-      .catch(function (error) {
-        if (!current()) return;
-        var reason = errorText(error);
-        hidePreviewLoader();
-        setStatus(layers.length ? layers.length + ' editable layer(s). Preview not available: ' + reason : reason, !layers.length);
-      });
-  }
-
   // Empties the picker, before another template is read
   function clearTemplate() {
     layers = [];
@@ -2633,14 +2595,6 @@ const LAYERS_SCRIPT = `
     onLayersChange(0);
   }
 
-  // The selected layers as the model needs them: without their areas on the preview
-  function selectedForModel() {
-    return selected().map(function (l) {
-      var layer = {};
-      Object.keys(l).forEach(function (key) { if (key !== 'area') layer[key] = l[key]; });
-      return layer;
-    });
-  }
 
 `
 

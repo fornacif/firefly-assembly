@@ -26,7 +26,6 @@
   "private": true,
   "devDependencies": {
     "@spectrum-web-components/action-button": "^1.12.6",
-    "@spectrum-web-components/badge": "^1.12.6",
     "@spectrum-web-components/button": "^1.12.6",
     "@spectrum-web-components/checkbox": "^1.12.6",
     "@spectrum-web-components/dropzone": "^1.12.6",

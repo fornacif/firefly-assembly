@@ -1899,8 +1899,10 @@ function registerTools (server, params) {
   // generate-variants: the variants of a generation, started in a task
   const runCreateVariant = async ({ templateUrl, templates, formats, format, variants, layers, fileName, fileNamePattern, fonts, previousTaskId, widgetRef, languages }) => {
     try {
-      if (!variants && !layers && !widgetRef) throw new Error('Missing "widgetRef": pass the reference that ends the message of the widget that confirmed the texts and ' +
-        'images, e.g. "r7k2p9" for "(r7k2p9)" (or "variants": a list of variants, each with its "layers").')
+      if (!variants && !layers && !widgetRef) {
+        throw new Error('Missing "widgetRef": pass the reference that ends the message of the widget that confirmed the texts and ' +
+          'images, e.g. "r7k2p9" for "(r7k2p9)" (or "variants": a list of variants, each with its "layers").')
+      }
       if (!templateUrl && !templates) throw new Error('Missing "templateUrl" (or "templates" given by the start widget).')
       // Built from the widget results, the variants given replacing those of the same label
       const fromWidgets = widgetRef ? await variantsFromWidgets(params, [].concat(widgetRef), languages) : []

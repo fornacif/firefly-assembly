@@ -4,23 +4,14 @@ MCP server, deployed as an Adobe I/O Runtime (App Builder) action, that creates 
 
 ## Connect the server
 
-**Server URL:** `https://85792-155azureplanarian.adobeioruntime.net/api/v1/web/firefly-assembly/mcp-server`
+**Server URL:** `https://<namespace>.adobeioruntime.net/api/v1/web/firefly-assembly/mcp-server`, where `<namespace>` is the Runtime namespace of your deployment (`AIO_runtime_namespace` in `.env`, see [Deployment](#deployment)).
 
-The server works with any MCP client that supports MCP Apps and OAuth, such as Claude and ChatGPT. Use the `adobeioruntime.net` domain, not `adobeio-static.net`: the resource in the OAuth metadata must match the server URL, otherwise sign-in fails (in Claude: "Couldn't register with … sign-in service").
+Use the `adobeioruntime.net` domain, not `adobeio-static.net`: the resource in the OAuth metadata must match the server URL, otherwise sign-in fails.
 
-### In Claude
+- **Claude:** **Settings > Connectors > Add custom connector**, name it **Firefly Assembly**, enter the server URL, leave the OAuth client ID empty, click **Connect** and sign in with your Adobe ID.
+- **ChatGPT:** add the server as a custom app with **OAuth** authentication, leave the client ID empty and sign in with your Adobe ID.
 
-1. Go to **Settings > Connectors > Add custom connector**.
-2. Name it **Firefly Assembly** and enter the server URL.
-3. Leave the OAuth client ID empty, click **Connect**, and sign in with your Adobe ID.
-4. Enable the connector in your conversation.
-
-### In ChatGPT
-
-1. Add the server as a custom app (connector) in your settings.
-2. Enter the server URL and choose **OAuth** authentication.
-3. Leave the OAuth client ID empty and sign in with your Adobe ID.
-4. Enable the app in your conversation.
+Then enable the connector in your conversation. After a deployment that changes the tools, reconnect it and start a new conversation: the client keeps the tool list.
 
 ## Demo flow
 
@@ -29,68 +20,32 @@ The server works with any MCP client that supports MCP Apps and OAuth, such as C
 3. **Layers (step 2):** Click the numbered zones on the template preview, or use the list, to pick the text and smart-object layers to vary. If the template uses fonts that Photoshop does not have, a warning names them: add their .otf or .ttf files under the preview, which is rendered again with them.
    Click **Next**: the widget writes a message with your selection, which you send to the assistant. Each widget ends its steps this way.
 4. **Texts (step 3):** Give your own copy or a short brief, for example "surfing campaign", and the assistant writes each variant in each language. Edit the table, import an Excel file (.xlsx), or paste cells from a spreadsheet.
-5. **Images (step 4):** Add one image per variant, from your computer or AEM, or generate it with Firefly from a prompt written in the slot. To have the assistant write the prompts, check **Generate a Firefly prompt per variant for the smart object layers** below the list of layers (step 2): the slots of the smart object layers then show their prompts, editable, and the main button becomes **Generate with Firefly** to generate all of them at once. Then adjust each crop to its frame. All languages of a variant share its images.
+5. **Images (step 4):** Add one image per variant, from your computer or AEM, or generate it with Firefly from a prompt written in the slot. To have the assistant write the prompts, check **Generate a Firefly prompt per variant for the smart object layers** below the list of layers (step 2): the slots then show their prompts, editable, and **Generate with Firefly** generates all of them at once. Then adjust each crop to its frame. All languages of a variant share its images.
 6. **Generate and review (step 5):** Variants are rendered in parallel as JPEG, PNG, and/or layered PSD, with each variant's languages side by side. The assistant checks each text on its visual and marks clipped, overflowing, or overlapping text with a proposed fix.
 7. **Fix and download:** To fix a text, write your changes in the field of its variant (clicking the text on the enlarged visual, or its problem, starts a line for it there) and send them to the assistant, or ask in the chat; only these variants are regenerated. Download the files one by one or all at once as a ZIP.
 
-## Workflow
+## How it works
 
-1. **Template** (`start-variant-creation`, step 1): number of variants per language, languages (English, French, Italian, German, Spanish, Portuguese, Dutch, Polish, Swedish, Danish, Norwegian, Finnish; each variant is created in each language), file names, and the PSD template, uploaded or picked in AEM, or one template per format; each template is read at once (`read-psd-template`): its layers, then its preview and the fonts it misses.
-2. **Layers** (step 2): the layers to vary, picked on the preview or in the list, and the fonts.
-3. **Texts** (`show-variant-texts`, step 3): an editable table with the texts of each variant, which the user can also fill from an Excel file (.xlsx, its first sheet: a Variant column, then a column per layer) or by pasting cells copied from a spreadsheet, and download as .xlsx.
-4. **Images** (step 4): with text layers too, after the texts (`show-variant-texts` with `images`), so that the texts and the images are confirmed together; with smart object layers only, `show-variant-images`. One image per variant (its languages share it) and layer, from the computer, AEM or Firefly, framed on its subject and adjustable.
-5. **Generation** (`generate-variants`, step 5): all the variants (up to 50) are generated by a single call, in one task; with `widgetRef`, the server builds them from the texts and images the user confirmed in the widget. Changes are generated the same way, with `previousTaskId`: the new widget shows them with the others, unchanged.
-6. **Review**: the assistant checks the texts of each variant on its visual (see below), and the widget marks their problems on the visual, numbered, with a proposed fix. Each variant has a "What should change?" field, pre-filled with the proposed fixes; the user edits it and sends the changes to the assistant, which generates again only these variants; the new widget also shows the other variants of the generation, marked Unchanged (with the problems found on them, its field not pre-filled), and includes them in Download all. Clicking a text on the enlarged visual (where it is drawn, estimated from the layer in the template, its alignment and the lines of the new text, and joined with the box found by the review), or a problem of the card, goes back to the grid with a line for this text in the changes of the variant (`"headline": `), to write the change. The languages of each variant are shown side by side, one row per variant (its group) and one column per language. Each generation shows its variants (and, after changes sent, the unchanged ones of the generation changed), with a download button per file and a Download all button (a ZIP archive of all the files of the generation, built by a task: `create-variants-zip`). Variants generated again (with `previousTaskId`) keep all their formats up to date: with the same edits in other formats (e.g. PSD after JPEG), they keep the files of the earlier generation in the formats not rendered again; with other edits, they are also rendered again in their earlier formats, by the same Photoshop job (the edits of each variant are kept as a hash with its result). When the host can show a view full screen (`ui/request-display-mode`), a Full screen button shows the whole widget so (left before changes are sent, as the assistant answers with a new widget), and the enlarged view of a variant opens full screen, as a modal.
+**Widgets.** Each tool of the workflow shows its own widget, with its own steps: `start-variant-creation` (1 Template, 2 Layers), `show-variant-texts` (3 Texts, 4 Images), `show-variant-images` (4 Images, without text layers) and `generate-variants` (5 Review, a new widget per generation). A widget sends what the user confirms as a user message (`ui/message`), with the full result in the model context and kept by the server under a short reference ending the message (`save-widget-result`, `get-widget-result`). The assistant passes this reference to `generate-variants` (`widgetRef`), which builds the variants from the texts and images confirmed, without the assistant copying them. Changes are generated again with `previousTaskId`: the new widget shows them with the unchanged variants.
 
-**Several formats**: the start widget takes up to 5 templates, one per format (e.g. 1080x1080, 1080x1920, 300x250), uploaded or picked in AEM together, each read at once; each variant is then rendered in each template (one file per variant and template, at most 100 per call, named with `{template}`). The layer step has a tab per template; the layers of the same name and type are linked: picking one picks them in the other templates, and they get the same text and image. The assistant is given linked layer ids, used in every step, and a `templates` JSON (name, URL, and for each linked layer its id in this template) that it passes to `generate-variants`, which renders each variant with each template (`expandTemplates`). A text without line breaks is spread over the lines of the original text of each template. An image layer linked across frames of different ratios has a crop per ratio in the grid (`frames`, `crops`), each framed on the subject and adjustable; each template takes the crop of the ratio of its frame. The review shows each visual with the layers of its template, and the widget of the variants shows the formats of each variant side by side, with the name of its template. A change can target some templates of a variant only (`templates` on the variant).
+**Several templates.** The start widget takes up to 5 templates, one per format (e.g. 1080x1080, 1080x1920): each variant is rendered in each template (at most 100 files per call). Layers of the same name and type are linked across templates and get the same text and image; an image framed in different ratios has a crop per ratio.
 
-**One widget per step group**: each tool of the workflow shows its own widget, with its own steps in its header: `start-variant-creation` (steps 1 and 2: Template, Layers, each clickable once reached), `show-variant-texts` (steps 3 and 4, with the images), `show-variant-images` (step 4 alone) and `generate-variants` (step 5, a new widget per generation). The steps are numbered across the widgets (`STEPS`, `stepsHtml` in views.js: 1 Template, 2 Layers, 3 Texts, 4 Images, 5 Review).
+**Long operations.** Runtime ends a web request after about 60 seconds, so Photoshop jobs (reading a template, framing an image, generating variants, zipping) run as tasks: the tool starts an activation of the action and answers with a task id, the task writes its progress in App Builder state, and the widgets poll `get-task`. Manifests and crops are cached so that variants generated again do not redo them. Jobs are polled less and less often; on a 429, the requests wait for its Retry-After (up to 2 minutes), and a longer quota wait is shown in the start widget (`get-quota`).
 
-**The widget and the assistant**: a widget sends what the user confirms or asks as a user message (`ui/message`, validated by the user), the full result going in the model context (`ui/update-model-context`) and kept by the server under a short reference (`save-widget-result`) that ends the message; the assistant reads it with `get-widget-result` when needed and passes it to `generate-variants` (`widgetRef`), which builds the variants from the texts and images confirmed.
+**Text checks.** Right after `generate-variants`, the assistant calls `review-variants` (the visuals reduced to 640 px, given as images in parts under the 1 MB answer limit, with the texts sent and the layers of the template), then `report-variant-issues` (per variant, the problems found, a proposed fix and the rectangle of the text). The widget marks them on the visuals and pre-fills the changes of each variant.
 
-Widgets return what the user confirmed through a short reference that the assistant reads with `get-widget-result`. The other tools (`suggest-crop`, `create-upload-url`, AEM picker tools…) are used by the widgets. `upload-file` uploads a single file outside the workflow.
+**Usage reports.** Each generation shows a report of its API calls and times. Each task is also recorded in the App Builder database (region `emea`, collection `activity`): `get-usage-history` gives the generations of the user, `get-usage-report` the usage of all users, for the IMS user ids in `ADMIN_USER_IDS`.
 
-## Long operations
-
-Adobe I/O Runtime ends a web request after about 60 seconds, and Photoshop jobs on large files can take longer. The operations that run Photoshop jobs (reading a template and rendering its preview, framing an image, generating variants) run as tasks: the tool starts an activation of the same action without waiting for it (5 minutes, the action timeout), signed with a secret of the action, and answers at once with a task id. The task writes its progress and result in App Builder state; the widgets poll `get-task` and show what is ready: the layers then the preview, each variant as soon as it is rendered. The manifests of the templates are kept for an hour in the container and in App Builder state, so that the tasks run in other containers (parallel generations, edits from the widget) do not read them again. The crops of the images are kept likewise, for 12 hours: a variant generated again (e.g. after a text change) does not crop its images again. The size of an image to frame or crop is read from the header of its file (PNG, JPEG, GIF, WebP: the first 512 KB at most), without a Photoshop job; only other formats, or a JPEG rotated by its EXIF orientation, get a Photoshop manifest.
-
-The Photoshop jobs are polled after 2.5 seconds, then every 1.5 seconds for the first 10 seconds, then less and less often up to every 8 seconds: each status request counts against the rate limit of Firefly Services, as the jobs do. On a 429 answer, all the requests of the container to the API wait for its Retry-After (up to 2 minutes); a longer Retry-After (a quota used up, e.g. until midnight UTC) is not waited for: the requests fail at once until then, with the time it ends. This time is shared with the other containers in App Builder state (read again every minute), and the start widget shows it (`get-quota`), before anything is started. A job not finished after 60 seconds is submitted again, unless the API was rate limited within the last minute. The 429 answers and the time waited for the rate limit are counted for each call, with its periods of wait, and shown in the generation report and the usage reports (a tile, the tooltip of each kind of call, a 429 column): the delay caused (the time during which calls waited, the calls waiting at once counted once), and the sum of the waits of the calls.
-
-## Usage reports
-
-At the end of each generation, the widget shows a report: the variants generated, the time taken, and the API calls made since the template was imported (Photoshop jobs, Firefly image generations, subject detections), with their execution times by kind and the renders of the generation against the average render. Each task keeps its calls in App Builder state, under a session of the user that the reading of another template starts again.
-
-Each task (template reading, crop, image generation, generation of variants) is also recorded in the database of the workspace ([App Builder Database Storage](https://developer.adobe.com/app-builder/docs/guides/app_builder_guides/storage/database), region `emea`, collection `activity`, `actions/mcp-server/history.js`): the user (IMS user id), its duration, its API calls by kind, and for a generation its template, variants, formats and languages. The activity is kept without limit of time (a document of about 1 KB per task, within the 40 GB of storage of an App Builder pack). The assistant answers with two tools, over the last days or the whole history:
-
-- `get-usage-history`: the generations of the user, with their totals.
-- `get-usage-report`: the usage of all the users (totals, per user, per day, per kind of API call), only for the IMS user ids listed in `ADMIN_USER_IDS`.
-
-## Text checks
-
-The assistant checks the texts of the generated variants by looking at them, right after generate-variants, in the same turn: the user has nothing to ask. The assistant calls:
-
-1. `review-variants`: once the generation is done (it waits for it, and answers that it is not finished after about 35 seconds, the assistant then calls it again), the visuals of the generation, reduced to 640 px on their longest side (JPEG quality 70) and given as images (the assistant reads images in a tool result, not their URLs; `actions/mcp-server/review.js`), with the texts sent, the language of each variant and the layers of the template with their positions. An action answer is at most 1 MB: the visuals are given in parts (about 750 KB of images each, about 10 to 15 visuals), each naming the variants left for the next call.
-2. `report-variant-issues`, after each part: per variant, the problems found (a text cut or past an edge, hidden, overlapping another element, hard to read, badly broken, in another language, or not the text sent), each with its layer, a fix proposed to the user and the rectangle of the text on the visual; without a rectangle, the area of the layer in the template is marked, and where it overlaps the layers named.
-
-The problems are stored with the generation; the widget waits for them (`get-variant-review`, up to 5 minutes), marks them on the visuals, numbered, and pre-fills the changes of each variant with the fixes proposed.
+**Authentication.** Users sign in with Adobe IMS: the action serves the OAuth protected resource metadata (RFC 9728) and validates the bearer token of each request; the MCP client registers its own OAuth client, so no client ID is needed. Photoshop API calls use Firefly Services server-to-server credentials.
 
 ## Best practices for templates
 
-- **Use point text, not paragraph text**, for the texts to vary. A paragraph text keeps its box: a longer text is hidden past its last line or has its words broken across lines. A point text only breaks lines where its text does, and grows from its anchor.
-- **Align the texts from the side they should grow from**: centered texts grow on both sides, left-aligned texts to the right.
-- **Leave room around the texts** that will be translated or rewritten: localized texts are often longer.
-- **Keep each element in its own layer** (logo, button, badge), not merged into a background: the review is given the positions of the layers, and marks the overlaps from them.
-- **Use smart object layers for the images to replace**, with the frame of the image at the size it should fill: images are cropped to the ratio of their frame.
-- **Do not lock the layers to vary**: locked layers are not offered in the layer picker.
-- **Name the layers** (e.g. "headline", "cta"): the names are shown to the user and to the assistant.
-- **Break the lines of the original texts where they should be**: the assistant writes the new texts with the same number of lines and about the same number of characters per line. A new text written without any line break is spread over as many lines as the original text, of balanced lengths, without breaking words; a text with line breaks is kept as written.
-- **Avoid texts on busy areas of an image**: they are hard to read.
-- **Use fonts that Photoshop has** (Adobe Fonts included), or add the files of the others in the start widget: a missing font is replaced by a default font. Check that the license of a font allows sending it to a cloud service.
-
-## Authentication
-
-- **Users** sign in with Adobe IMS. The action serves the OAuth protected resource metadata (RFC 9728) at `/.well-known/oauth-protected-resource` and validates the bearer token of each MCP request against IMS (`actions/mcp-server/validator.js`). The MCP client (Claude, ChatGPT) registers its own OAuth client with IMS, so no client ID is needed in the connector settings.
-- **Photoshop API** calls use Firefly Services server-to-server credentials.
+- **Use point text, not paragraph text**, for the texts to vary: a paragraph text keeps its box and hides or breaks a longer text.
+- **Align texts from the side they should grow from**, and leave room around them: translations are often longer.
+- **Break the original texts where the lines should break**: new texts follow the same number of lines.
+- **Keep each element in its own layer** (logo, button, badge), and name the layers ("headline", "cta").
+- **Use smart object layers for the images to replace**, framed at the size they should fill; do not lock the layers to vary.
+- **Use fonts that Photoshop has** (Adobe Fonts included), or add their files in the start widget, if their license allows it.
 
 ## Project structure
 
@@ -99,16 +54,16 @@ The problems are stored with the generation; the widget waits for them (`get-var
 | `actions/mcp-server/index.js` | Action entry point: HTTP routing, OAuth metadata, MCP transport |
 | `actions/mcp-server/tools.js` | MCP tools, resources and prompt, Photoshop API and storage calls |
 | `actions/mcp-server/views.js` | HTML of the widgets |
-| `actions/mcp-server/review.js` | Visuals of the generated variants reduced for the review by the assistant |
-| `actions/mcp-server/state.js` | App Builder state (tasks, widget results, reviews), values kept as JSON |
-| `actions/mcp-server/history.js` | History of the activity in the database: recording, history of a user, usage report |
-| `actions/mcp-server/fonts.js` | Library of the fonts of each user in the database, and the names read from a font file |
-| `actions/mcp-server/zip.js` | ZIP archives of the files of a generation |
+| `actions/mcp-server/review.js` | Visuals reduced for the review by the assistant |
+| `actions/mcp-server/state.js` | App Builder state (tasks, widget results, reviews) |
+| `actions/mcp-server/history.js` | Activity in the database: recording, history, usage report |
+| `actions/mcp-server/fonts.js` | Font library of each user |
+| `actions/mcp-server/zip.js` | ZIP archives of a generation |
 | `actions/mcp-server/aem-picker.js` | Sessions of the AEM Asset Selector page |
 | `actions/mcp-server/validator.js` | IMS token validation |
-| `ui/` | Build of the Spectrum Web Components bundle used by the widgets |
-| `web-src/` | Static files served by App Builder (AEM picker page, Spectrum bundle) |
-| `app.config.yaml` | App Builder configuration: action, inputs, static hosting |
+| `ui/` | Build of the Spectrum Web Components bundle |
+| `web-src/` | Static files (AEM picker page, Spectrum bundle) |
+| `app.config.yaml` | App Builder configuration |
 
 ## Configuration
 
