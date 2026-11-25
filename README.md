@@ -47,7 +47,12 @@ Then enable the connector in your conversation. After a deployment that changes 
 
 ## Configuration
 
-Create a `.env` file at the root (it is not committed):
+In the [Adobe Developer Console](https://developer.adobe.com/console), set up the workspace of the App Builder project with:
+
+- **Credentials:** OAuth Server-to-Server.
+- **APIs:** App Builder Data Services (the database of the activity and of the font libraries).
+
+Then run `aio app use` in the project to select this workspace: it writes the Runtime credentials and the server-to-server credentials (`IMS_OAUTH_S2S_*`) to `.env`. Complete `.env` (it is not committed):
 
 ```sh
 ## Adobe I/O Runtime credentials
@@ -66,7 +71,7 @@ AEM_REPOSITORY_ID=
 ADMIN_USER_IDS=
 ```
 
-The database needs the **App Builder Data Services** API in the workspace (Developer Console); `aio app use` then adds its server-to-server credentials (`IMS_OAUTH_S2S_*`) to `.env`, which the action gets with the `include-ims-credentials` annotation. `aio app deploy` provisions the database when missing (`database` in `app.config.yaml`).
+The action gets the server-to-server credentials with the `include-ims-credentials` annotation, and `aio app deploy` provisions the database when missing (`database` in `app.config.yaml`).
 
 Optional action parameters, with their defaults: `IMS_HOST` (`https://ims-na1.adobelogin.com`), `IMS_SCOPES` (`openid,AdobeID`), `MCP_RESOURCE_URL` (the `adobeioruntime.net` URL of the action), `STATIC_ORIGIN` (`https://<namespace>.adobeio-static.net`), `AEM_IMS_ORG` (picked by the user), `AEM_API_KEY` (the client ID of the user's token).
 
