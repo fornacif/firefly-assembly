@@ -1,8 +1,6 @@
 // HTML views (MCP Apps) rendered by the host next to tool results, built with Spectrum 2 (Spectrum Web Components).
 // The components are bundled by ui/build.js and served by the action at scriptUrl (see index.js).
 
-const { SOCIAL_FORMATS } = require('./resize-script.js')
-
 const BASE_STYLE = `
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
@@ -288,7 +286,7 @@ const ADOBE_ICON = '<svg slot="icon" viewBox="0 10.22 16.86 14.94" width="18" he
 
 // Keep in sync with MAX_VARIANTS, MAX_TEMPLATES and MAX_RENDERS in tools.js
 const MAX_VARIANTS_UI = 50
-const MAX_TEMPLATES_UI = 1 + SOCIAL_FORMATS.length
+const MAX_TEMPLATES_UI = 5
 const MAX_RENDERS_UI = 100
 // Languages offered in the start widget: ISO 639-1 code and name
 const LANGUAGES = [['en', 'English'], ['fr', 'French'], ['it', 'Italian'], ['de', 'German'], ['es', 'Spanish'], ['pt', 'Portuguese'],
@@ -561,28 +559,6 @@ function getStartViewHtml (scriptUrl) {
   .template-row .template-state { font-size: var(--spectrum-font-size-75); color: var(--spectrum-neutral-subdued-content-color-default); white-space: nowrap; }
   .template-row .template-state.negative { color: var(--spectrum-negative-content-color-default); white-space: normal; }
   .template-row sp-progress-bar { grid-column: 1 / -1; margin-top: 0; }
-  /* In the card of the template: the option to make the usual social media formats from it, then a line per format (a checkbox,
-     and the state of the template made in it) */
-  .template-formats { grid-column: 1 / -1; border-top: 1px solid var(--spectrum-gray-200); padding-top: var(--spectrum-spacing-75); }
-  .format-lines { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: var(--spectrum-spacing-200);
-    padding-left: var(--spectrum-spacing-400); }
-  .format-lines .format-size { color: var(--spectrum-neutral-subdued-content-color-default); }
-  .format-state { display: flex; align-items: center; gap: var(--spectrum-spacing-100); font-size: var(--spectrum-font-size-75);
-    color: var(--spectrum-neutral-subdued-content-color-default); white-space: nowrap; }
-  .format-state.negative { color: var(--spectrum-negative-content-color-default); white-space: normal; }
-  /* Step 2: a card per format (the master first), with its preview, the comment of the assistant and a field for a change */
-  .formats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: var(--spectrum-spacing-300); align-items: start; }
-  .format-card { display: flex; flex-direction: column; gap: var(--spectrum-spacing-100); min-width: 0; }
-  .format-visual { display: flex; align-items: center; justify-content: center; height: 180px; }
-  .format-visual img { max-width: 100%; max-height: 180px; box-shadow: 0 0 0 1px var(--spectrum-gray-300); }
-  .format-title { display: flex; align-items: baseline; justify-content: space-between; gap: var(--spectrum-spacing-100); }
-  .format-title .format-name { font-weight: var(--spectrum-bold-font-weight); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .format-comment { display: flex; align-items: flex-start; gap: var(--spectrum-spacing-100); font-size: var(--spectrum-font-size-75);
-    color: var(--spectrum-neutral-subdued-content-color-default); }
-  .format-comment sp-progress-circle { flex: none; }
-  .format-comment.adjusted { color: var(--spectrum-neutral-content-color-default); }
-  .format-card textarea { width: 100%; resize: vertical; }
-  .formats-actions { margin-top: var(--spectrum-spacing-300); }
   /* One button per template in the layer step, with the number of layers picked in it, the one shown selected */
   .template-tabs { display: flex; flex-wrap: wrap; gap: var(--spectrum-spacing-100); margin-bottom: var(--spectrum-spacing-300); }
   .linked { margin-top: var(--spectrum-spacing-200); font-size: var(--spectrum-font-size-75); }
@@ -633,7 +609,7 @@ ${STEPS_CSS}
 ${LAYERS_CSS}
 `, `
 <h2 class="heading">Create variants</h2>
-${stepsHtml({ 1: 1, 2: 2, 3: 3 })}
+${stepsHtml({ 1: 1, 2: 2 })}
 <div data-step="1">
 <div class="subtle intro">Drop the layered PSD template, or one template per format, then set the number of variants and their languages.</div>
 <!-- The templates first: their import and reading are seen at once -->
@@ -672,11 +648,6 @@ ${stepsHtml({ 1: 1, 2: 2, 3: 3 })}
 </div>
 </div>
 <div data-step="2" hidden>
-  <div class="subtle intro">The assistant checks each format against the master template and adjusts its layout when needed. Ask for a change on a format, or go on to the layers.</div>
-  <div class="formats-grid" id="formats-grid"></div>
-  <div class="formats-actions"><sp-button variant="secondary" treatment="outline" id="send-changes" disabled>Send changes</sp-button></div>
-</div>
-<div data-step="3" hidden>
   <div class="subtle intro" id="layers-intro">Click the numbered zones of the template, or the list, to pick the layers to change in the variants.</div>
   <div class="template-tabs" id="template-tabs" role="group" aria-label="Templates" hidden></div>
   ${layersHtml(`
@@ -728,30 +699,26 @@ ${LAYERS_SCRIPT}
   var nextBtn = document.getElementById('next');
   var backBtn = document.getElementById('back');
 
-  // Shows a step: 1, the variants and the template; 2, the formats made from the template, checked by the assistant (skipped
-  // without formats); 3, the layers of the templates (read meanwhile, as soon as they are uploaded)
+  // Shows a step: 1, the variants and the template; 2, the layers of the templates (read meanwhile, as soon as they are uploaded)
   function showStep(step) {
     Array.prototype.forEach.call(document.querySelectorAll('[data-step]'), function (el) { el.hidden = el.getAttribute('data-step') !== String(step); });
     backBtn.hidden = step === 1;
-    nextBtn.hidden = step === 3;
-    continueBtn.hidden = step !== 3;
+    nextBtn.hidden = step === 2;
+    continueBtn.hidden = step !== 2;
     currentStep = step;
-    if (step === 2) { startFormatReview(); renderFormats(true); }
-    if (step === 3) showActive();
+    if (step === 2) showActive();
     updateButton();
     reportSize();
   }
 
   // Which steps can be clicked: the first one from the others (until the selection is sent), the others once the first one is
-  // complete; the formats when some were made, the layers once they are read (and checked by the assistant, when made)
+  // complete
   var currentStep = 1;
   var step1Ok = false;
   function reachable(step) {
     if (step === currentStep || backBtn.disabled && currentStep !== 1) return false;
     if (step === 1) return true;
-    if (!step1Ok) return false;
-    if (step === 2) return hasFormats();
-    return !formatsBusy() && (!hasFormats() || Boolean(formatReview && formatReview.key === reviewKeyOf()));
+    return step1Ok;
   }
   function updateSteps() { updateHeader(); }
   var aemBtn = document.getElementById('aem');
@@ -971,7 +938,7 @@ ${LAYERS_SCRIPT}
     t.rereadFor = t.rereadFor || {};
     missed.forEach(function (name) { t.rereadFor[name] = true; });
     t.previewPending = true;
-    if (t === templates[active] && currentStep === 3) showPreviewLoader(t.data && t.data.document);
+    if (t === templates[active] && currentStep === 2) showPreviewLoader(t.data && t.data.document);
     readTemplateOf(t);
     return true;
   }
@@ -1216,10 +1183,10 @@ ${LAYERS_SCRIPT}
           : n + ' variant' + (n > 1 ? 's' : '') + ' in total' + formats + '.';
     totalText.variant = tooMany() || !languages().length ? 'negative' : 'neutral';
     updateNaming();
-    step1Ok = templates.length > 0 && !templates.some(function (t) { return t.status === 'uploading' || t.status === 'importing' || t.status === 'resizing' || t.status === 'error'; })
+    step1Ok = templates.length > 0 && !templates.some(function (t) { return t.status === 'uploading' || t.status === 'importing' || t.status === 'error'; })
       && count() > 0 && n > 0 && !tooMany() && !namingError() && fontsUploading === 0;
-    nextBtn.disabled = !step1Ok || currentStep === 2 && formatsBusy();
-    continueBtn.disabled = !step1Ok || formatsBusy() || !allRead() || !layerCount;
+    nextBtn.disabled = !step1Ok;
+    continueBtn.disabled = !step1Ok || !allRead() || !layerCount;
     updateSteps();
     reportSize();
   }
@@ -1317,250 +1284,18 @@ ${LAYERS_SCRIPT}
     return doc && doc.width && doc.height ? doc.width + ' x ' + doc.height : '';
   }
 
-  var STATE_LABELS = { uploading: 'Uploading', importing: 'Importing from AEM', resizing: 'Making the format', reading: 'Reading the layers' };
-
-  // Social media formats made from the template (resize-psd-template), when a single template was imported: a template each
-  // (t.format, its id), added when its format is checked and removed when it is unchecked. A format of the size of the template
-  // is not made. The option and the formats are in the card of the template; the templates made have no card of their own.
-  var SOCIAL_FORMATS = ${JSON.stringify(SOCIAL_FORMATS)};
-  var socialOn = false;
-  var socialWanted = {};
-  SOCIAL_FORMATS.forEach(function (f) { socialWanted[f.id] = true; });
-  var syncingSocial = false;
-  function socialSource() {
-    var own = templates.filter(function (t) { return !t.format; });
-    return own.length === 1 ? own[0] : null;
-  }
-  function madeIn(id) { return templates.filter(function (t) { return t.format === id; })[0]; }
-  function sameSize(t, f) {
-    var doc = t.data && t.data.document;
-    return Boolean(doc && doc.width === f.width && doc.height === f.height);
-  }
-  // Adds and removes the templates of the formats to match the option (called by renderTemplates)
-  function syncSocial() {
-    if (syncingSocial) return;
-    syncingSocial = true;
-    var source = socialSource();
-    var on = Boolean(source && socialOn);
-    SOCIAL_FORMATS.forEach(function (f) {
-      var made = madeIn(f.id);
-      // Once the template was read (its size known), kept while it is read again (e.g. with other fonts)
-      var wanted = on && socialWanted[f.id] && source.status !== 'error' && Boolean(source.data && source.data.document) && !sameSize(source, f);
-      if (made && (!wanted || made.source !== source)) {
-        made.read++;
-        templates.splice(templates.indexOf(made), 1);
-      } else if (wanted && !made) {
-        addTemplate(f.name, 'resizing', function () {
-          return callTool('resize-psd-template', { url: source.url, name: source.name, format: f.id })
-            .then(function (started) { return waitForTask(started.taskId); });
-        }, { format: f.id, source: source });
-      }
-    });
-    syncingSocial = false;
-  }
-  // Lines of the formats in the card of the template: the checkbox of the format, and the state of the template made in it
-  function formatsHtml(source) {
-    var html = '<div class="template-formats"><sp-checkbox class="social-toggle"' + (socialOn ? ' checked' : '') + '>Also make the usual social media formats</sp-checkbox>';
-    if (!socialOn) return html + '</div>';
-    return html + '<div class="format-lines" role="group" aria-label="Social media formats">' + SOCIAL_FORMATS.map(function (f) {
-      var same = sameSize(source, f);
-      var made = madeIn(f.id);
-      var state = same ? 'This template'
-        : !made ? (socialWanted[f.id] && !(source.data && source.data.document) ? 'After the reading of the template' : '')
-          : made.status === 'error' ? made.error
-            : made.status === 'ready' ? made.name
-              : (made.status === 'resizing' ? 'Making' : 'Reading') + '...';
-      var busy = made && (made.status === 'resizing' || made.status === 'reading');
-      return '<sp-checkbox data-format="' + f.id + '"' + (socialWanted[f.id] && !same ? ' checked' : '') + (same ? ' disabled' : '') + '>'
-        + escapeHtml(f.name) + '<span class="format-size"> · ' + f.ratio + ' · ' + f.width + ' x ' + f.height + '</span></sp-checkbox>'
-        + '<span class="format-state' + (made && made.status === 'error' ? ' negative' : '') + '">'
-        + (busy ? '<sp-progress-circle size="s" indeterminate label="' + escapeHtml(state) + '"></sp-progress-circle>' : '')
-        + escapeHtml(state) + '</span>';
-    }).join('') + '</div></div>';
-  }
-  templateList.addEventListener('change', function (e) {
-    var toggle = e.target.closest('.social-toggle');
-    var box = e.target.closest('sp-checkbox[data-format]');
-    if (toggle) socialOn = toggle.checked;
-    else if (box) socialWanted[box.getAttribute('data-format')] = box.checked;
-    else return;
-    renderTemplates();
-    if (currentStep === 3) showActive();
-  });
-
-  // Step 2: the formats made, checked by the assistant (update-format-review, then a message: it calls review-formats and
-  // adjust-formats). formatReview: { id, key (the master and the formats reviewed), formats: { [format id]: { status, comment,
-  // taskId } } }, polled (get-format-review) while a format is checked or made again; a format made again with the layout of the
-  // assistant is read again like a new template. The user can ask for a change on each format: sent to the assistant the same way.
-  var formatsGrid = document.getElementById('formats-grid');
-  var sendChangesBtn = document.getElementById('send-changes');
-  var formatReview = null;
-  var formatPoll = null;
-  var formatsSignature = '';
-  function madeTemplates() { return templates.filter(function (t) { return t.format; }); }
-  function hasFormats() { return madeTemplates().length > 0; }
-  function formatById(id) { return SOCIAL_FORMATS.filter(function (f) { return f.id === id; })[0]; }
-  function formatOfTemplate(t) { return formatById(t.format); }
-  function reviewKeyOf() {
-    var source = socialSource();
-    return source ? source.url + '|' + madeTemplates().map(function (t) { return t.format; }).sort().join(',') : '';
-  }
-  function reviewState(t) { return formatReview && formatReview.key === reviewKeyOf() && formatReview.formats[t.format] || {}; }
-  // A format made, read or checked: the layers wait for it
-  function formatsBusy() {
-    return madeTemplates().some(function (t) {
-      var state = reviewState(t).status;
-      return t.status !== 'ready' && t.status !== 'error' || state === 'adjusting';
-    });
-  }
-  function startFormatReview() {
-    var key = reviewKeyOf();
-    if (!key || formatReview && formatReview.key === key) return pollFormatReview();
-    var source = socialSource();
-    var made = madeTemplates();
-    var review = formatReview = { id: 'f' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), key: key, formats: {} };
-    made.forEach(function (t) { review.formats[t.format] = { status: 'pending' }; });
-    callTool('update-format-review', {
-      reviewId: review.id,
-      source: { name: source.name, url: source.url },
-      fonts: fontUrls(),
-      formats: made.map(function (t) { return { id: t.format, name: t.name, url: t.url }; })
-    }).then(function () {
-      var context = 'The user made the template ' + source.name + ' (' + sizeOf(source) + ') in ' + made.length + ' social media formats ('
-        + made.map(function (t) { return formatOfTemplate(t).name + ', ' + sizeOf(t); }).join('; ') + ') and asks you to check them: call '
-        + 'review-formats with reviewId "' + review.id + '", then adjust-formats with your verdict for every format. Then wait for the user.';
-      return sendToModel(context, 'Check the formats made from my template.', 'The assistant is checking the formats...');
-    }).then(pollFormatReview).catch(function (error) { setStatus(errorText(error), true); });
-    renderFormats();
-  }
-  // Every 2.5 s, slower (up to 10 s) while nothing changes, e.g. while the assistant looks at the formats
-  var formatPollDelay = 2500;
-  function pollFormatReview() {
-    if (formatPoll || !formatReview) return;
-    var review = formatReview;
-    formatPoll = setTimeout(function () {
-      formatPoll = null;
-      if (review !== formatReview) return;
-      callTool('get-format-review', { reviewId: review.id }).then(function (result) {
-        if (review !== formatReview) return;
-        var before = JSON.stringify(review.formats);
-        Object.keys(result.formats).forEach(function (id) { applyFormatState(id, result.formats[id]); });
-        formatPollDelay = JSON.stringify(review.formats) === before ? Math.min(10000, formatPollDelay * 1.3) : 2500;
-        renderFormats();
-        updateButton();
-        var waiting = Object.keys(review.formats).some(function (id) { return /pending|adjusting/.test(review.formats[id].status); });
-        if (waiting) pollFormatReview();
-        else setStatus('');
-      }, function () { pollFormatReview(); });
-    }, formatPollDelay);
-  }
-  // The state of a format from the server; a format made again with the layout of the assistant is read like a new template
-  // (get-format-review tells when its new layout is made, with its URL)
-  function applyFormatState(id, state) {
-    var previous = formatReview.formats[id] || {};
-    formatReview.formats[id] = state;
-    var t = madeIn(id);
-    if (!t || state.status === previous.status && state.url === previous.url) return;
-    if (state.status === 'adjusting') t.status = 'resizing';
-    else if (state.status === 'adjusted' && state.url !== t.url) {
-      t.url = state.url;
-      t.name = state.name;
-      t.data = null;
-      return readTemplateOf(t);
-    } else if (t.status === 'resizing') t.status = t.data ? 'ready' : 'error';
-    renderTemplates();
-  }
-  // The cards of the master and the formats; not rebuilt while nothing changed (a change being typed is kept)
-  function renderFormats(force) {
-    var source = socialSource();
-    var list = source ? [source].concat(madeTemplates()) : [];
-    var cards = list.map(function (t) {
-      var state = t.format ? reviewState(t) : {};
-      var busy = t.status !== 'ready' && t.status !== 'error';
-      var preview = !busy && t.data && t.data.previewUrl;
-      var comment = !t.format ? 'Master template'
-        : t.status === 'error' ? t.error
-          : t.status === 'resizing' ? 'Making the new layout...'
-            : busy ? 'Reading the layers...'
-              : state.status === 'pending' ? 'The assistant is checking it...'
-                : state.status === 'failed' ? 'The new layout failed: ' + (state.error || '')
-                  : (state.status === 'adjusted' ? 'Adjusted: ' : '') + (state.comment || (state.status === 'ok' ? 'Looks good.' : ''));
-      return { t: t, html: '<div class="format-visual">' + (preview ? '<img src="' + escapeHtml(preview) + '" alt="">'
-          : '<sp-progress-circle size="m" indeterminate label="Loading the preview"></sp-progress-circle>') + '</div>'
-        + '<div class="format-title"><span class="format-name" title="' + escapeHtml(t.name) + '">' + escapeHtml(t.format ? formatOfTemplate(t).name : t.name) + '</span>'
-        + '<span class="subtle">' + escapeHtml(sizeOf(t)) + '</span></div>'
-        // Checked by the assistant, made again or read: a spinner before the state, as for the texts checked in the last step
-        + '<div class="format-comment' + (state.status === 'adjusted' || state.status === 'ok' ? ' adjusted' : '') + '">'
-        + (t.format && t.status !== 'error' && (busy || state.status === 'pending') ? '<sp-progress-circle size="s" indeterminate label="' + escapeHtml(comment) + '"></sp-progress-circle>' : '')
-        + '<span>' + escapeHtml(comment) + '</span></div>' };
-    });
-    var signature = cards.map(function (c) { return c.html; }).join('');
-    if (!force && signature === formatsSignature) return;
-    formatsSignature = signature;
-    // The changes typed are kept, with the focus
-    var drafts = {};
-    Array.prototype.forEach.call(formatsGrid.querySelectorAll('textarea[data-format]'), function (area) { drafts[area.getAttribute('data-format')] = area.value; });
-    var focused = document.activeElement && document.activeElement.getAttribute && document.activeElement.getAttribute('data-format');
-    formatsGrid.innerHTML = cards.map(function (c) {
-      return '<div class="format-card">' + c.html + (c.t.format ? '<textarea rows="2" data-format="' + c.t.format + '" aria-label="Change for the format '
-        + escapeHtml(formatOfTemplate(c.t).name) + '" placeholder="Change for this format">' + escapeHtml(drafts[c.t.format] || '') + '</textarea>' : '') + '</div>';
-    }).join('');
-    if (focused) {
-      var area = formatsGrid.querySelector('textarea[data-format="' + focused + '"]');
-      if (area) { area.focus(); area.selectionStart = area.selectionEnd = area.value.length; }
-    }
-    updateSendChanges();
-    reportSize();
-  }
-  function changesTyped() {
-    var changes = {};
-    Array.prototype.forEach.call(formatsGrid.querySelectorAll('textarea[data-format]'), function (area) {
-      if (area.value.trim()) changes[area.getAttribute('data-format')] = area.value.trim();
-    });
-    return changes;
-  }
-  function updateSendChanges() {
-    var count = Object.keys(changesTyped()).length;
-    sendChangesBtn.disabled = !formatReview || !count;
-    sendChangesBtn.textContent = count ? 'Send changes (' + count + ')' : 'Send changes';
-  }
-  formatsGrid.addEventListener('input', updateSendChanges);
-  sendChangesBtn.addEventListener('click', function () {
-    var review = formatReview;
-    var changes = changesTyped();
-    sendChangesBtn.disabled = true;
-    callTool('update-format-review', { reviewId: review.id, changes: changes }).then(function (result) {
-      Object.keys(changes).forEach(function (id) {
-        review.formats[id] = result.formats[id];
-        var area = formatsGrid.querySelector('textarea[data-format="' + id + '"]');
-        if (area) area.value = '';
-      });
-      renderFormats(true);
-      updateButton();
-      var list = Object.keys(changes).map(function (id) { return formatById(id).name + ': ' + changes[id]; });
-      var context = 'The user asks for changes on the formats of the review ' + review.id + ': ' + list.join('; ') + '. Call review-formats '
-        + 'with reviewId "' + review.id + '", then adjust-formats for these formats, making the changes asked.';
-      return sendToModel(context, 'Change the formats: ' + list.join('; '), 'Changes sent to the assistant.');
-    }).then(pollFormatReview).catch(function (error) { setStatus(errorText(error), true); updateSendChanges(); });
-  });
+  var STATE_LABELS = { uploading: 'Uploading', importing: 'Importing from AEM', reading: 'Reading the layers' };
 
   // The templates of step 1, one row each, and the drop zone, which takes more
   function renderTemplates() {
-    syncSocial();
     templateList.hidden = !templates.length;
-    var source = socialSource();
     templateList.innerHTML = templates.map(function (t, i) {
-      // The templates made in the social media formats are in the card of their template
-      if (t.format) return '';
-      // A template of the size of a social media format is shown with its name
-      var named = SOCIAL_FORMATS.filter(function (f) { return sameSize(t, f); })[0];
-      var state = t.status === 'error' ? t.error : t.status === 'ready' ? (named ? named.name + ', ' : '') + sizeOf(t) : STATE_LABELS[t.status] + '...';
+      var state = t.status === 'error' ? t.error : t.status === 'ready' ? sizeOf(t) : STATE_LABELS[t.status] + '...';
       return '<div class="template-row" data-index="' + i + '"><span class="template-name" title="' + escapeHtml(t.name) + '">' + escapeHtml(t.name) + '</span>'
         + '<span class="template-state' + (t.status === 'error' ? ' negative' : '') + '">' + escapeHtml(state || '') + '</span>'
         + '<sp-action-button quiet size="s" class="template-remove" data-index="' + i + '" label="Remove ' + escapeHtml(t.name) + '" title="Remove"><sp-icon-close slot="icon"></sp-icon-close></sp-action-button>'
         + (t.status === 'uploading' ? '<sp-progress-bar size="s" label="Uploading" progress="' + t.progress + '"></sp-progress-bar>'
           : t.status === 'importing' || t.status === 'reading' ? '<sp-progress-bar size="s" label="' + STATE_LABELS[t.status] + '" indeterminate></sp-progress-bar>' : '')
-        + (t === source && t.status !== 'error' ? formatsHtml(t) : '')
         + '</div>';
     }).join('');
     messageHeading.textContent = templates.length ? templates.length + ' template' + (templates.length > 1 ? 's' : '') : 'Drop your PSD templates';
@@ -1568,7 +1303,6 @@ ${LAYERS_SCRIPT}
       ? (templates.length < MAX_TEMPLATES ? 'Drop or choose more files to add formats' : 'At most ' + MAX_TEMPLATES + ' templates')
       : 'Layered .psd files, one per format';
     if (active >= templates.length) active = Math.max(0, templates.length - 1);
-    if (currentStep === 2) renderFormats();
     renderTabs();
     updateButton();
     reportSize();
@@ -1583,7 +1317,7 @@ ${LAYERS_SCRIPT}
     if (active > index || active >= templates.length) active = Math.max(0, active - 1);
     renderTemplates();
     renderFonts();
-    if (currentStep === 3) showActive();
+    if (currentStep === 2) showActive();
   });
 
   function upload(fileList) {
@@ -1723,12 +1457,11 @@ ${LAYERS_SCRIPT}
   drop.addEventListener('sp-dropzone-should-accept', function (e) { e.detail.dataTransfer.dropEffect = 'copy'; });
   drop.addEventListener('sp-dropzone-drop', function (e) { upload(e.detail.dataTransfer.files); });
 
-  nextBtn.addEventListener('click', function () { showStep(currentStep === 1 && !hasFormats() ? 3 : currentStep + 1); });
-  backBtn.addEventListener('click', function () { showStep(currentStep === 3 && hasFormats() ? 2 : 1); });
+  nextBtn.addEventListener('click', function () { showStep(2); });
+  backBtn.addEventListener('click', function () { showStep(1); });
 
   // The steps of the header: current, done, and those that can be clicked (reachable)
   function updateHeader() {
-    document.querySelector('.steps li[data-for="2"]').classList.toggle('skipped', !hasFormats());
     Array.prototype.forEach.call(document.querySelectorAll('.steps li'), function (li) {
       var n = Number(li.getAttribute('data-for'));
       var ok = reachable(n);
@@ -1779,8 +1512,8 @@ ${LAYERS_SCRIPT}
       title = t.name;
       picked = pickedLayers.map(function (l) { return l.name; }).join(', ');
       context = intro + 'PSD template: ' + t.name + ', URL (valid 24 hours): ' + t.url + '. File names: pass fileNamePattern "' + fileNamePattern()
-        + '" to every generate-variants call. Layers selected by the user in the template (with their original texts and frames): ' + JSON.stringify(pickedLayers) + '. Next step: step 4 (texts) if text layers were '
-        + 'selected, otherwise step 5 (images).' + fontsText;
+        + '" to every generate-variants call. Layers selected by the user in the template (with their original texts and frames): ' + JSON.stringify(pickedLayers) + '. Next step: step 3 (texts) if text layers were '
+        + 'selected, otherwise step 4 (images).' + fontsText;
     } else {
       var tNames = templateNames();
       var links = linkedLayers();
@@ -1825,7 +1558,7 @@ ${LAYERS_SCRIPT}
           + JSON.stringify(images.map(function (l) { return { id: l.id, name: l.name, width: l.frame && l.frame.width, height: l.frame && l.frame.height, frames: l.frames }; }))
           + ', and pass the crops of each image (crops) to generate-variants as given by the grid. ' : '')
         + 'To change a variant in some templates only (e.g. a text too long in one format), pass the names of these templates in its templates. '
-        + 'Next step: step 4 (texts) if text layers were selected, otherwise step 5 (images).' + fontsText;
+        + 'Next step: step 3 (texts) if text layers were selected, otherwise step 4 (images).' + fontsText;
     }
     sendToModel(context, 'I want ' + n + ' variant(s) of ' + title + ' in ' + names.join(', ') + ', changing ' + picked + ', continue.', 'Template' + (templates.length > 1 ? 's' : '') + ' sent.')
       .catch(function (error) {
@@ -2533,7 +2266,7 @@ ${IMAGES_CSS}
 ${STEPS_CSS}
 `, `
 <h2 class="heading" id="title">Drop one image per variant</h2>
-${stepsHtml({ 5: 5 })}
+${stepsHtml({ 4: 4 })}
 <div class="subtle intro">Add images, then drag each one onto the slots that use it (or drop a file on a slot). The bright area is what the banner shows: drag it to reposition the crop, use Zoom to resize it.</div>
 ${IMAGES_HTML}<div class="actions">
   <sp-button variant="accent" id="confirm" disabled>Generate</sp-button>
@@ -2574,7 +2307,7 @@ ${IMAGES_SCRIPT}
 // The steps of the workflow, numbered across the widgets: each widget shows its own ones, as segments of a progress bar
 // (stepsHtml), as <li data-for="N"> (N its step in the view; the view marks them current, done and reachable, and shows the
 // element [data-step="N"]).
-const STEPS = ['Template', 'Formats', 'Layers', 'Texts', 'Images', 'Review']
+const STEPS = ['Template', 'Layers', 'Texts', 'Images', 'Review']
 
 // own: { [step of the workflow]: step in the view }, the first one current
 function stepsHtml (own) {
@@ -2600,8 +2333,6 @@ const STEPS_CSS = `
   .steps li.done .step-kicker::after { content: ' \\2713'; }
   /* A step that can be gone to (the done one, or the next one once the current one is complete): its bar on hover, a focus ring
      from the keyboard */
-  /* A step not taken (no formats made, no images) */
-  .steps li.skipped { opacity: 0.5; }
   .steps li.reachable { cursor: pointer; }
   .steps li.reachable:hover { border-top-color: var(--spectrum-accent-background-color-hover, var(--spectrum-accent-background-color-default)); }
   .steps li.reachable:focus-visible { outline: var(--spectrum-focus-indicator-thickness) solid var(--spectrum-focus-indicator-color); outline-offset: 2px; }
@@ -2959,7 +2690,7 @@ ${STEPS_CSS}
 ${IMAGES_CSS}
 `, `
 <h2 class="heading" id="title">Texts per variant</h2>
-${stepsHtml({ 4: 1, 5: 2 })}
+${stepsHtml({ 3: 1, 4: 2 })}
 <div data-step="1">
 <div class="subtle intro">Click a text to edit it, then confirm. Keep each text about as long as the original, so that it fits the layout.
 You can also paste cells copied from a spreadsheet, or import an Excel file (.xlsx) with a column per layer (download this table to get one).</div>
@@ -3653,7 +3384,7 @@ ${STEPS_CSS}
   .card-warning[data-layer]:hover { text-decoration: underline; }
 ${REPORT_CSS}`, `
 <h2 class="heading">Generated variants</h2>
-${stepsHtml({ 6: 6 })}
+${stepsHtml({ 5: 5 })}
 <div class="stage" id="stage">
 <div class="preview" id="preview">
   <div class="preview-bar">
