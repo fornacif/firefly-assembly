@@ -58,12 +58,10 @@ AIO_runtime_apihost=
 FIREFLY_SERVICES_API_CLIENT_ID=
 FIREFLY_SERVICES_API_CLIENT_SECRET=
 FIREFLY_SERVICES_API_SCOPES=
-## AEM Assets (optional) - repository browsed with the Asset Selector
-# One repository (e.g. author-p12345-e67890.adobeaemcloud.com), several comma-separated,
+## AEM Assets (optional) - repository browsed with the Asset Selector (delivery tier: approved assets)
+# One repository (e.g. delivery-p12345-e67890.adobeaemcloud.com), several comma-separated,
 # or '*' for any AEM as a Cloud Service repository of the user. Empty: local uploads only.
 AEM_REPOSITORY_ID=
-# delivery (default, approved assets) or author
-AEM_TIER=
 ## IMS user ids of the admins (usage report of all the users), comma-separated
 ADMIN_USER_IDS=
 ```

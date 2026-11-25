@@ -8,7 +8,7 @@ const stateStore = require('./state')
 const SESSION_TTL_SECONDS = 15 * 60
 const SESSION_ID = /^[0-9a-f]{64}$/
 // Fields of the selected assets kept for the views (import-aem-asset and filtering)
-const ASSET_FIELDS = ['repo:repositoryId', 'repo:assetId', 'repo:path', 'repo:name', 'dc:format']
+const ASSET_FIELDS = ['repo:repositoryId', 'repo:assetId', 'repo:name', 'dc:format']
 
 const sessionKey = id => `aem-picker-${id}`
 

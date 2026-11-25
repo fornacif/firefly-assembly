@@ -366,7 +366,7 @@ const AEM_SCRIPT = `
   }
 
   function importAemAsset(asset) {
-    return callTool('import-aem-asset', { repositoryId: asset['repo:repositoryId'], assetId: asset['repo:assetId'] || undefined, path: asset['repo:path'] || undefined, fileName: asset['repo:name'] })
+    return callTool('import-aem-asset', { repositoryId: asset['repo:repositoryId'], assetId: asset['repo:assetId'], fileName: asset['repo:name'] })
       .then(function (imported) { return { name: imported.fileName, url: imported.url }; });
   }
 `

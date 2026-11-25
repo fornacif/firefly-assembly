@@ -748,7 +748,7 @@ function toAemHost (repositoryId) {
   return String(repositoryId || '').trim().replace(/^https?:\/\//, '').replace(/\/$/, '')
 }
 
-// Program and environment of a repository (e.g. p12345-e67890), shared by its author and delivery tiers.
+// Program and environment of a repository (e.g. p12345-e67890).
 function aemEnvironment (host) {
   return AEM_HOST.exec(host)?.[2] || null
 }
@@ -756,16 +756,14 @@ function aemEnvironment (host) {
 // AEM Assets repositories browsed with the Asset Selector; null when AEM_REPOSITORY_ID is not set.
 // AEM_REPOSITORY_ID: one repository (shown directly in the selector), several comma-separated, or '*' for any AEM as a
 // Cloud Service repository of the user (both chosen in the selector). AEM_IMS_ORG: empty to let the user pick the
-// organization. AEM_TIER: 'delivery' (default, approved assets of Dynamic Media with OpenAPI) or 'author' (all assets).
+// organization. The selector browses the delivery tier: the approved assets (Dynamic Media with OpenAPI).
 function getAemConfig (params) {
   const repositories = String(params.AEM_REPOSITORY_ID || '').split(',').map(toAemHost).filter(Boolean)
   if (!repositories.length) return null
-  const tier = params.AEM_TIER === 'author' ? 'author' : 'delivery'
   const pinned = repositories.length === 1 && aemEnvironment(repositories[0])
   return {
-    tier,
     environments: repositories.includes('*') ? '*' : repositories.map(aemEnvironment).filter(Boolean),
-    pinnedRepository: pinned ? `${tier}-${pinned}.adobeaemcloud.com` : null,
+    pinnedRepository: pinned ? `delivery-${pinned}.adobeaemcloud.com` : null,
     imsOrg: String(params.AEM_IMS_ORG || '').trim() || null
   }
 }
@@ -784,18 +782,12 @@ function getAemEnvironment (aem, repositoryId) {
   return environment
 }
 
-// URL of the original binary of an asset: by asset id on the delivery tier, by path on the author tier. Only hosts
-// of allowed AEM repositories are built, so the user's token is never sent to another host.
-function getAemDownloadUrl (aem, { repositoryId, assetId, path, fileName }) {
+// URL of the original binary of an asset, by its id on the delivery tier. Only hosts of allowed AEM repositories are
+// built, so the user's token is never sent to another host.
+function getAemDownloadUrl (aem, { repositoryId, assetId, fileName }) {
   const environment = getAemEnvironment(aem, repositoryId)
-  if (assetId) {
-    if (!AEM_ASSET_ID.test(assetId)) throw new Error(`Invalid AEM asset id: ${assetId}`)
-    return new URL(`https://delivery-${environment}.adobeaemcloud.com/adobe/assets/${assetId}/original/as/${encodeURIComponent(fileName)}`)
-  }
-  const origin = `https://author-${environment}.adobeaemcloud.com`
-  const url = new URL(path || '', origin)
-  if (url.origin !== origin || !url.pathname.startsWith('/content/dam/')) throw new Error(`Not an asset of the AEM repository: ${path}`)
-  return url
+  if (!AEM_ASSET_ID.test(String(assetId))) throw new Error(`Invalid AEM asset id: ${assetId}`)
+  return new URL(`https://delivery-${environment}.adobeaemcloud.com/adobe/assets/${assetId}/original/as/${encodeURIComponent(fileName)}`)
 }
 
 // Copies the original binary of an AEM asset to App Builder storage, so that the Photoshop API can read it; returns
@@ -2463,7 +2455,6 @@ function registerTools (server, params) {
         } catch (_) {}
         const sessionId = await createPickerSession({
           repositoryId: aem.pinnedRepository,
-          aemTierType: aem.tier,
           imsOrg: aem.imsOrg,
           apiKey: params.AEM_API_KEY || getUnverifiedClientId(token),
           imsToken: token
@@ -2504,8 +2495,7 @@ function registerTools (server, params) {
         'temporary storage and returns its HTTPS URL (valid 24 hours).',
       inputSchema: {
         repositoryId: z.string().optional().describe('repo:repositoryId of the asset, e.g. delivery-p12345-e67890.adobeaemcloud.com'),
-        assetId: z.string().optional().describe('repo:assetId of the asset (delivery tier), e.g. urn:aaid:aem:...'),
-        path: z.string().optional().describe('repo:path of the asset (author tier), e.g. /content/dam/campaign/banner.psd'),
+        assetId: z.string().describe('repo:assetId of the asset, e.g. urn:aaid:aem:...'),
         fileName: z.string().min(1).describe('repo:name of the asset')
       },
       _meta: { ui: { visibility: ['app'] } }
